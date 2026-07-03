@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<!--
+  ViewStage 启动闪屏
+  展示 Logo、应用名称、加载进度条，支持主题样式适配
+-->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ViewStage</title>
+    <script>document.addEventListener('contextmenu', e => e.preventDefault());</script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #e8eaed;
+        }
+
+        .splash-card {
+            width: 100%;
+            height: 100%;
+            background-color: #ffffff;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .info-section {
+            width: 45%;
+            flex-shrink: 0;
+            padding: 40px 36px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .center-content {
+            margin-top: auto;
+            margin-bottom: auto;
+        }
+
+        .logo-wrapper {
+            width: 40px;
+            height: 40px;
+            flex-shrink: 0;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(52, 152, 219, 0.25);
+        }
+
+        .logo-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .app-name {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1a1a1a;
+            letter-spacing: -0.3px;
+        }
+
+        .loading-text {
+            font-size: 11px;
+            color: rgba(0, 0, 0, 0.4);
+            letter-spacing: 0.3px;
+            min-height: 16px;
+        }
+
+        .copyright {
+            font-size: 10px;
+            line-height: 1.5;
+            color: rgba(0, 0, 0, 0.25);
+        }
+
+        .bottom-bar {
+            margin-top: auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .bottom-bar img {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
+        }
+
+        .bottom-bar-text {
+            font-size: 15px;
+            font-weight: 600;
+            color: rgba(0, 0, 0, 0.3);
+            letter-spacing: 0.3px;
+        }
+
+        .image-section {
+            width: 55%;
+            flex-shrink: 0;
+            position: relative;
+            background-color: #f5f5f7;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .image-section img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .photo-credit {
+            position: absolute;
+            bottom: 14px;
+            right: 18px;
+            font-size: 9px;
+            color: rgba(255, 255, 255, 0.7);
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="splash-card">
+        <div class="info-section">
+            <div class="header">
+                <div class="logo-wrapper">
+                    <img src="assets/Square1024x1024Logo.png" alt="ViewStage">
+                </div>
+                <div class="app-name">ViewStage</div>
+            </div>
+            <div class="center-content">
+                <div class="copyright">&copy; 2025 SECTL. All rights reserved.</div>
+                <div class="loading-text" id="loadingText"></div>
+            </div>
+            <div class="bottom-bar">
+                <img src="assets/logo.png" alt="ViewStage">
+                <span class="bottom-bar-text">SECTL</span>
+            </div>
+        </div>
+        <div class="image-section">
+            <img src="assets/splashscreen_photo.jpg" alt="ViewStage">
+            <div class="photo-credit">Photo by Milan Malfait on Unsplash</div>
+        </div>
+    </div>
+
+    <script>
+        console.log('[splash] script start, __TAURI__:', !!window.__TAURI__);
+        const loadingText = document.getElementById('loadingText');
+        console.log('[splash] DOM refs:', { text: !!loadingText });
+        
+        const listen = window.__TAURI__?.event?.listen;
+        const invoke = window.__TAURI__?.core?.invoke;
+        console.log('[splash] Tauri APIs:', { hasListen: !!listen, hasInvoke: !!invoke });
+        
+        const loadingSteps = [
+            { key: 'init', text: '正在初始化...', progress: 10 },
+            { key: 'settings', text: '正在加载设置...', progress: 25 },
+            { key: 'components', text: '正在加载组件...', progress: 45 },
+            { key: 'theme', text: '正在加载主题...', progress: 60 },
+            { key: 'finalize', text: '正在完成...', progress: 90 },
+            { key: 'done', text: '', progress: 100 }
+        ];
+        
+        let currentStep = 0;
+        
+        function splash_apply_theme(themeName) {
+            console.log('[splash] applyTheme:', themeName);
+        }
+        
+        async function splash_load_theme() {
+            console.log('[splash] loadTheme start, hasInvoke:', !!invoke);
+            if (invoke) {
+                try {
+                    const result = await invoke('settings_fetch_all');
+                    console.log('[splash] settings loaded:', result.settings?.theme);
+                    const themeName = result.settings?.theme || 'com.viewstage.theme.simplify';
+                    splash_apply_theme(themeName);
+                } catch (e) {
+                    console.log('[splash] 加载主题设置失败:', e?.message || e);
+                    splash_apply_theme('com.viewstage.theme.dark');
+                }
+            } else {
+                console.log('[splash] no invoke, using dark');
+                splash_apply_theme('com.viewstage.theme.dark');
+            }
+            console.log('[splash] loadTheme done');
+        }
+        
+        function splash_update_progress(step) {
+            console.log('[splash] progress:', step);
+            currentStep = step;
+            const stepData = loadingSteps[step];
+            if (stepData) {
+                loadingText.textContent = stepData.text;
+            }
+        }
+        
+        console.log('[splash] initial progress 0');
+        splash_update_progress(0);
+        splash_load_theme().then(() => console.log('[splash] splash_load_theme promise resolved'));
+        
+        if (listen) {
+            console.log('[splash] registering listen splash-progress');
+            listen('splash-progress', (event) => {
+                const { step, message } = event.payload || {};
+                console.log('[splash] event received:', { step, message });
+                
+                if (step === -1) {
+                    // 诊断信息
+                    console.log('[splash] DIAG:', message);
+                    loadingText.textContent = '诊断: ' + message;
+                    return;
+                }
+                
+                if (step !== undefined) {
+                    splash_update_progress(step);
+                }
+                
+                if (message) {
+                    loadingText.textContent = message;
+                }
+            }).then(() => {
+                console.log('[splash] listen registered successfully');
+            }).catch((err) => {
+                console.log('[splash] listen failed:', err?.message || err);
+            });
+        } else {
+            console.log('[splash] listen API not available');
+        }
+        
+        console.log('[splash] setting fallback timeout 300ms');
+        setTimeout(() => {
+            console.log('[splash] fallback timeout fired, currentStep:', currentStep);
+            if (currentStep === 0) {
+                splash_update_progress(1);
+            }
+        }, 300);
+        
+        // 诊断：如果 5 秒后没有收到任何 progress 事件，检查主窗口状态
+        setTimeout(async () => {
+            console.log('[splash] diagnostic check start');
+            if (invoke) {
+                try {
+                    const loaded = await invoke('main_check_loaded');
+                    console.log('[splash] main_check_loaded =', loaded);
+                    if (!loaded) {
+                        loadingText.textContent = '诊断：主窗口脚本未加载，检查控制台错误';
+                        loadingText.style.color = '#ff6b6b';
+                    }
+                } catch (e) {
+                    console.log('[splash] diagnostic error:', e);
+                }
+            }
+        }, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>ViewStage</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="blackboard.css">
+    <script type="module" src="modules/pdf/pdf.min.mjs"></script>
+    <script src="modules/i18n.js" defer></script>
+    <script>
+        window.__TAURI__?.core.invoke('main_signal_loaded').catch(()=>{});
+        (async()=>{
+            try {
+                await import('./themes/theme.js');
+                await import('./modules/canvas/batch-draw.js');
+                await import('./modules/canvas/pen_tessellator.js');
+                await import('./modules/canvas/tile-renderer.js');
+                await import('./main.js');
+                await import('./modules/pdf/document_reader_page.js');
+                await import('./modules/pdf/document_reader.js');
+                await import('./init.js');
+            } catch(e) {
+                console.error('[boot] module load error:', e);
+                try {
+                    const msg = '模块加载失败: ' + (e.message || e);
+                    document.getElementById('canvasContainer') &&
+                    (document.getElementById('canvasContainer').innerHTML =
+                        '<div style="padding:40px;color:red;font-size:18px">' + msg + '</div>');
+                } catch(_) {}
+            }
+        })();
+    </script>
+    <script>document.addEventListener('contextmenu', e => e.preventDefault());</script>
+</head>
+<body>
+    <div class="container">
+        <div class="titlebar" id="titlebar">
+            <div class="titlebar-drag" data-tauri-drag-region>
+                <div class="titlebar-tabs" id="titlebarTabs"></div>
+            </div>
+            <div class="titlebar-controls">
+                <button class="titlebar-btn" id="btnTitleMinimize" title="最小化">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M3 8h10" stroke="currentColor" stroke-width="1.2"/>
+                    </svg>
+                </button>
+                <button class="titlebar-btn" id="btnTitleMaximize" title="最大化">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                    </svg>
+                </button>
+                <button class="titlebar-btn titlebar-btn-close" id="btnTitleClose" title="关闭">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.2"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="main-function">
+            <div class="startup-screen" id="startupScreen">
+                <div class="app-body">
+                    <div class="app-sidebar">
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">新建导入</div>
+                            <button class="sidebar-item" id="sideImportPdf">
+                                <img data-icon="pdf" width="14" height="14" alt=""><span>导入 PDF</span>
+                            </button>
+                        </div>
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">文件视图</div>
+                            <button class="sidebar-item active" id="sideRecent">
+                                <img data-icon="clock" width="14" height="14" alt=""><span>最近</span>
+                            </button>
+                            <button class="sidebar-item" id="sideStarred">
+                                <img data-icon="star" width="14" height="14" alt=""><span>星标</span>
+                            </button>
+                        </div>
+                        <div class="sidebar-footer">
+                            <button class="sidebar-item" id="sideSettings">
+                                <img data-icon="settings" width="14" height="14" alt=""><span>系统设置</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="app-main">
+                        <div class="file-area-header">
+                            <div class="file-area-search">
+                                <img data-icon="search" width="13" height="13" alt="">
+                                <input type="text" id="fileSearch" placeholder="在当前列表搜索..." class="file-search-input">
+                                <button class="search-clear" id="searchClear" style="display:none">×</button>
+                            </div>
+                            <div class="file-area-filters">
+                                <select class="filter-select" id="filterTime">
+                                    <option value="all">全部时间</option>
+                                    <option value="today">今天</option>
+                                    <option value="yesterday">昨天</option>
+                                    <option value="week">本周</option>
+                                    <option value="month">本月</option>
+                                </select>
+                                <select class="filter-select" id="filterSize2">
+                                    <option value="all">全部大小</option>
+                                    <option value="small">小 (≤1MB)</option>
+                                    <option value="medium">中 (1-10MB)</option>
+                                    <option value="large">大 (10-100MB)</option>
+                                    <option value="huge">超大 (100MB+)</option>
+                                </select>
+                                <select class="filter-select" id="filterSort">
+                                    <option value="time">按时间</option>
+                                    <option value="name">按名称</option>
+                                    <option value="size">按大小</option>
+                                </select>
+                                <button class="sort-btn" id="fileSortToggle" title="切换排序">↑↓</button>
+                                <div class="view-toggle">
+                                    <button class="view-toggle-btn active" id="viewList" title="列表视图">☰</button>
+                                    <button class="view-toggle-btn" id="viewGrid" title="缩略图视图">▦</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="file-browser-list" id="recentFileList">
+                            <div class="file-list-empty" id="recentFileEmpty">
+                                <div class="file-list-empty-icon">
+                                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" opacity="0.25">
+                                        <rect x="10" y="6" width="28" height="36" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                                        <path d="M10 18h28M10 26h28M10 34h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                                        <path d="M24 42V30m-6 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                                    </svg>
+                                </div>
+                                <span class="file-list-empty-title">拖拽文件到此处</span>
+                                <span class="file-list-empty-sub">支持 PDF、Office 文档，或点击左侧「导入 PDF」按钮</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="canvas-container" id="canvasContainer">
+                <div class="canvas-wrapper" id="canvasWrapper">
+                    <img id="imageElement" class="image-element" alt="">
+                </div>
+                <div class="eraser-hint" id="eraserHint"></div>
+                <div class="palm-eraser-hint" id="palmEraserHint"></div>
+            </div>
+
+            <div class="document-reader-panel" id="documentReaderPanel">
+                <div class="doc-reader-scroll-container" id="docReaderScrollContainer"></div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

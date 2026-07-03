@@ -1,0 +1,41 @@
+{
+  "showToolbarText": true,
+  "showAuroraEffect": false,
+  "canvasBgColor": "#ffffff",
+  "noCameraMessage": {
+    "textColor": "#1a1a1a",
+    "secondaryTextColor": "rgba(0,0,0,0.6)",
+    "tertiaryTextColor": "rgba(0,0,0,0.4)",
+    "textShadow": "0 1px 3px rgba(255,255,255,0.5)"
+  },
+  "icons": {
+    "menu": "justify",
+    "minimize": "box-arrow-in-down-left",
+    "move": "move",
+    "pen": "pen",
+    "eraser": "eraser",
+    "undo": "reply",
+    "clear": "file-earmark-break",
+    "camera": "camera",
+    "camera-fill": "camera-fill",
+    "settings": "gear",
+    "image": "file-earmark-medical",
+    "file": "File",
+    "folder": "folder",
+    "close": "arrow-bar-left",
+    "collapse": "caret-down-fill",
+    "addFile": "file-earmark",
+    "word": "file-earmark-word-fill",
+    "pdf": "pdf",
+    "scan": "scan",
+    "app-settings": "gear",
+    "doc-scan": "file-earmark",
+    "canvas": "shapes",
+    "source": "video",
+    "theme-icon": "color",
+    "about": "info",
+    "github": "github",
+    "file-text": "file-text",
+    "update": "arrow-repeat"
+  }
+}

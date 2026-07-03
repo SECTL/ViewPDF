@@ -1,0 +1,59 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# WASM compilation artifacts
+wasm-viewstage/target/
+wasm-viewstage/pkg/
+src/wasm/
+
+#models cache
+.venv/
+DexiNed/
+cache/
+model/
+
+# Example files
+example/
+
+# Trae config
+.trae/
+
+# OpenCode metadata
+.omo/
+
+# Theme package archives
+*.vst
+
+# memreduct-viewstage subprocess build artifacts
+memreduct/bin/
+memreduct/x64/
+memreduct/ARM64/
+memreduct/Win32/
+memreduct/Release/
+memreduct/Debug/
+memreduct/ipch/
+memreduct/.vs/
+memreduct/*.user
+memreduct/*.suo

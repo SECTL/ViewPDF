@@ -1,0 +1,45 @@
+[package]
+name = "viewpdf"
+version = "0.0.1"
+description = "An application for video presentation and document annotation"
+authors = ["SECTL"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "viewstage_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "devtools"] }
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+once_cell = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+chrono = "0.4"
+reqwest = { version = "0.11", features = ["json", "stream"] }
+url = "2"
+zip = "2"
+futures = "0.3"
+log = "0.4"
+simplelog = "0.12"
+sysinfo = "0.38"
+uuid = { version = "1", features = ["v4"] }
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+hidapi = "2"
+windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"] }
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation"] }

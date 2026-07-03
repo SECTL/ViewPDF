@@ -1,0 +1,259 @@
+name: Tauri Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            config-path: src-tauri/tauri.conf.json
+
+          - label: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            config-path: src-tauri/tauri.conf.json
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    env:
+      RUSTC_WRAPPER: sccache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libayatana-appindicator3-dev
+
+      # ── sccache (compiler cache) ──────────────────────────
+      - name: Start sccache
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      # ── Cargo / Rust cache ────────────────────────────────
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Cache Cargo git
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Cache Tauri build target
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+            !src-tauri/target/release/bundle
+          key: ${{ matrix.label }}-target-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.label }}-target-
+
+      # ── memreduct-viewstage subprocess (Windows only) ─────
+      - name: Cache subprocess build
+        id: cache-memclean
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            memreduct/bin/64/memreduct-viewstage.exe
+            memreduct/x64/Release/memreduct-viewstage/
+          key: memclean-${{ hashFiles('memreduct/src/**', 'memreduct/routine/src/**', 'memreduct/*.vcxproj', 'memreduct/*.sln', 'memreduct/*.props') }}
+
+      - name: Setup MSVC command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build subprocess
+        if: runner.os == 'Windows' && steps.cache-memclean.outputs.cache-hit != 'true'
+        working-directory: memreduct
+        run: msbuild memreduct.vcxproj -property:Configuration=Release -property:Platform=x64 -verbosity:minimal
+
+      # ── Tauri CLI ─────────────────────────────────────────
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Tauri CLI
+        run: cargo binstall tauri-cli --locked -y
+
+      - name: Verify Tauri CLI
+        run: cargo tauri --version
+
+      # ── Build Tauri application ───────────────────────────
+      - name: Clean previous bundle artifacts
+        shell: bash
+        run: rm -rf src-tauri/target/release/bundle
+
+      - name: Build Tauri application
+        run: cargo tauri build --config ${{ matrix.config-path }}
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      # ── Rename artifacts with platform suffix ─────────────
+      - name: Rename artifacts with platform suffix
+        shell: bash
+        run: |
+          suffix=""
+          case "${{ matrix.label }}" in
+            linux)          suffix="-linux" ;;
+          esac
+          if [ -n "$suffix" ]; then
+            find src-tauri/target/release/bundle -maxdepth 2 -type f \
+              \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) \
+              -exec sh -c '
+                s="$1"; shift
+                for f; do
+                  d="${f%.*}"
+                  e="${f##*.}"
+                  mv "$f" "${d}${s}.${e}"
+                done
+              ' sh "$suffix" {} +
+          fi
+
+      - name: List build artifacts
+        shell: bash
+        run: |
+          echo "=== Build artifacts (${{ matrix.label }}) ==="
+          find src-tauri/target/release/bundle -maxdepth 2 -type f -exec ls -lh {} \;
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewstage-${{ matrix.label }}
+          path: src-tauri/target/release/bundle/
+          if-no-files-found: warn
+          retention-days: 30
+
+  package-themes:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package themes into .vst
+        shell: pwsh
+        working-directory: theme-outboard
+        run: ./pack-themes.ps1 -OutputDir ${{ github.workspace }}/theme-packages
+
+      - name: Upload theme packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewstage-themes
+          path: ${{ github.workspace }}/theme-packages/*.vst
+          if-no-files-found: error
+          retention-days: 30
+
+  create-release:
+    needs: [build, package-themes]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Only keep installer and theme packages
+        shell: bash
+        run: |
+          find artifacts -type f \
+            ! -name '*.msi' \
+            ! -name '*.exe' \
+            ! -name '*.deb' \
+            ! -name '*.AppImage' \
+            ! -name '*.vst' \
+            -delete
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          git fetch --tags --force 2>/dev/null || true
+          prev_tag=$(git tag --sort=-version:refname | head -2 | tail -1)
+          echo "## What's Changed" > /tmp/release-notes.md
+          if [ -n "$prev_tag" ]; then
+            git log "$prev_tag".."${{ github.ref_name }}" --oneline --no-decorate >> /tmp/release-notes.md 2>/dev/null || true
+          else
+            git log --oneline --no-decorate -20 >> /tmp/release-notes.md 2>/dev/null || true
+          fi
+          {
+            echo 'notes<<EOF'
+            cat /tmp/release-notes.md
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Determine prerelease status
+        id: prerelease
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if echo "$tag" | grep -Eq -- '-(alpha|beta|rc)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          body: ${{ steps.notes.outputs.notes }}
+          draft: true
+          prerelease: ${{ steps.prerelease.outputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

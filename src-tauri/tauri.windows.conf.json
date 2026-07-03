@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": [
+      "icons/pdf.ico",
+      "icons/word.ico"
+    ]
+  }
+}
