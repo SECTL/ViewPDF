@@ -95,27 +95,7 @@ jobs:
           restore-keys: |
             ${{ matrix.label }}-target-
 
-      # ── memreduct-viewstage subprocess (Windows only) ─────
-      - name: Cache subprocess build
-        id: cache-memclean
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: |
-            memreduct/bin/64/memreduct-viewstage.exe
-            memreduct/x64/Release/memreduct-viewstage/
-          key: memclean-${{ hashFiles('memreduct/src/**', 'memreduct/routine/src/**', 'memreduct/*.vcxproj', 'memreduct/*.sln', 'memreduct/*.props') }}
 
-      - name: Setup MSVC command prompt
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Build subprocess
-        if: runner.os == 'Windows' && steps.cache-memclean.outputs.cache-hit != 'true'
-        working-directory: memreduct
-        run: msbuild memreduct.vcxproj -property:Configuration=Release -property:Platform=x64 -verbosity:minimal
 
       # ── Tauri CLI ─────────────────────────────────────────
       - name: Install cargo-binstall
