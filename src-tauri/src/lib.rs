@@ -157,11 +157,10 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if name.starts_with("doc_annotations_") && name.ends_with(".json") {
-                    if std::fs::remove_file(&path).is_ok() {
+                if name.starts_with("doc_annotations_") && name.ends_with(".json")
+                    && std::fs::remove_file(&path).is_ok() {
                         deleted += 1;
                     }
-                }
             }
         }
     }
@@ -177,11 +176,10 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if name.starts_with("doc_annotations_") && name.ends_with(".json") {
-                    if std::fs::remove_file(&path).is_ok() {
+                if name.starts_with("doc_annotations_") && name.ends_with(".json")
+                    && std::fs::remove_file(&path).is_ok() {
                         deleted += 1;
                     }
-                }
             }
         }
     }
@@ -200,7 +198,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
     
-    let config_content = match std::fs::read_to_string(&config_file) {
+    let config_content = match std::fs::read_to_string(config_file) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("cache_validate_auto_clear 读取配置文件失败: {}，跳过自动清除", e);
@@ -240,7 +238,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         let mut updated_config = config.clone();
         updated_config["lastCacheClearDate"] = serde_json::json!(today);
         let temp_path = config_file.with_extension("json.tmp");
-        write_atomic(&temp_path, &config_file, &updated_config)?;
+        write_atomic(&temp_path, config_file, &updated_config)?;
         log::info!("首次设置自动清除缓存日期");
         return Ok(false);
     }
@@ -271,7 +269,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
                     }
                 }
             }
-            directory_delete_contents(&cache_dir);
+            directory_delete_contents(cache_dir);
         }
         
         // 清理 config_dir/doc_state 中超过 15 天未打开的文档状态
@@ -334,7 +332,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         }
         
         let temp_path = config_file.with_extension("json.tmp");
-        write_atomic(&temp_path, &config_file, &updated_config)?;
+        write_atomic(&temp_path, config_file, &updated_config)?;
         
         log::info!("自动清除缓存完成");
         return Ok(true);
@@ -405,7 +403,7 @@ fn theme_list_user(app: tauri::AppHandle) -> Result<Vec<ThemeInfo>, String> {
     }
 
     let mut themes = Vec::new();
-    let entries = std::fs::read_dir(&theme_dir)
+    let entries = std::fs::read_dir(theme_dir)
         .map_err(|e| format!("Failed to read theme dir: {}", e))?;
 
     for entry in entries {
@@ -512,7 +510,7 @@ fn theme_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let theme_base = &paths.themes_dir;
 
     // 规范化路径防止路径遍历
-    let theme_base_canonical = std::fs::canonicalize(&theme_base)
+    let theme_base_canonical = std::fs::canonicalize(theme_base)
         .map_err(|_| "Themes directory not found".to_string())?;
     let theme_dir = theme_base.join(&name);
     let theme_dir_canonical = std::fs::canonicalize(&theme_dir)
@@ -584,7 +582,7 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
     let theme_base = &paths.themes_dir;
 
     if !theme_base.exists() {
-        std::fs::create_dir_all(&theme_base)
+        std::fs::create_dir_all(theme_base)
             .map_err(|e| format!("Failed to create theme dir: {}", e))?;
     }
 
@@ -1036,7 +1034,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     // 3. 尝试获取当前版本的 Release 信息（GitHub，已知版本）
     let current_tag = format!("v{}", current_version);
     let current_release = match client
-        .get(&format!(
+        .get(format!(
             "https://api.github.com/repos/ospneam/ViewStage/releases/tags/{}",
             current_tag
         ))
@@ -1278,37 +1276,35 @@ fn config_validate_and_merge(
 fn config_sanitize_value(key: &str, value: &serde_json::Value) -> bool {
     match key {
         "dprLimit" | "dprMin" | "dprMax" => {
-            value.as_f64().is_some_and(|n| n >= 0.5 && n <= 16.0)
+            value.as_f64().is_some_and(|n| (0.5..=16.0).contains(&n))
         }
         "dprStep" => {
-            value.as_f64().is_some_and(|n| n >= 0.1 && n <= 4.0)
+            value.as_f64().is_some_and(|n| (0.1..=4.0).contains(&n))
         }
         "overlayDpr" => {
-            value.as_f64().is_some_and(|n| n >= 0.25 && n <= 8.0)
+            value.as_f64().is_some_and(|n| (0.25..=8.0).contains(&n))
         }
         "autoClearCacheDays" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 3650.0)
+            value.as_f64().is_some_and(|n| (0.0..=3650.0).contains(&n))
         }
         "penMinWidthRatio" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 1.0)
+            value.as_f64().is_some_and(|n| (0.0..=1.0).contains(&n))
         }
         "penWidth" | "eraserSize" => {
-            value.as_f64().is_some_and(|n| n >= 0.5 && n <= 500.0)
+            value.as_f64().is_some_and(|n| (0.5..=500.0).contains(&n))
         }
         "maxScaleImage" => {
-            value.as_f64().is_some_and(|n| n >= 1.0 && n <= 20.0)
+            value.as_f64().is_some_and(|n| (1.0..=20.0).contains(&n))
         }
         "gestureFrameDelta" => {
-            value.as_f64().is_some_and(|n| n >= 1.0 && n <= 500.0)
+            value.as_f64().is_some_and(|n| (1.0..=500.0).contains(&n))
         }
         "penTailDuration" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 2000.0)
+            value.as_f64().is_some_and(|n| (0.0..=2000.0).contains(&n))
         }
         _ => true,
     }
 }
-
-/// settings_fetch_all 命令的返回结构
 
 /// settings_fetch_all 命令的返回结构
 #[derive(Serialize)]
@@ -1341,11 +1337,11 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
         return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
     }
     
-    let config_content = match std::fs::read_to_string(&config_path) {
+    let config_content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("读取配置文件失败: {}，使用默认配置", e);
-            config_backup_corrupted(&config_path);
+            config_backup_corrupted(config_path);
             return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
         }
     };
@@ -1354,7 +1350,7 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
         Ok(v) => v,
         Err(e) => {
             log::warn!("解析配置文件失败: {}，使用默认配置", e);
-            config_backup_corrupted(&config_path);
+            config_backup_corrupted(config_path);
             return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
         }
     };
@@ -1365,7 +1361,7 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
     if merged_config != existing_config {
         let merged_str = serde_json::to_string_pretty(&merged_config)
             .map_err(|e| format!("序列化配置失败: {}", e))?;
-        std::fs::write(&config_path, merged_str)
+        std::fs::write(config_path, merged_str)
             .map_err(|e| format!("保存配置失败: {}", e))?;
     }
     
@@ -1415,7 +1411,7 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
     
     let default_config = config_fetch_default();
     
-    let existing_settings: serde_json::Value = match std::fs::read_to_string(&config_path) {
+    let existing_settings: serde_json::Value = match std::fs::read_to_string(config_path) {
         Ok(content) => {
             match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(mut existing) => {
@@ -1441,29 +1437,29 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
                 }
                 Err(e) => {
                     log::warn!("保存时解析配置文件失败: {}，使用默认配置", e);
-                    config_backup_corrupted(&config_path);
-                    return write_atomic(&temp_path, &config_path, &config_apply_settings_to_defaults(&default_config, &settings));
+                    config_backup_corrupted(config_path);
+                    return write_atomic(&temp_path, config_path, &config_apply_settings_to_defaults(&default_config, &settings));
                 }
             }
         }
         Err(e) => {
             if config_path.exists() {
                 log::warn!("保存时读取配置文件失败: {}，使用默认配置", e);
-                config_backup_corrupted(&config_path);
+                config_backup_corrupted(config_path);
             }
-            return write_atomic(&temp_path, &config_path, &config_apply_settings_to_defaults(&default_config, &settings));
+            return write_atomic(&temp_path, config_path, &config_apply_settings_to_defaults(&default_config, &settings));
         }
     };
     
-    write_atomic(&temp_path, &config_path, &existing_settings)
+    write_atomic(&temp_path, config_path, &existing_settings)
 }
 
 /// 原子写入 JSON 到文件（临时文件 + rename）
 fn write_atomic(temp_path: &std::path::Path, config_path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
     let config_str = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(&temp_path, &config_str).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp_path, &config_path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp_path);
+    std::fs::write(temp_path, &config_str).map_err(|e| e.to_string())?;
+    std::fs::rename(temp_path, config_path).map_err(|e| {
+        let _ = std::fs::remove_file(temp_path);
         format!("Failed to rename config file: {}", e)
     })?;
     Ok(())
@@ -1743,7 +1739,7 @@ async fn update_download_file(
     log::info!("使用 GitHub 镜像回退下载: {}", file_name);
     url_validate_github(&url)?;
 
-    let use_mirror = mirror_url.as_ref().map_or(false, |m| !m.is_empty());
+    let use_mirror = mirror_url.as_ref().is_some_and(|m| !m.is_empty());
     let fallback_urls: Vec<String> = if use_mirror {
         let mirror = mirror_url.as_ref().unwrap();
         let proxy_url = format!("{}/{}", mirror.trim_end_matches('/'), &url);
@@ -2067,7 +2063,7 @@ fn device_collect_info() -> DeviceInfo {
         cpu_arch,
         gpu_name,
         gpu_driver_version: gpu_driver,
-        gpu_driver_date: gpu_driver_date,
+        gpu_driver_date,
         gpu_dedicated_memory_mb: gpu_mem,
         total_ram_mb,
         system_type,
@@ -2389,7 +2385,7 @@ fn device_detect_disk() -> (u64, String) {
             "Unknown".to_string()
         };
 
-        return (disk_size / (1024 * 1024 * 1024), disk_type);
+        (disk_size / (1024 * 1024 * 1024), disk_type)
     }
 
     #[cfg(target_os = "linux")]
@@ -3065,7 +3061,7 @@ fn office_convert_wps(docx_path: &str, pdf_path: &str) -> Result<(), String> {
 async fn filetype_set_icons(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return filetype_set_icons_windows(app).await;
+        filetype_set_icons_windows(app).await
     }
     #[cfg(target_os = "linux")]
     {
@@ -3375,7 +3371,7 @@ pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
         }
 
         // 删除 ProgID 本身
-        match hkcu.delete_subkey_all(&format!("{}\\{}", classes_path, prog_id)) {
+        match hkcu.delete_subkey_all(format!("{}\\{}", classes_path, prog_id)) {
             Ok(_) => log::info!("卸载清理: 已删除 ProgID {}", prog_id),
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
             Err(e) => log::warn!("卸载清理: 删除 ProgID {} 失败: {}", prog_id, e),
@@ -3395,15 +3391,7 @@ pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
     Ok(())
 }
 
-/// 获取应用数据目录（%APPDATA%/SECTL/ViewStage）
-#[cfg(target_os = "windows")]
-fn dirs_data_dir() -> Option<std::path::PathBuf> {
-    std::env::var("APPDATA").ok().map(|a| {
-        let p = std::path::PathBuf::from(a).join("SECTL").join("ViewStage");
-        log::info!("应用数据目录: {}", p.display());
-        p
-    })
-}
+
 
 
 /// 应用入口函数
@@ -3498,6 +3486,11 @@ pub fn app_init_run() {
                 };
                 
                 let _ = oobe_window.set_focus();
+                
+                // 隐藏主窗口，确保 OOBE 界面独占显示
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
+                }
                 
                 if let Some(splashscreen) = app.get_webview_window("splashscreen") {
                     let _ = splashscreen.close();
