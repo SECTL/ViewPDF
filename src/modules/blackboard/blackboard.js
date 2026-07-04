@@ -621,6 +621,17 @@ class BlackboardManager {
                 e.preventDefault();
                 this.close();
             }
+
+            if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+                e.preventDefault();
+                this.handle_page_nav_prev();
+                return;
+            }
+            if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+                e.preventDefault();
+                this.handle_page_nav_next();
+                return;
+            }
         });
     }
 

@@ -2675,13 +2675,13 @@ class DocumentReaderManager {
             return;
         }
 
-        // PageUp → 上一页，PageDown → 下一页
-        if (e.key === 'PageUp') {
+        // PageUp / ArrowUp → 上一页，PageDown / ArrowDown → 下一页
+        if (e.key === 'PageUp' || e.key === 'ArrowUp') {
             e.preventDefault();
             this.handle_page_nav_prev();
             return;
         }
-        if (e.key === 'PageDown') {
+        if (e.key === 'PageDown' || e.key === 'ArrowDown') {
             e.preventDefault();
             this.handle_page_nav_next();
             return;
