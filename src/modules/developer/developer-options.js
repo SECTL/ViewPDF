@@ -12,6 +12,7 @@ async function developer_options_init() {
     let savedFrameDelta = 60;
     let savedTailDuration = 50;
     let savedEllipseStroke = false;
+    let savedPinchZoomV2 = false;
 
     if (invoke) {
         try {
@@ -32,6 +33,7 @@ async function developer_options_init() {
                 ?? s.penTailDuration
                 ?? 30;
             savedEllipseStroke = s.ellipseStrokeEnabled === true;
+            savedPinchZoomV2 = s.pinchZoomV2 === true;
         } catch (_) {
             savedWidthRatio = window.DRAW_CONFIG?.penMinWidthRatio ?? 0.4;
             savedMaxScale = window.DRAW_CONFIG?.maxScaleImage ?? 4;
@@ -41,7 +43,7 @@ async function developer_options_init() {
         savedMaxScale = window.DRAW_CONFIG?.maxScaleImage ?? 4;
     }
 
-    developer_options_show_main(savedWidthRatio, savedMaxScale, savedDevMode, savedFrameDelta, savedTailDuration, savedEllipseStroke);
+    developer_options_show_main(savedWidthRatio, savedMaxScale, savedDevMode, savedFrameDelta, savedTailDuration, savedEllipseStroke, savedPinchZoomV2);
 }
 
 function _tk(key) { return window.i18n?.format_translate(key) ?? key; }
@@ -63,7 +65,7 @@ function devClearSelectOpts(select) {
     }
 }
 
-function developer_options_show_main(currentWidthRatio, currentMaxScale, devModeEnabled, currentFrameDelta, currentTailDuration, ellipseStrokeEnabled) {
+function developer_options_show_main(currentWidthRatio, currentMaxScale, devModeEnabled, currentFrameDelta, currentTailDuration, ellipseStrokeEnabled, pinchZoomV2Enabled) {
     const page = document.getElementById('pageDevOptions');
     if (!page) return;
     const devModeOn = devModeEnabled !== false;
@@ -158,6 +160,16 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
             <div style="display:flex;align-items:center;gap:6px;">
                 <input type="number" id="devTailDurationInput" class="sp-dev-number-input" value="${currentTailDurationVal}" min="0" max="500" step="1">
                 <span style="font-size:12px;color:var(--color-muted, #888);">ms</span>
+            </div>
+        </div>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.pinchZoomV2')}<span class="experimental-badge">${_tk('developer.experimental')}</span></span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+                <label class="sp-toggle-switch">
+                    <input type="checkbox" id="devPinchZoomV2Toggle"${pinchZoomV2Enabled ? ' checked' : ''}>
+                    <span class="sp-toggle-slider"></span>
+                </label>
+                <span class="setting-hint" style="font-size:12px;color:var(--color-muted, #888);">${_tk('developer.pinchZoomV2Hint')}</span>
             </div>
         </div>
         <div class="sp-setting-item">
@@ -318,6 +330,18 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
             }
             if (invoke) {
                 invoke('settings_save_all', { settings: { ellipseStrokeEnabled: enabled } });
+            }
+        });
+    })();
+
+    // 捏合缩放算法 V2 开关
+    (function setup_pinch_zoom_v2_toggle() {
+        const toggle = document.getElementById('devPinchZoomV2Toggle');
+        if (!toggle) return;
+        toggle.addEventListener('change', () => {
+            const enabled = toggle.checked;
+            if (invoke) {
+                invoke('settings_save_all', { settings: { pinchZoomV2: enabled, developerMode: true } });
             }
         });
     })();

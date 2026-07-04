@@ -106,6 +106,15 @@ async function settings_load_config() {
             // 加载黑板启用状态
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
             
+            // 加载捏合缩放算法 V2 配置
+            if (settings.pinchZoomV2 === true) {
+                if (window.DRAW_CONFIG) {
+                    window.DRAW_CONFIG.pinchZoomV2 = true;
+                } else {
+                    window.DRAW_CONFIG = { pinchZoomV2: true };
+                }
+            }
+            
             console.log('[init] 配置加载完成');
         } catch (error) {
             console.error('加载配置失败:', error);
