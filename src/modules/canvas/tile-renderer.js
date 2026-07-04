@@ -237,7 +237,7 @@ class TileRenderer {
         canvas.style.left = rect.x + 'px';
         canvas.style.top = rect.y + 'px';
 
-        const ctx = canvas.getContext('2d', { alpha: true });
+        const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
