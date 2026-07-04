@@ -30,7 +30,7 @@ Frontend lives in `src/` and is served directly (no bundler). No `package.json`.
 
 - **Entrypoint**: `src/index.html` loads `JS/pdf.min.js`, `JS/pdf.worker.min.js`, `i18n.js`, then module scripts `themes/theme.js`, `main.js`, `init.js`.
 - **No bundler** — ES modules loaded directly; use `type="module"` for imports.
-- Init flow: `init.js` DOMContentLoaded → init i18n → initDOM → initCanvas → bindAllEvents → load settings → openCamera → close splashscreen.
+- Init flow: `init.js` DOMContentLoaded → init i18n → initDOM → initCanvas → bindAllEvents → load settings → openCamera.
 - Architecture: image layer (`<img>`) + annotation layer (`<canvas>`) in a `canvas-wrapper`.
 - `tauri.conf.json` enables `"withGlobalTauri": true` — access via `window.__TAURI__`.
 - State management: global `state` object + global `dom` cache on `window`.
@@ -40,7 +40,6 @@ Frontend lives in `src/` and is served directly (no bundler). No `package.json`.
 ## Windows
 
 - `oobe.html` — first-run setup window (500×520, no decorations).
-- `splashscreen.html` — loading screen shown before main window.
 - `settings.html` — settings popup (600×600).
 - `doc-scan/index.html` — document scanning sub-app (fullscreen, undecorated).
 

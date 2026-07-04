@@ -52,14 +52,6 @@ async function dir_init_cache_path() {
     }
 }
 
-// 发射启动进度事件
-function app_emit_splash_progress(step, message) {
-    if (window.__TAURI__) {
-        const { emit } = window.__TAURI__.event;
-        emit('splash-progress', { step, message }).catch(e => console.warn('发射启动进度失败:', e));
-    }
-}
-
 // 缓存 DOM 元素引用
 function dom_init_all() {
     const dom = window.dom;
@@ -552,31 +544,23 @@ window.blackboard_ensure_loaded = (async (container) => {
 async function main_init_all() {
     console.log('[init] main_init_all start');
     try {
-        app_emit_splash_progress(0, '正在初始化...');
-        
         if (window.i18n) {
-            app_emit_splash_progress(0, '正在初始化多语言...');
             await window.i18n.init_start();
         }
         
         if (window.__TAURI__) {
-            app_emit_splash_progress(0, '正在检查运行环境...');
             const isOobeActive = await window.__TAURI__.core.invoke('oobe_check_active');
             if (isOobeActive) {
                 return;
             }
         }
         
-        app_emit_splash_progress(0, '正在构建界面...');
         if (!dom_init_all()) {
             throw new Error('DOM 初始化失败');
         }
         
-        app_emit_splash_progress(1, '正在加载设置...');
         await dir_init_cache_path();
         await settings_load_config();
-        
-        app_emit_splash_progress(2, '正在加载组件...');
 
         // 初始化文档阅读器
         if (window.documentReaderManager) {
@@ -585,8 +569,6 @@ async function main_init_all() {
 
         // 绑定事件
         main_setup_events();
-
-        app_emit_splash_progress(3, '正在完成...');
 
         // 初始化标签管理器和UI状态
         if (window.main_update_tabs) {

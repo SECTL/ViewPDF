@@ -2023,19 +2023,6 @@ async fn update_install_release(app: tauri::AppHandle, file_path: String) -> Res
     Ok(())
 }
 
-/// Tauri IPC 命令：隐藏启动画面，显示并聚焦主窗口
-#[tauri::command]
-async fn window_hide_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(splashscreen) = app.get_webview_window("splashscreen") {
-        let _ = splashscreen.close();
-    }
-    if let Some(main_window) = app.get_webview_window("main") {
-        let _ = main_window.show();
-        let _ = main_window.set_focus();
-    }
-    Ok(())
-}
-
 /// Tauri IPC 命令：完成 OOBE 引导后重启应用
 #[tauri::command]
 async fn oobe_submit_complete(app: tauri::AppHandle) -> Result<(), String> {
@@ -3639,7 +3626,6 @@ pub fn app_init_run() {
             app_restart_process,
             filetype_validate_pdf_default,
             filetype_validate_word_default,
-            window_hide_splashscreen,
             oobe_submit_complete,
             oobe_check_active,
             main_signal_loaded,
