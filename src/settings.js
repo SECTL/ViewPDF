@@ -1,5 +1,5 @@
 /**
- * ViewStage 设置窗口脚本
+ * ViewPDF 设置窗口脚本
  * 
  * 功能模块：
  * - 应用设置：语言、主题、启动选项
@@ -10,8 +10,8 @@
 
 import { checkForUpdate, startDownload, installDownload, onProgress, offProgress } from './modules/update/update.js';
 
-document.addEventListener('DOMContentLoaded', async () => {
-    await i18n.init_start();
+async function initSettings() {
+    await window.i18n?.init_start?.();
 
     // ==================== 自定义弹窗函数 ====================
     function settings_show_dialog(title, message, type = 'info') {
@@ -20,16 +20,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const dialog = document.createElement('div');
         dialog.id = 'settingsDialog';
-        dialog.className = 'settings-dialog-overlay';
+        dialog.className = 'sp-settings-dialog-overlay';
         
         const icon = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
         
         dialog.innerHTML = `
-            <div class="settings-dialog">
-                <div class="settings-dialog-icon">${icon}</div>
-                <div class="settings-dialog-title">${title}</div>
-                <div class="settings-dialog-message">${message}</div>
-                <button class="settings-dialog-btn" id="settingsDialogClose">${window.i18n?.format_translate('common.confirm') || '确定'}</button>
+            <div class="sp-settings-dialog">
+                <div class="sp-settings-dialog-icon">${icon}</div>
+                <div class="sp-settings-dialog-title">${title}</div>
+                <div class="sp-settings-dialog-message">${message}</div>
+                <button class="sp-settings-dialog-btn" id="settingsDialogClose">${window.i18n?.format_translate('common.confirm') || '确定'}</button>
             </div>
         `;
         document.body.appendChild(dialog);
@@ -49,26 +49,26 @@ document.addEventListener('DOMContentLoaded', async () => {
      */
     function settings_show_confirm(title, message) {
         return new Promise((resolve) => {
-            const existing = document.querySelector('.modal-overlay.confirm-dialog');
+            const existing = document.querySelector('.sp-modal-overlay.sp-confirm-dialog');
             if (existing) existing.remove();
             
             const overlay = document.createElement('div');
-            overlay.className = 'modal-overlay confirm-dialog';
+            overlay.className = 'sp-modal-overlay sp-confirm-dialog';
             overlay.innerHTML = `
-                <div class="modal-dialog">
-                    <div class="modal-title">${title}</div>
-                    <div class="modal-message">${message}</div>
-                    <div class="modal-buttons">
-                        <button class="modal-btn modal-btn-cancel" id="confirmCancel">${window.i18n?.format_translate('common.cancel') || '取消'}</button>
-                        <button class="modal-btn modal-btn-confirm" id="confirmOk">${window.i18n?.format_translate('common.confirm') || '确认'}</button>
+                <div class="sp-modal-dialog">
+                    <div class="sp-modal-title">${title}</div>
+                    <div class="sp-modal-message">${message}</div>
+                    <div class="sp-modal-buttons">
+                        <button class="sp-modal-btn sp-modal-btn-cancel" id="confirmCancel">${window.i18n?.format_translate('common.cancel') || '取消'}</button>
+                        <button class="sp-modal-btn sp-modal-btn-confirm" id="confirmOk">${window.i18n?.format_translate('common.confirm') || '确认'}</button>
                     </div>
                 </div>
             `;
             document.body.appendChild(overlay);
-            requestAnimationFrame(() => overlay.classList.add('active'));
+            requestAnimationFrame(() => overlay.classList.add('sp-active'));
             
             const cleanup = (result) => {
-                overlay.classList.remove('active');
+                overlay.classList.remove('sp-active');
                 setTimeout(() => overlay.remove(), 300);
                 resolve(result);
             };
@@ -82,7 +82,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     // ==================== DOM 元素引用 ====================
-    const btnClose = document.getElementById('btnClose');
     const auroraBg = document.getElementById('auroraBg');
     
     // ==================== 版本信息加载 ====================
@@ -126,15 +125,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ? result.settings : {};
                 
                 const selectSelected = document.getElementById('selectSelected');
-                const languageOptions = document.querySelectorAll('#selectOptions .select-option');
+                const languageOptions = document.querySelectorAll('#selectOptions .sp-select-option');
                 
                 if (settings.language && selectSelected) {
                     languageOptions.forEach(option => {
                         if (option.dataset.value === settings.language) {
                             selectSelected.textContent = option.textContent;
-                            option.classList.add('selected');
+                            option.classList.add('sp-selected');
                         } else {
-                            option.classList.remove('selected');
+                            option.classList.remove('sp-selected');
                         }
                     });
                 }
@@ -144,13 +143,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 if (dprLimitSelected && dprLimitOptionsContainer) {
                     const savedDprLimit = settings.dprLimit !== undefined ? settings.dprLimit : 2;
-                    const dprLimitOptions = dprLimitOptionsContainer.querySelectorAll('.select-option');
+                    const dprLimitOptions = dprLimitOptionsContainer.querySelectorAll('.sp-select-option');
                     dprLimitOptions.forEach(option => {
                         if (parseFloat(option.dataset.value) === savedDprLimit) {
                             dprLimitSelected.textContent = option.textContent;
-                            option.classList.add('selected');
+                            option.classList.add('sp-selected');
                         } else {
-                            option.classList.remove('selected');
+                            option.classList.remove('sp-selected');
                         }
                     });
                 }
@@ -159,13 +158,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const overlayDprOptionsContainer = document.getElementById('overlayDprOptions');
                 if (overlayDprSelected && overlayDprOptionsContainer) {
                     const savedOverlayDpr = settings.overlayDpr !== undefined ? settings.overlayDpr : 0;
-                    const overlayDprOptions = overlayDprOptionsContainer.querySelectorAll('.select-option');
+                    const overlayDprOptions = overlayDprOptionsContainer.querySelectorAll('.sp-select-option');
                     overlayDprOptions.forEach(option => {
                         if (parseFloat(option.dataset.value) === savedOverlayDpr) {
                             overlayDprSelected.textContent = option.textContent;
-                            option.classList.add('selected');
+                            option.classList.add('sp-selected');
                         } else {
-                            option.classList.remove('selected');
+                            option.classList.remove('sp-selected');
                         }
                     });
                 }
@@ -176,15 +175,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     dprToggle.checked = dynamicDprEnabled;
                 }
 
-                const eraserSpeedEnabled = settings.eraserSpeedEnabled !== undefined ? settings.eraserSpeedEnabled : false;
-                const eraserSpeedToggle = document.getElementById('eraserSpeedToggle');
-                if (eraserSpeedToggle) {
-                    eraserSpeedToggle.checked = eraserSpeedEnabled;
-                }
-                const eraserPresetsItem = document.getElementById('eraserPresetsItem');
-                if (eraserPresetsItem) {
-                    eraserPresetsItem.style.display = eraserSpeedEnabled ? 'none' : '';
-                }
                 const palmEraserEnabled = settings.palmEraserEnabled !== undefined ? settings.palmEraserEnabled : (window.DRAW_CONFIG?.palmEraserEnabled ?? false);
                 const palmEraserToggle = document.getElementById('palmEraserToggle');
                 if (palmEraserToggle) {
@@ -207,12 +197,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const selOptions = document.getElementById(id.replace('Select', 'Options'));
                     if (selSelected && selOptions) {
                         const saved = settings[key] !== undefined ? parseFloat(settings[key]) : defaultVal;
-                        selOptions.querySelectorAll('.select-option').forEach(opt => {
+                        selOptions.querySelectorAll('.sp-select-option').forEach(opt => {
                             if (parseFloat(opt.dataset.value) === saved) {
                                 selSelected.textContent = opt.textContent;
-                                opt.classList.add('selected');
+                                opt.classList.add('sp-selected');
                             } else {
-                                opt.classList.remove('selected');
+                                opt.classList.remove('sp-selected');
                             }
         });
     }
@@ -247,7 +237,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 
                 for (let i = 1; i <= 15; i++) {
-                    const colorBtn = document.querySelector(`.color-edit-item[data-index="${i - 1}"] .color-edit-btn`);
+                    const colorBtn = document.querySelector(`.sp-color-edit-item[data-index="${i - 1}"] .sp-color-edit-btn`);
                     if (colorBtn) {
                         const color = savedColors[i - 1] || DEFAULT_COLORS[i - 1];
                         const hexColor = settings_calc_color_to_hex(color);
@@ -278,11 +268,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const saved = group === 'pen'
                         ? (settings.penWidth !== undefined ? settings.penWidth : 5)
                         : (settings.eraserSize !== undefined ? settings.eraserSize : 15);
-                    document.querySelectorAll(`.preset-default-dot[data-default="${group}"]`).forEach(dot => {
+                    document.querySelectorAll(`.sp-preset-default-dot[data-default="${group}"]`).forEach(dot => {
                         const idx = parseInt(dot.dataset.index);
                         const input = document.getElementById((group === 'pen' ? 'penPreset' : 'eraserPreset') + idx);
                         const val = input ? parseInt(input.value) : 0;
-                        dot.classList.toggle('active', val === saved);
+                        dot.classList.toggle('sp-active', val === saved);
                     });
                 }
                 settings_update_default_dots('pen');
@@ -297,9 +287,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (frameRateModeGroup) {
                     const mode = settings.frameRateMode || 'adaptive';
                     frameRateModeGroup.dataset.active = mode;
-                    const buttons = frameRateModeGroup.querySelectorAll('.option-btn');
+                    const buttons = frameRateModeGroup.querySelectorAll('.sp-option-btn');
                     buttons.forEach(btn => {
-                        btn.classList.toggle('active', btn.dataset.value === mode);
+                        btn.classList.toggle('sp-active', btn.dataset.value === mode);
                     });
                     if (window.batchDrawManager) {
                         window.batchDrawManager.batch_draw_update_frame_rate(mode);
@@ -310,9 +300,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (penEffectModeGroup) {
                     const mode = settings.penEffectMode || 'limited';
                     penEffectModeGroup.dataset.active = mode;
-                    const buttons = penEffectModeGroup.querySelectorAll('.option-btn');
+                    const buttons = penEffectModeGroup.querySelectorAll('.sp-option-btn');
                     buttons.forEach(btn => {
-                        btn.classList.toggle('active', btn.dataset.value === mode);
+                        btn.classList.toggle('sp-active', btn.dataset.value === mode);
                     });
                     if (window.DRAW_CONFIG) {
                         window.DRAW_CONFIG.penEffectMode = mode;
@@ -326,9 +316,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (docReaderZoomGroup) {
                     const zoom = settings.docReaderDefaultZoom || 'fitWidth';
                     docReaderZoomGroup.dataset.active = zoom;
-                    const buttons = docReaderZoomGroup.querySelectorAll('.option-btn');
+                    const buttons = docReaderZoomGroup.querySelectorAll('.sp-option-btn');
                     buttons.forEach(btn => {
-                        btn.classList.toggle('active', btn.dataset.value === zoom);
+                        btn.classList.toggle('sp-active', btn.dataset.value === zoom);
                     });
                 }
 
@@ -343,13 +333,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const defaultRotationOptionsContainer = document.getElementById('defaultRotationOptions');
                 if (defaultRotationSelected && defaultRotationOptionsContainer) {
                     const savedRotation = settings.defaultRotation || 0;
-                    const rotationOptions = defaultRotationOptionsContainer.querySelectorAll('.select-option');
+                    const rotationOptions = defaultRotationOptionsContainer.querySelectorAll('.sp-select-option');
                     rotationOptions.forEach(option => {
                         if (parseInt(option.dataset.value) === savedRotation) {
                             defaultRotationSelected.textContent = option.textContent;
-                            option.classList.add('selected');
+                            option.classList.add('sp-selected');
                         } else {
-                            option.classList.remove('selected');
+                            option.classList.remove('sp-selected');
                         }
                     });
                 }
@@ -358,10 +348,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const autoClearCacheSelected = document.getElementById('autoClearCacheSelected');
                 const autoClearCacheOptions = document.getElementById('autoClearCacheOptions');
                 if (autoClearCacheSelected && autoClearCacheOptions) {
-                    const options = autoClearCacheOptions.querySelectorAll('.select-option');
+                    const options = autoClearCacheOptions.querySelectorAll('.sp-select-option');
                     options.forEach(opt => {
                         if (parseInt(opt.dataset.value) === autoClearCacheDays) {
                             autoClearCacheSelected.textContent = opt.textContent;
+                        }
+                    });
+                }
+                
+                const wordCacheClearDays = settings.wordCacheClearDays ?? 30;
+                const autoClearWordCacheSelected = document.getElementById('autoClearWordCacheSelected');
+                const autoClearWordCacheOptions = document.getElementById('autoClearWordCacheOptions');
+                if (autoClearWordCacheSelected && autoClearWordCacheOptions) {
+                    const options = autoClearWordCacheOptions.querySelectorAll('.sp-select-option');
+                    options.forEach(opt => {
+                        if (parseInt(opt.dataset.value) === wordCacheClearDays) {
+                            autoClearWordCacheSelected.textContent = opt.textContent;
                         }
                     });
                 }
@@ -378,13 +380,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     telemetryToggle.checked = telemetryEnabled;
                 }
 
-                const blurEnabled = settings.blurEnabled === true;
-                const blurToggle = document.getElementById('blurToggle');
-                if (blurToggle) {
-                    blurToggle.checked = blurEnabled;
-                }
-                document.body.classList.toggle('blur-enabled', blurEnabled);
-
                 // 文档关联状态检测（功能检测）
                 async function checkAssociation(ext, statusElId) {
                     const statusEl = document.getElementById(statusElId);
@@ -394,13 +389,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const cmd = ext === 'pdf' ? 'filetype_validate_pdf_default' : 'filetype_validate_word_default';
                         const ok = await invoke(cmd);
                         statusEl.textContent = ok ? '✓' : '✗';
-                        statusEl.className = 'association-status ' + (ok ? 'associated' : 'not-associated');
+                        statusEl.className = 'sp-association-status ' + (ok ? 'sp-associated' : 'sp-not-associated');
                         statusEl.title = ok
                             ? (window.i18n?.format_translate('settings.defaultSet') || '已设为默认')
                             : (window.i18n?.format_translate('settings.defaultNotSet') || '未关联');
                     } catch (_) {
                         statusEl.textContent = '✗';
-                        statusEl.className = 'association-status not-associated';
+                        statusEl.className = 'sp-association-status sp-not-associated';
                     }
                 }
                 checkAssociation('pdf', 'pdfDefaultStatus');
@@ -472,7 +467,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         themes.forEach(({ name, display_name, canvas_bg, text_color }) => {
             const card = document.createElement('div');
-            card.className = 'theme-card' + (name === selectedName ? ' selected' : '');
+            card.className = 'sp-theme-card' + (name === selectedName ? ' sp-selected' : '');
             card.dataset.value = name;
 
             const isLight = canvas_bg === '#ffffff' || canvas_bg === '#fff';
@@ -484,25 +479,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : '';
 
             const fallbackHtml = !previewImg ? `
-                <div class="theme-card-preview-bar" style="background: ${text_color}"></div>
-                <span class="theme-card-preview-text" style="color: ${text_color}">Aa</span>
-                <div class="theme-card-preview-dot" style="background: ${dotColor}"></div>
+                <div class="sp-theme-card-preview-bar" style="background: ${text_color}"></div>
+                <span class="sp-theme-card-preview-text" style="color: ${text_color}">Aa</span>
+                <div class="sp-theme-card-preview-dot" style="background: ${dotColor}"></div>
             ` : '';
 
             card.innerHTML = `
-                <div class="theme-card-preview" style="background: ${canvas_bg}">
+                <div class="sp-theme-card-preview" style="background: ${canvas_bg}">
                     ${previewImg}
                     ${fallbackHtml}
                 </div>
-                <div class="theme-card-info">
-                    <div class="theme-card-info-main">
-                        <span class="theme-card-name">${display_name}</span>
-                        <span class="theme-card-check">✓</span>
+                <div class="sp-theme-card-info">
+                    <div class="sp-theme-card-info-main">
+                        <span class="sp-theme-card-name">${display_name}</span>
+                        <span class="sp-theme-card-check">✓</span>
                     </div>
                 </div>
-                <div class="theme-card-actions">
-                    <button class="theme-card-btn theme-card-btn-apply" data-action="apply">${window.i18n?.format_translate('settings.apply') || '应用'}</button>
-                    ${isBuiltin ? '' : `<button class="theme-card-btn theme-card-btn-delete" data-action="delete">${window.i18n?.format_translate('settings.delete') || '删除'}</button>`}
+                <div class="sp-theme-card-actions">
+                    <button class="sp-theme-card-btn sp-theme-card-btn-apply" data-action="apply">${window.i18n?.format_translate('settings.apply') || '应用'}</button>
+                    ${isBuiltin ? '' : `<button class="sp-theme-card-btn sp-theme-card-btn-delete" data-action="delete">${window.i18n?.format_translate('settings.delete') || '删除'}</button>`}
                 </div>
             `;
 
@@ -519,10 +514,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             userThemes.forEach(({ card, name }) => {
                 invoke('theme_get_preview', { name }).then(b64 => {
                     if (!b64) return;
-                    const preview = card.querySelector('.theme-card-preview');
+                    const preview = card.querySelector('.sp-theme-card-preview');
                     if (!preview) return;
                     preview.style.background = '';
-                    preview.innerHTML = `<img class="theme-card-preview-img" src="${b64}" alt="" loading="lazy">`;
+                    preview.innerHTML = `<img class="sp-theme-card-preview-img" src="${b64}" alt="" loading="lazy">`;
                 }).catch(e => console.warn('加载主题预览失败:', e));
             });
         }
@@ -539,15 +534,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 统一接管所有自定义下拉框的展开/关闭（stopPropagation 防止事件冲突）
     function settings_init_all_selects() {
         function closeOneSelect(s) {
-            s.classList.remove('open');
-            const opts = document.querySelector('body > .select-options[data-owner="' + s.dataset.selectId + '"]');
+        s.classList.remove('sp-open');
+        const opts = document.querySelector('body > .sp-select-options[data-owner="' + s.dataset.selectId + '"]');
             if (opts) {
                 opts.style.opacity = '0';
                 opts.style.visibility = 'hidden';
                 setTimeout(() => {
-                    if (!s.classList.contains('open')) {
+                    if (!s.classList.contains('sp-open')) {
                         s.appendChild(opts);
-                        opts.classList.remove('up');
+                        opts.classList.remove('sp-up');
                         opts.style.position = '';
                         opts.style.left = '';
                         opts.style.top = '';
@@ -559,24 +554,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         function closeAllSelects() {
-            document.querySelectorAll('.custom-select.open').forEach(s => closeOneSelect(s));
+            document.querySelectorAll('.sp-custom-select.sp-open').forEach(s => closeOneSelect(s));
         }
         document.addEventListener('click', closeAllSelects);
         let selectId = 0;
-        document.querySelectorAll('.custom-select').forEach(select => {
-            const selected = select.querySelector('.select-selected');
+        document.querySelectorAll('.sp-custom-select').forEach(select => {
+            const selected = select.querySelector('.sp-select-selected');
             if (!selected || select.dataset.selectInitialized) return;
             select.dataset.selectInitialized = 'true';
             const id = 'sel_' + (selectId++);
             select.dataset.selectId = id;
-            const opts = select.querySelector('.select-options');
+            const opts = select.querySelector('.sp-select-options');
             if (opts) opts.dataset.owner = id;
             selected.addEventListener('click', (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('.custom-select.open').forEach(s => {
+                document.querySelectorAll('.sp-custom-select.sp-open').forEach(s => {
                     if (s !== select) closeOneSelect(s);
                 });
-                const isOpen = select.classList.toggle('open');
+                const isOpen = select.classList.toggle('sp-open');
                 if (opts) {
                     if (isOpen) {
                         const rect = selected.getBoundingClientRect();
@@ -590,7 +585,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const spaceAbove = rect.top;
                         const needed = opts.scrollHeight || 180;
                         const showUp = spaceBelow < needed && spaceAbove > spaceBelow;
-                        opts.classList.toggle('up', showUp);
+                        opts.classList.toggle('sp-up', showUp);
                         opts.style.position = 'fixed';
                         opts.style.left = rect.left + 'px';
                         if (showUp) {
@@ -608,7 +603,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (opts.parentNode !== select) {
                             select.appendChild(opts);
                         }
-                        opts.classList.remove('up');
+                        opts.classList.remove('sp-up');
                         opts.style.position = '';
                         opts.style.left = '';
                         opts.style.top = '';
@@ -627,13 +622,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 辅助函数：关闭下拉框并归位 portal 元素
     function closeSelect(selectEl) {
-        selectEl.classList.remove('open');
-        const opts = selectEl.querySelector('.select-options') || document.querySelector('body > .select-options[data-owner="' + selectEl.dataset.selectId + '"]');
+        selectEl.classList.remove('sp-open');
+        const opts = selectEl.querySelector('.sp-select-options') || document.querySelector('body > .sp-select-options[data-owner="' + selectEl.dataset.selectId + '"]');
         if (opts && opts.parentNode !== selectEl) {
             selectEl.appendChild(opts);
         }
         if (opts) {
-            opts.classList.remove('up');
+            opts.classList.remove('sp-up');
             opts.style.position = '';
             opts.style.left = '';
             opts.style.top = '';
@@ -648,14 +643,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 语言选择
     const languageSelect = document.getElementById('languageSelect');
     const selectSelected = document.getElementById('selectSelected');
-    const languageOptions = document.querySelectorAll('#selectOptions .select-option');
+    const languageOptions = document.querySelectorAll('#selectOptions .sp-select-option');
     if (languageSelect && selectSelected) {
         languageOptions.forEach(option => {
             option.addEventListener('click', async () => {
                 const value = option.dataset.value;
                 selectSelected.textContent = option.textContent;
-                languageOptions.forEach(opt => opt.classList.remove('selected'));
-                option.classList.add('selected');
+                languageOptions.forEach(opt => opt.classList.remove('sp-selected'));
+                option.classList.add('sp-selected');
                 closeSelect(languageSelect);
                 const saved = await settings_save_all_local({ language: value });
                 if (saved) {
@@ -664,7 +659,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         window.i18n.render_page_texts();
                     }
                     const restartModal = document.getElementById('restartModal');
-                    if (restartModal) restartModal.classList.add('active');
+                    if (restartModal) restartModal.classList.add('sp-active');
                 } else {
                     settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', window.i18n?.format_translate('settings.saveFailedRetry') || '保存设置失败，请重试', 'error');
                 }
@@ -679,19 +674,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dprLimitOptions = document.getElementById('dprLimitOptions');
     if (dprLimitSelect && dprLimitSelected && dprLimitOptions) {
         dprLimitOptions.addEventListener('click', async (e) => {
-            const option = e.target.closest('.select-option');
+            const option = e.target.closest('.sp-select-option');
             if (!option) return;
             const value = parseFloat(option.dataset.value);
             dprLimitSelected.textContent = option.textContent;
-            dprLimitOptions.querySelectorAll('.select-option').forEach(opt => opt.classList.remove('selected'));
-            option.classList.add('selected');
+            dprLimitOptions.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
+            option.classList.add('sp-selected');
             closeSelect(dprLimitSelect);
             const saved = await settings_save_all_local({ dprLimit: value });
             if (saved) {
                 const restartModal = document.getElementById('restartModal');
-                const modalMessage = restartModal?.querySelector('.modal-message');
+                const modalMessage = restartModal?.querySelector('.sp-modal-message');
                 if (modalMessage) modalMessage.textContent = window.i18n?.format_translate('settings.dprChanged') || '画面精度已更改，建议重启应用以确保完全生效。';
-                if (restartModal) restartModal.classList.add('active');
+                if (restartModal) restartModal.classList.add('sp-active');
             } else {
                 settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', window.i18n?.format_translate('settings.saveFailedRetry') || '保存设置失败，请重试', 'error');
             }
@@ -705,12 +700,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selOptions = document.getElementById(id.replace('Select', 'Options'));
         if (!sel || !selSelected || !selOptions) return;
         selOptions.addEventListener('click', async (e) => {
-            const option = e.target.closest('.select-option');
+            const option = e.target.closest('.sp-select-option');
             if (!option) return;
             const value = parseFloat(option.dataset.value);
             selSelected.textContent = option.textContent;
-            selOptions.querySelectorAll('.select-option').forEach(opt => opt.classList.remove('selected'));
-            option.classList.add('selected');
+            selOptions.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
+            option.classList.add('sp-selected');
             closeSelect(sel);
             await settings_save_all_local({ [settingsKey]: value });
         });
@@ -723,12 +718,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const overlayDprOpts = document.getElementById('overlayDprOptions');
     if (overlayDprSel && overlayDprSelectedEl && overlayDprOpts) {
         overlayDprOpts.addEventListener('click', async (e) => {
-            const option = e.target.closest('.select-option');
+            const option = e.target.closest('.sp-select-option');
             if (!option) return;
             const value = parseFloat(option.dataset.value);
             overlayDprSelectedEl.textContent = option.textContent;
-            overlayDprOpts.querySelectorAll('.select-option').forEach(opt => opt.classList.remove('selected'));
-            option.classList.add('selected');
+            overlayDprOpts.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
+            option.classList.add('sp-selected');
             closeSelect(overlayDprSel);
             if (window.DRAW_CONFIG) {
                 window.DRAW_CONFIG.overlayDpr = value;
@@ -750,29 +745,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    const eraserSpeedToggle = document.getElementById('eraserSpeedToggle');
-    if (eraserSpeedToggle) {
-        eraserSpeedToggle.addEventListener('change', async () => {
-            await settings_save_all_local({ eraserSpeedEnabled: eraserSpeedToggle.checked });
-            const restartModal = document.getElementById('restartModal');
-            const modalMessage = restartModal?.querySelector('.modal-message');
-            if (modalMessage) {
-                modalMessage.textContent = window.i18n?.format_translate('settings.languageChanged') || '需要重启应用才能生效。';
-            }
-            if (restartModal) restartModal.classList.add('active');
-        });
-    }
-
     const palmEraserToggle = document.getElementById('palmEraserToggle');
     if (palmEraserToggle) {
         palmEraserToggle.addEventListener('change', async () => {
             await settings_save_all_local({ palmEraserEnabled: palmEraserToggle.checked });
             const restartModal = document.getElementById('restartModal');
-            const modalMessage = restartModal?.querySelector('.modal-message');
+            const modalMessage = restartModal?.querySelector('.sp-modal-message');
             if (modalMessage) {
                 modalMessage.textContent = window.i18n?.format_translate('settings.languageChanged') || '需要重启应用才能生效。';
             }
-            if (restartModal) restartModal.classList.add('active');
+            if (restartModal) restartModal.classList.add('sp-active');
         });
     }
     
@@ -806,7 +788,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         colorPickerPresets.innerHTML = '';
         PRESET_COLORS.forEach(color => {
             const preset = document.createElement('div');
-            preset.className = 'color-picker-preset';
+            preset.className = 'sp-color-picker-preset';
             preset.style.backgroundColor = color;
             preset.addEventListener('click', () => {
                 const rgb = settings_calc_hex_to_rgb(color);
@@ -925,12 +907,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         settings_init_color_picker_presets();
         
         if (colorPickerPopup) {
-            colorPickerPopup.classList.add('active');
+            colorPickerPopup.classList.add('sp-active');
         }
         
         if (!color_picker_overlay) {
             color_picker_overlay = document.createElement('div');
-            color_picker_overlay.className = 'color-picker-overlay';
+            color_picker_overlay.className = 'sp-color-picker-overlay';
             color_picker_overlay.addEventListener('click', settings_hide_color_picker);
             document.body.appendChild(color_picker_overlay);
         }
@@ -939,7 +921,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     function settings_hide_color_picker() {
         if (colorPickerPopup) {
-            colorPickerPopup.classList.remove('active');
+            colorPickerPopup.classList.remove('sp-active');
         }
         if (color_picker_overlay) {
             color_picker_overlay.style.display = 'none';
@@ -1006,7 +988,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (colorPickerConfirm) {
         colorPickerConfirm.addEventListener('click', async () => {
             const hex = settings_calc_current_hex_color();
-            const colorBtn = document.querySelector(`.color-edit-item[data-index="${current_color_index}"] .color-edit-btn`);
+            const colorBtn = document.querySelector(`.sp-color-edit-item[data-index="${current_color_index}"] .sp-color-edit-btn`);
             if (colorBtn) {
                 colorBtn.style.backgroundColor = hex;
                 colorBtn.dataset.color = hex;
@@ -1014,7 +996,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             const colors = [];
             for (let i = 0; i < 15; i++) {
-                const btn = document.querySelector(`.color-edit-item[data-index="${i}"] .color-edit-btn`);
+                const btn = document.querySelector(`.sp-color-edit-item[data-index="${i}"] .sp-color-edit-btn`);
                 const hexColor = btn ? btn.dataset.color : '#000000';
                 const rgb = settings_calc_hex_to_rgb(hexColor);
                 colors.push(rgb || { r: 0, g: 0, b: 0 });
@@ -1040,7 +1022,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     
     // 默认粗细选择点
-    document.querySelectorAll('.preset-default-dot').forEach(dot => {
+    document.querySelectorAll('.sp-preset-default-dot').forEach(dot => {
         dot.addEventListener('click', async () => {
             const group = dot.dataset.default;
             const idx = parseInt(dot.dataset.index);
@@ -1049,8 +1031,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const val = parseInt(input.value);
             if (isNaN(val)) return;
             const key = group === 'pen' ? 'penWidth' : 'eraserSize';
-            document.querySelectorAll(`.preset-default-dot[data-default="${group}"]`).forEach(d => d.classList.remove('active'));
-            dot.classList.add('active');
+            document.querySelectorAll(`.sp-preset-default-dot[data-default="${group}"]`).forEach(d => d.classList.remove('sp-active'));
+            dot.classList.add('sp-active');
             await settings_save_all_local({ [key]: val });
         });
     });
@@ -1149,12 +1131,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 帧率模式选择
     const frameRateModeGroup = document.getElementById('frameRateModeGroup');
     if (frameRateModeGroup) {
-        const buttons = frameRateModeGroup.querySelectorAll('.option-btn');
+        const buttons = frameRateModeGroup.querySelectorAll('.sp-option-btn');
         buttons.forEach(btn => {
             btn.addEventListener('click', async () => {
                 const mode = btn.dataset.value;
                 frameRateModeGroup.dataset.active = mode;
-                buttons.forEach(b => b.classList.toggle('active', b === btn));
+                buttons.forEach(b => b.classList.toggle('sp-active', b === btn));
                 await settings_save_all_local({ frameRateMode: mode });
                 if (window.batchDrawManager) {
                     window.batchDrawManager.batch_draw_update_frame_rate(mode);
@@ -1166,12 +1148,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 钢笔效果模式选择
     const penEffectModeGroup = document.getElementById('penEffectModeGroup');
     if (penEffectModeGroup) {
-        const buttons = penEffectModeGroup.querySelectorAll('.option-btn');
+        const buttons = penEffectModeGroup.querySelectorAll('.sp-option-btn');
         buttons.forEach(btn => {
             btn.addEventListener('click', async () => {
                 const mode = btn.dataset.value;
                 penEffectModeGroup.dataset.active = mode;
-                buttons.forEach(b => b.classList.toggle('active', b === btn));
+                buttons.forEach(b => b.classList.toggle('sp-active', b === btn));
                 await settings_save_all_local({ penEffectMode: mode });
                 if (window.DRAW_CONFIG) {
                     window.DRAW_CONFIG.penEffectMode = mode;
@@ -1186,12 +1168,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 文档阅读器默认缩放
     const docReaderZoomGroup = document.getElementById('docReaderZoomGroup');
     if (docReaderZoomGroup) {
-        const buttons = docReaderZoomGroup.querySelectorAll('.option-btn');
+        const buttons = docReaderZoomGroup.querySelectorAll('.sp-option-btn');
         buttons.forEach(btn => {
             btn.addEventListener('click', async () => {
                 const zoom = btn.dataset.value;
                 docReaderZoomGroup.dataset.active = zoom;
-                buttons.forEach(b => b.classList.toggle('active', b === btn));
+                buttons.forEach(b => b.classList.toggle('sp-active', b === btn));
                 await settings_save_all_local({ docReaderDefaultZoom: zoom });
             });
         });
@@ -1201,14 +1183,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const themeGrid = document.getElementById('themeGrid');
     if (themeGrid) {
         themeGrid.addEventListener('click', async (e) => {
-            const btn = e.target.closest('.theme-card-btn');
-            const card = e.target.closest('.theme-card');
+            const btn = e.target.closest('.sp-theme-card-btn');
+            const card = e.target.closest('.sp-theme-card');
             if (!card) return;
 
             // 处理删除
             if (btn?.dataset.action === 'delete') {
                 const name = card.dataset.value;
-                const displayName = card.querySelector('.theme-card-name')?.textContent || name;
+                const displayName = card.querySelector('.sp-theme-card-name')?.textContent || name;
                 if (!await settings_show_confirm(
                     window.i18n?.format_translate('settings.deleteTheme') || '删除主题',
                     window.i18n?.format_translate('settings.deleteThemeConfirm')?.replace('{name}', displayName) || `确定要删除主题"${displayName}"吗？`
@@ -1219,12 +1201,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await invoke('theme_delete', { name });
                     card.remove();
                     // 如果删除的是当前选中的主题，切回 simplify
-                    const selectedCard = themeGrid.querySelector('.theme-card.selected');
+                    const selectedCard = themeGrid.querySelector('.sp-theme-card.selected');
                     if (!selectedCard) {
-                        const simplifyCard = themeGrid.querySelector('.theme-card[data-value="com.viewstage.theme.simplify"]');
+                        const simplifyCard = themeGrid.querySelector('.sp-theme-card[data-value="com.viewstage.theme.simplify"]');
                         if (simplifyCard) {
-                            themeGrid.querySelectorAll('.theme-card').forEach(c => c.classList.remove('selected'));
-                            simplifyCard.classList.add('selected');
+                            themeGrid.querySelectorAll('.sp-theme-card').forEach(c => c.classList.remove('sp-selected'));
+                            simplifyCard.classList.add('sp-selected');
                             await settings_save_all_local({ theme: 'com.viewstage.theme.simplify' });
                         }
                     }
@@ -1241,22 +1223,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 处理应用 — 仅点击"应用"按钮
             if (!btn || btn.dataset.action !== 'apply') return;
-            if (card.classList.contains('selected')) return;
+            if (card.classList.contains('sp-selected')) return;
 
             const value = card.dataset.value;
 
-            themeGrid.querySelectorAll('.theme-card').forEach(c => c.classList.remove('selected'));
-            card.classList.add('selected');
+            themeGrid.querySelectorAll('.sp-theme-card').forEach(c => c.classList.remove('sp-selected'));
+            card.classList.add('sp-selected');
 
             const saved = await settings_save_all_local({ theme: value });
             if (saved) {
                 const restartModal = document.getElementById('restartModal');
-                const modalMessage = restartModal?.querySelector('.modal-message');
+                const modalMessage = restartModal?.querySelector('.sp-modal-message');
                 if (modalMessage) {
                     modalMessage.textContent = window.i18n?.format_translate('settings.themeChanged') || 'Theme changed, restart to apply.';
                 }
                 if (restartModal) {
-                    restartModal.classList.add('active');
+                    restartModal.classList.add('sp-active');
                 }
             }
         });
@@ -1266,12 +1248,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const defaultRotationSelect = document.getElementById('defaultRotationSelect');
     const defaultRotationSelected = document.getElementById('defaultRotationSelected');
     if (defaultRotationSelect && defaultRotationSelected) {
-        document.querySelectorAll('#defaultRotationOptions .select-option').forEach(option => {
+        document.querySelectorAll('#defaultRotationOptions .sp-select-option').forEach(option => {
             option.addEventListener('click', async () => {
                 const value = parseInt(option.dataset.value);
                 defaultRotationSelected.textContent = option.textContent;
-                document.querySelectorAll('#defaultRotationOptions .select-option').forEach(opt => opt.classList.remove('selected'));
-                option.classList.add('selected');
+                document.querySelectorAll('#defaultRotationOptions .sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
+                option.classList.add('sp-selected');
                 closeSelect(defaultRotationSelect);
                 await settings_save_all_local({ defaultRotation: value });
             });
@@ -1400,150 +1382,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 导入 .vst 主题
-    const btnImportTheme = document.getElementById('btnImportTheme');
-    if (btnImportTheme && window.__TAURI__) {
-        btnImportTheme.addEventListener('click', async () => {
-            try {
-                const { invoke } = window.__TAURI__.core;
-                const { open } = window.__TAURI__.dialog;
 
-                const filePath = await open({
-                    filters: [{ name: 'ViewStage Theme', extensions: ['vst'] }]
-                });
-
-                if (filePath) {
-                    let themeResult;
-                    try {
-                        themeResult = await invoke('theme_import_vst', { filePath, force: false });
-                    } catch (err) {
-                        // 主题已存在，询问是否覆盖
-                        if (String(err).includes('already exists')) {
-                            if (!await settings_show_confirm(
-                                window.i18n?.format_translate('settings.importTheme') || '导入主题',
-                                window.i18n?.format_translate('settings.themeOverwriteConfirm') || '主题已存在，是否覆盖？'
-                            )) {
-                                return;
-                            }
-                            themeResult = await invoke('theme_import_vst', { filePath, force: true });
-                        } else {
-                            throw err;
-                        }
-                    }
-
-                    const themeName = themeResult.name;
-                    const displayName = themeResult.display_name;
-                    const canvasBg = themeResult.canvas_bg || '#1a1a1a';
-                    const textColor = themeResult.text_color || '#ffffff';
-                    console.log('主题已导入:', themeName);
-
-                    // 刷新所有主题卡片
-                    const savedTheme = themeName;
-                    invoke('theme_list_user').then(themes => {
-                        const builtinSuffix = window.i18n?.format_translate('settings.themeBuiltinSuffix') || '（内置主题）';
-                        const allThemes = [
-                            {
-                            name: 'com.viewstage.theme.dark',
-                            display_name: (window.i18n?.format_translate('settings.themeDark') || '深色') + builtinSuffix,
-                            canvas_bg: '#1a1a1a',
-                            text_color: '#ffffff'
-                        },
-                        {
-                            name: 'com.viewstage.theme.simplify',
-                                display_name: (window.i18n?.format_translate('settings.themeSimplify') || '浅色') + builtinSuffix,
-                                canvas_bg: '#ffffff',
-                                text_color: '#1a1a1a'
-                            },
-                            ...themes
-                        ];
-                        settings_render_all_themes(allThemes, savedTheme);
-                    }).catch(() => {
-                        // 失败时至少添加当前导入的主题卡片，并尝试加载预览图
-                        const grid = document.getElementById('themeGrid');
-                        if (grid) {
-                            const existing = grid.querySelector(`.theme-card[data-value="${themeName}"]`);
-                            if (!existing) {
-                                const card = document.createElement('div');
-                                card.className = 'theme-card selected';
-                                card.dataset.value = themeName;
-                                card.innerHTML = `
-                                    <div class="theme-card-preview" style="background: ${canvasBg}">
-                                        <div class="theme-card-preview-bar" style="background: ${textColor}"></div>
-                                        <span class="theme-card-preview-text" style="color: ${textColor}">Aa</span>
-                                        <div class="theme-card-preview-dot" style="${canvasBg === '#ffffff' ? 'background: #1a1a1a' : 'background: ' + canvasBg}"></div>
-                                    </div>
-                                    <div class="theme-card-info">
-                                        <div class="theme-card-info-main">
-                                            <span class="theme-card-name">${displayName}</span>
-                                            <span class="theme-card-check">✓</span>
-                                        </div>
-                                    </div>
-                                    <div class="theme-card-actions">
-                                        <button class="theme-card-btn theme-card-btn-apply" data-action="apply">${window.i18n?.format_translate('settings.apply') || '应用'}</button>
-                                        <button class="theme-card-btn theme-card-btn-delete" data-action="delete">${window.i18n?.format_translate('settings.delete') || '删除'}</button>
-                                    </div>
-                                `;
-                                grid.appendChild(card);
-                                // 异步加载预览图
-                                invoke('theme_get_preview', { name: themeName }).then(b64 => {
-                                    if (!b64) return;
-                                    const preview = card.querySelector('.theme-card-preview');
-                                    if (!preview) return;
-                                    preview.style.background = '';
-                                    preview.innerHTML = `<img class="theme-card-preview-img" src="${b64}" alt="" loading="lazy">`;
-                                }).catch(e => console.warn('加载主题预览失败:', e));
-                            }
-                            grid.querySelectorAll('.theme-card').forEach(c => c.classList.remove('selected'));
-                            if (existing) existing.classList.add('selected');
-                        }
-                    });
-
-                    // 自动选中并提示重启
-                    await settings_save_all_local({ theme: themeName });
-                    const restartModal = document.getElementById('restartModal');
-                    const modalMessage = restartModal?.querySelector('.modal-message');
-                    if (modalMessage) {
-                        modalMessage.textContent = window.i18n?.format_translate('settings.themeChanged') || 'Theme changed, restart to apply.';
-                    }
-                    if (restartModal) restartModal.classList.add('active');
-
-                    settings_show_dialog(
-                        window.i18n?.format_translate('settings.themeImportSuccess') || '主题导入成功，重启后生效。',
-                        '',
-                        'success'
-                    );
-                }
-            } catch (error) {
-                console.error('导入主题失败:', error);
-                settings_show_dialog(
-                    window.i18n?.format_translate('settings.themeImportFailed') || '主题导入失败',
-                    String(error),
-                    'error'
-                );
-            }
-        });
-    }
 
     if (btnReset && modalOverlay && window.__TAURI__) {
         btnReset.addEventListener('click', () => {
-            const modalTitle = modalOverlay.querySelector('.modal-title');
-            const modalMessage = modalOverlay.querySelector('.modal-message');
+            const modalTitle = modalOverlay.querySelector('.sp-modal-title');
+            const modalMessage = modalOverlay.querySelector('.sp-modal-message');
             if (modalTitle && modalMessage) {
                 modalTitle.textContent = window.i18n?.format_translate('settings.confirmReset') || '确认重置';
                 modalMessage.textContent = window.i18n?.format_translate('settings.resetWarning') || '确定要重置应用吗？这将删除所有设置并重启应用。';
             }
             modalConfirm.dataset.action = 'reset';
-            modalOverlay.classList.add('active');
+            modalOverlay.classList.add('sp-active');
         });
         
         modalCancel.addEventListener('click', () => {
-            modalOverlay.classList.remove('active');
+            modalOverlay.classList.remove('sp-active');
             delete modalConfirm.dataset.action;
         });
         
         modalOverlay.addEventListener('click', (e) => {
             if (e.target === modalOverlay) {
-                modalOverlay.classList.remove('active');
+                modalOverlay.classList.remove('sp-active');
                 delete modalConfirm.dataset.action;
             }
         });
@@ -1558,7 +1418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (error) {
                 console.error('重置失败:', error);
                 settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', String(error), 'error');
-                modalOverlay.classList.remove('active');
+                modalOverlay.classList.remove('sp-active');
             }
         });
     }
@@ -1612,7 +1472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const autoClearCacheOptions = document.getElementById('autoClearCacheOptions');
     
     if (autoClearCacheSelect && autoClearCacheSelected && autoClearCacheOptions && window.__TAURI__) {
-        autoClearCacheOptions.querySelectorAll('.select-option').forEach(option => {
+        autoClearCacheOptions.querySelectorAll('.sp-select-option').forEach(option => {
             option.addEventListener('click', async () => {
                 const days = parseInt(option.dataset.value);
                 autoClearCacheSelected.textContent = option.textContent;
@@ -1626,6 +1486,72 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
     
+    // Word 转换缓存管理
+    const wordCacheSizeEl = document.getElementById('wordCacheSize');
+    const btnClearWordCache = document.getElementById('btnClearWordCache');
+    
+    async function settings_update_word_cache_size() {
+        if (!window.__TAURI__) return;
+        try {
+            const { invoke } = window.__TAURI__.core;
+            const size = await invoke('word_cache_fetch_size');
+            if (wordCacheSizeEl) {
+                if (size === 0) {
+                    wordCacheSizeEl.textContent = '(0 B)';
+                } else if (size < 1024) {
+                    wordCacheSizeEl.textContent = `(${size} B)`;
+                } else if (size < 1024 * 1024) {
+                    wordCacheSizeEl.textContent = `(${(size / 1024).toFixed(1)} KB)`;
+                } else if (size < 1024 * 1024 * 1024) {
+                    wordCacheSizeEl.textContent = `(${(size / 1024 / 1024).toFixed(1)} MB)`;
+                } else {
+                    wordCacheSizeEl.textContent = `(${(size / 1024 / 1024 / 1024).toFixed(2)} GB)`;
+                }
+            }
+        } catch (error) {
+            console.error('获取 Word 转换缓存大小失败:', error);
+        }
+    }
+    
+    settings_update_word_cache_size();
+    
+    // 自动清理 Word 转换缓存（仅首次加载时执行）
+    if (window.__TAURI__) {
+        window.__TAURI__.core.invoke('word_cache_validate_auto_clear').catch(e => {
+            console.error('自动清除 Word 转换缓存失败:', e);
+        });
+    }
+    
+    if (btnClearWordCache && window.__TAURI__) {
+        btnClearWordCache.addEventListener('click', async () => {
+            try {
+                const { invoke } = window.__TAURI__.core;
+                const result = await invoke('word_cache_delete_all');
+                settings_show_dialog(window.i18n?.format_translate('settings.clearComplete') || '清除完成', result, 'success');
+                settings_update_word_cache_size();
+            } catch (error) {
+                console.error('清除 Word 转换缓存失败:', error);
+                settings_show_dialog(window.i18n?.format_translate('settings.clearFailed') || '清除失败', String(error), 'error');
+            }
+        });
+    }
+    
+    // 自动清除 Word 转换缓存设置
+    const autoClearWordCacheSelect = document.getElementById('autoClearWordCacheSelect');
+    const autoClearWordCacheSelected = document.getElementById('autoClearWordCacheSelected');
+    const autoClearWordCacheOptions = document.getElementById('autoClearWordCacheOptions');
+    
+    if (autoClearWordCacheSelect && autoClearWordCacheSelected && autoClearWordCacheOptions && window.__TAURI__) {
+        autoClearWordCacheOptions.querySelectorAll('.sp-select-option').forEach(option => {
+            option.addEventListener('click', async () => {
+                const days = parseInt(option.dataset.value);
+                autoClearWordCacheSelected.textContent = option.textContent;
+                closeSelect(autoClearWordCacheSelect);
+                await settings_save_all_local({ wordCacheClearDays: days });
+            });
+        });
+    }
+    
     // 打开日志目录
     const btnOpenLogDir = document.getElementById('btnOpenLogDir');
 
@@ -1635,11 +1561,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         blackboardToggle.addEventListener('change', async () => {
             await settings_save_all_local({ blackboardEnabled: blackboardToggle.checked });
             const restartModal = document.getElementById('restartModal');
-            const modalMessage = restartModal?.querySelector('.modal-message');
+            const modalMessage = restartModal?.querySelector('.sp-modal-message');
             if (modalMessage) {
                 modalMessage.textContent = window.i18n?.format_translate('settings.languageChanged') || '需要重启应用才能生效。';
             }
-            if (restartModal) restartModal.classList.add('active');
+            if (restartModal) restartModal.classList.add('sp-active');
         });
     }
 
@@ -1648,15 +1574,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (telemetryToggle) {
         telemetryToggle.addEventListener('change', async () => {
             await settings_save_all_local({ telemetryEnabled: telemetryToggle.checked });
-        });
-    }
-
-    // 界面模糊效果开关
-    const blurToggle = document.getElementById('blurToggle');
-    if (blurToggle) {
-        blurToggle.addEventListener('change', async () => {
-            document.body.classList.toggle('blur-enabled', blurToggle.checked);
-            await settings_save_all_local({ blurEnabled: blurToggle.checked });
         });
     }
 
@@ -1682,12 +1599,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     if (restartModal && window.__TAURI__) {
         restartLater.addEventListener('click', () => {
-            restartModal.classList.remove('active');
+            restartModal.classList.remove('sp-active');
         });
         
         restartModal.addEventListener('click', (e) => {
             if (e.target === restartModal) {
-                restartModal.classList.remove('active');
+                restartModal.classList.remove('sp-active');
             }
         });
         
@@ -1726,7 +1643,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         for (let i = 0; i < blobCount; i++) {
             const blob = document.createElement('div');
-            blob.className = 'aurora-blob';
+            blob.className = 'sp-aurora-blob';
             
             const size = 400 + Math.random() * 300;
             blob.style.width = size + 'px';
@@ -1798,37 +1715,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
     
-    if (btnClose) {
-        btnClose.addEventListener('click', async () => {
-            if (window.__TAURI__) {
-                try {
-                    const { getCurrentWindow } = window.__TAURI__.window;
-                    const appWindow = getCurrentWindow();
-                    await appWindow.close();
-                } catch (error) {
-                    console.error('关闭窗口失败:', error);
-                }
-            }
-        });
-    }
-
-    const sidebarBtns = document.querySelectorAll('.sidebar-btn');
-    const pages = document.querySelectorAll('.page');
+    const sidebarBtns = document.querySelectorAll('#settingsPanel .sidebar-item');
+    const pages = document.querySelectorAll('.sp-page');
     
     function settings_show_page(pageId) {
-        pages.forEach(page => page.classList.remove('active'));
+        pages.forEach(page => page.classList.remove('sp-active'));
         const targetPage = document.getElementById(pageId);
         if (targetPage) {
-            targetPage.classList.add('active');
+            targetPage.classList.add('sp-active');
         }
         
         if (auroraBg) {
             const showAurora = window.ThemeManager?.theme_fetch_aurora_effect?.() ?? true;
             if ((pageId === 'pageAbout' || pageId === 'pageUpdate') && showAurora) {
                 settings_start_aurora();
-                auroraBg.classList.add('active');
+                auroraBg.classList.add('sp-active');
             } else {
-                auroraBg.classList.remove('active');
+                auroraBg.classList.remove('sp-active');
                 settings_hide_aurora();
             }
         }
@@ -1854,8 +1757,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     sidebarBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            sidebarBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
+            sidebarBtns.forEach(b => b.classList.remove('sp-active'));
+            btn.classList.add('sp-active');
             
             const pageMap = {
                 'btnApp': 'pageApp',
@@ -1903,7 +1806,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function _resetUpdateUI() {
         _upd.banner.style.display = 'none';
-        _upd.banner.className = 'update-banner';
+        _upd.banner.className = 'sp-update-banner';
         _upd.notes.style.display = 'none';
         _upd.notes.innerHTML = '';
         _upd.progress.style.display = 'none';
@@ -1919,7 +1822,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (_updateChecked) {
             _showUpdateResult(_updateResult);
         } else {
-            _upd.status.innerHTML = '<div class="spinner"></div><div class="update-text">' + (i18n.format_translate('settings.checkingForUpdates') || '检查更新...') + '</div>';
+            _upd.status.innerHTML = '<div class="sp-spinner"></div><div class="sp-update-text">' + (window.i18n?.format_translate('settings.checkingForUpdates') || '检查更新...') + '</div>';
             _doCheckUpdate();
         }
     }
@@ -1936,7 +1839,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             _updateResult = null;
             _upd.status.innerHTML = '';
             _upd.banner.className = 'update-banner banner-error';
-            _upd.banner.textContent = i18n.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试';
+            _upd.banner.textContent = window.i18n?.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试';
             _upd.banner.style.display = '';
         }
     }
@@ -1946,7 +1849,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (!result) {
             _upd.banner.className = 'update-banner banner-error';
-            _upd.banner.textContent = i18n.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试';
+            _upd.banner.textContent = window.i18n?.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试';
             _upd.banner.style.display = '';
             return;
         }
@@ -1965,7 +1868,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             _latestRelease = result.release;
         } else {
             _upd.banner.className = 'update-banner banner-latest';
-            _upd.banner.textContent = i18n.format_translate('settings.alreadyLatest') || '当前已是最新版本';
+            _upd.banner.textContent = window.i18n?.format_translate('settings.alreadyLatest') || '当前已是最新版本';
             _upd.banner.style.display = '';
             if (result.current_release?.body) {
                 _upd.notes.innerHTML = renderMarkdownSimple(result.current_release.body);
@@ -2006,12 +1909,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             _upd.progress.style.display = 'none';
             _upd.btnDownload.style.display = '';
             _upd.btnDownload.disabled = false;
-            _upd.btnDownload.textContent = i18n.format_translate('settings.installNow') || '立即安装';
+            _upd.btnDownload.textContent = window.i18n?.format_translate('settings.installNow') || '立即安装';
         } catch (err) {
             console.error('Download failed:', err);
             _upd.btnDownload.style.display = '';
             _upd.btnDownload.disabled = false;
-            _upd.btnDownload.textContent = i18n.format_translate('settings.downloadUpdate') || '下载更新';
+            _upd.btnDownload.textContent = window.i18n?.format_translate('settings.downloadUpdate') || '下载更新';
             _upd.progress.style.display = 'none';
         }
     });
@@ -2024,13 +1927,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!_downloadFilePath) return;
         try {
             _upd.btnDownload.disabled = true;
-            _upd.btnDownload.textContent = i18n.format_translate('settings.installing') || '正在安装...';
+            _upd.btnDownload.textContent = window.i18n?.format_translate('settings.installing') || '正在安装...';
             await installDownload(_downloadFilePath);
         } catch (error) {
             console.error('安装更新失败:', error);
             _upd.btnDownload.disabled = false;
-            _upd.btnDownload.textContent = i18n.format_translate('settings.installNow') || '立即安装';
-            settings_show_dialog(i18n.format_translate('settings.installFailed') || '安装失败', String(error), 'error');
+            _upd.btnDownload.textContent = window.i18n?.format_translate('settings.installNow') || '立即安装';
+            settings_show_dialog(window.i18n?.format_translate('settings.installFailed') || '安装失败', String(error), 'error');
         }
     }
 
@@ -2038,7 +1941,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (linkGithub && window.__TAURI__) {
         linkGithub.addEventListener('click', (e) => {
             e.preventDefault();
-            window.__TAURI__.opener.openUrl('https://github.com/ospneam/ViewStage');
+            window.__TAURI__.opener.openUrl('https://github.com/SECTL/ViewPDF');
         });
     }
 
@@ -2046,7 +1949,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (linkLicense && window.__TAURI__) {
         linkLicense.addEventListener('click', (e) => {
             e.preventDefault();
-            window.__TAURI__.opener.openUrl('https://github.com/ospneam/ViewStage?tab=Apache-2.0-1-ov-file');
+            window.__TAURI__.opener.openUrl('https://github.com/SECTL/ViewPDF?tab=Apache-2.0-1-ov-file');
         });
     }
 
@@ -2064,8 +1967,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         devBtn.style.display = '';
 
         devBtn.addEventListener('click', () => {
-            sidebarBtns.forEach(b => b.classList.remove('active'));
-            devBtn.classList.add('active');
+            sidebarBtns.forEach(b => b.classList.remove('sp-active'));
+            devBtn.classList.add('sp-active');
             settings_show_page('pageDevOptions');
         });
 
@@ -2084,7 +1987,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 点击关于页图标5次打开
     let dev_click_count = 0;
-    const logoIcon = document.querySelector('.logo-icon');
+    const logoIcon = document.querySelector('.sp-logo-icon');
     if (logoIcon) {
         logoIcon.style.cursor = 'pointer';
         logoIcon.addEventListener('click', () => {
@@ -2098,5 +2001,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     settings_show_page('pageApp');
-    document.getElementById('btnApp')?.classList.add('active');
-});
+    document.getElementById('btnApp')?.classList.add('sp-active');
+}
+
+// 嵌入模式：DOM 已就绪时立即执行
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSettings);
+} else {
+    initSettings();
+}

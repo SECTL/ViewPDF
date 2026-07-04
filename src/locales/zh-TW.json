@@ -75,15 +75,11 @@
     "selectTheme": "選擇主題",
     "themeDark": "深色",
     "themeSimplify": "淺色",
-    "importTheme": "導入主題",
-    "importThemeBtn": "導入 .vst 主題",
     "installedThemes": "已安裝的主題",
     "themeOverwriteConfirm": "主題已存在，是否覆蓋？",
     "themeImportSuccess": "主題導入成功，重新啟動後生效。",
     "themeImportFailed": "主題導入失敗",
     "themeChanged": "主題已變更，重新啟動後生效。",
-    "blur": "介面模糊效果",
-    "blurHint": "為工具欄和側邊欄添加毛玻璃模糊效果",
     "themeBuiltinSuffix": "（內建主題）",
     "apply": "應用",
     "delete": "刪除",
@@ -96,8 +92,6 @@
     "resolution": "解析度",
     "dynamicResolution": "動態解析度",
     "dynamicResolutionHint": "放大時自動提高畫布解析度以獲得更清晰的顯示效果",
-    "eraserSpeed": "速度擦",
-    "eraserSpeedHint": "橡皮擦大小隨移動速度自動變化",
     "palmEraser": "手掌擦除",
     "palmEraserHint": "手掌/多指觸摸時自動切換為方塊擦除",
     "momentum": "慣性移動",
@@ -144,6 +138,10 @@
     "cache": "快取",
     "clearCache": "清除快取",
     "autoClearCache": "自動清除快取",
+    "wordCache": "Word 轉換快取",
+    "clearWordCache": "清除 Word 快取",
+    "autoClearWordCache": "自動清除 Word 快取",
+    "quarterly": "每季",
     "docStateCleanup": "文件狀態清理",
     "docStateCleanupDesc": "自動清理超過 15 天未開啟的文件狀態記錄（隨快取清理一起執行）",
     "log": "日誌",
@@ -217,7 +215,7 @@
     "wordDefaultRemoved": "已取消 Word 文件預設開啟方式設定"
   },
   "oobe": {
-    "welcome": "歡迎使用 ViewStage",
+    "welcome": "歡迎使用 ViewPDF",
     "selectLanguage": "選擇您的語言",
     "selectSetupMethod": "選擇設定方式",
     "quickSetup": "快速設定",
@@ -243,7 +241,7 @@
     "memCleanAdminHint": "首次設定排程工作需要管理員權限",
     "max": "最大",
     "featureTour": "功能一覽",
-    "featureTourDesc": "快速了解 ViewStage 的核心功能",
+    "featureTourDesc": "快速了解 ViewPDF 的核心功能",
     "featAnnotate": "文件批註",
     "featAnnotateDesc": "支援 PDF、Word 文件批註，儲存批註狀態",
     "featPdf": "PDF 閱讀",
@@ -256,7 +254,7 @@
     "defaultApps": "閱讀器設定",
     "defaultAppsDesc": "設置文件關聯和閱讀器偏好",
     "checkUpdate": "檢查更新",
-    "checkUpdateDesc": "更新到最新版 ViewStage",
+    "checkUpdateDesc": "更新到最新版 ViewPDF",
     "checkingUpdate": "正在檢查更新...",
     "updateUpToDate": "已是最新版本",
     "updateAvailable": "發現新版本",
@@ -270,8 +268,8 @@
     "saving": "正在儲存設定..."
   },
   "about": {
-    "description": "ViewStage 是一款用於影片演示和文件批註的應用程式。",
-    "copyright": "© {year} ViewStage. All rights reserved."
+    "description": "ViewPDF 是一款用於影片演示和文件批註的應用程式。",
+    "copyright": "© {year} ViewPDF. All rights reserved."
   },
   "rotation": {
     "rotateLeft": "旋轉",

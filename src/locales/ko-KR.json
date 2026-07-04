@@ -76,8 +76,6 @@
     "selectTheme": "테마 선택",
     "themeDark": "다크",
     "themeSimplify": "라이트",
-    "importTheme": "테마 가져오기",
-    "importThemeBtn": ".vst 테마 가져오기",
     "installedThemes": "설치된 테마",
     "themeOverwriteConfirm": "테마가 이미 존재합니다. 덮어쓰시겠습니까?",
     "themeImportSuccess": "테마를 가져왔습니다. 다시 시작하여 적용하세요.",
@@ -95,8 +93,6 @@
     "resolution": "해상도",
     "dynamicResolution": "동적 해상도",
     "dynamicResolutionHint": "확대 시 캔버스 해상도를 자동으로 높여 선명하게 표시",
-    "eraserSpeed": "속도 지우개",
-    "eraserSpeedHint": "이동 속도에 따라 지우개 크기 자동 변경",
     "palmEraser": "손바닥 지우개",
     "palmEraserHint": "손바닥/멀티터치 접촉 시 사각 지우개로 자동 전환",
     "momentum": "관성 이동",
@@ -143,6 +139,10 @@
     "cache": "캐시",
     "clearCache": "캐시 지우기",
     "autoClearCache": "캐시 자동 지우기",
+    "wordCache": "Word 변환 캐시",
+    "clearWordCache": "Word 캐시 지우기",
+    "autoClearWordCache": "Word 캐시 자동 지우기",
+    "quarterly": "분기별",
     "docStateCleanup": "문서 상태 정리",
     "docStateCleanupDesc": "15일간 열지 않은 문서 상태 기록을 자동 정리 (캐시 정리 시 실행)",
     "log": "로그",
@@ -219,7 +219,7 @@
     "wordDefaultRemoved": "Word 기본 설정이 제거되었습니다"
   },
   "oobe": {
-    "welcome": "ViewStage에 오신 것을 환영합니다",
+    "welcome": "ViewPDF에 오신 것을 환영합니다",
     "selectLanguage": "언어 선택",
     "selectSetupMethod": "설정 방식 선택",
     "quickSetup": "빠른 설정",
@@ -245,7 +245,7 @@
     "memCleanAdminHint": "최초 예약 작업 설정 시 관리자 권한 필요",
     "max": "최대",
     "featureTour": "기능 둘러보기",
-    "featureTourDesc": "ViewStage 핵심 기능 개요",
+    "featureTourDesc": "ViewPDF 핵심 기능 개요",
     "featAnnotate": "문서 주석",
     "featAnnotateDesc": "PDF 및 Word 문서에 주석을 달고 상태 저장",
     "featPdf": "PDF 리더",
@@ -258,7 +258,7 @@
     "defaultApps": "리더 설정",
     "defaultAppsDesc": "파일 연결 및 리더 기본 설정 구성",
     "checkUpdate": "업데이트 확인",
-    "checkUpdateDesc": "ViewStage를 최신 버전으로 업데이트",
+    "checkUpdateDesc": "ViewPDF를 최신 버전으로 업데이트",
     "checkingUpdate": "업데이트 확인 중...",
     "updateUpToDate": "최신 버전입니다",
     "updateAvailable": "업데이트 가능",
@@ -272,8 +272,8 @@
     "saving": "설정 저장 중..."
   },
   "about": {
-    "description": "ViewStage는 비디오 프레젠테이션 및 문서 주석을 위한 애플리케이션입니다.",
-    "copyright": "© {year} ViewStage. All rights reserved."
+    "description": "ViewPDF는 비디오 프레젠테이션 및 문서 주석을 위한 애플리케이션입니다.",
+    "copyright": "© {year} ViewPDF. All rights reserved."
   },
   "rotation": {
     "rotateLeft": "회전",

@@ -1,5 +1,5 @@
 /**
- * ViewStage 初始化 —— 文件管理
+ * ViewPDF 初始化 —— 文件管理
  */
 import ThemeManager from './themes/theme.js';
 
@@ -36,13 +36,16 @@ if (document.readyState === 'loading') {
     window.main_init_pdfjs();
 }
 
-// 初始化缓存路径
+// 初始化缓存路径（并行获取）
 async function dir_init_cache_path() {
     if (window.__TAURI__) {
         try {
-            window.cacheDir = await window.__TAURI__.core.invoke('dir_fetch_cache');
-            window.configDir = await window.__TAURI__.core.invoke('dir_fetch_config');
-            window.cdsDir = await window.__TAURI__.core.invoke('dir_fetch_pictures_viewstage');
+            const [cacheDir, configDir] = await Promise.all([
+                window.__TAURI__.core.invoke('dir_fetch_cache'),
+                window.__TAURI__.core.invoke('dir_fetch_config'),
+            ]);
+            window.cacheDir = cacheDir;
+            window.configDir = configDir;
         } catch (error) {
             console.error('获取缓存目录失败:', error);
         }
@@ -223,16 +226,14 @@ function main_setup_events() {
         viewList.addEventListener('click', () => {
             viewList.classList.add('active');
             viewGrid?.classList.remove('active');
-            fileListEl?.classList.remove('file-browser-grid');
-            document.querySelectorAll('.file-row').forEach(el => el.classList.remove('file-row-grid'));
+            fileListEl?.classList.remove('grid-view');
         });
     }
     if (viewGrid) {
         viewGrid.addEventListener('click', () => {
             viewGrid.classList.add('active');
             viewList?.classList.remove('active');
-            fileListEl?.classList.add('file-browser-grid');
-            document.querySelectorAll('.file-row').forEach(el => el.classList.add('file-row-grid'));
+            fileListEl?.classList.add('grid-view');
         });
     }
     
@@ -576,68 +577,62 @@ async function main_init_all() {
         await settings_load_config();
         
         app_emit_splash_progress(2, '正在加载组件...');
-        
+
         // 初始化文档阅读器
         if (window.documentReaderManager) {
             window.documentReaderManager.init();
         }
-        
+
         // 绑定事件
         main_setup_events();
-        
-        // 初始化黑板（如果启用）
-        if (window.__blackboardEnabled !== false) {
-            try {
-                const bb = await window.blackboard_ensure_loaded(document.body);
-                if (bb) {
-                    bb.setup_toolbar_events();
-                }
-            } catch (e) {
-                console.error('[init] blackboard lazy load error:', e);
-            }
-        }
-        
+
         app_emit_splash_progress(3, '正在完成...');
-        
-        // 恢复上次打开的文档
-        if (window.documentReaderManager) {
-            setTimeout(() => {
-                window.__TAURI__.core.invoke('settings_fetch_all').then(result => {
-                    const settings = (result && typeof result === 'object' && result.settings)
-                        ? result.settings : {};
-                    if (settings.restoreLastDoc !== false) {
-                        window.documentReaderManager.restore_last_document().then(() => {
-                            // Reader handles startup screen visibility internally
-                        }).catch(e => {
-                            console.log('[init] 恢复上次文档失败:', e);
-                        });
-                    }
-                }).catch(e => {
-                    console.log('[init] 读取设置失败:', e);
-                });
-            }, 500);
-        }
-        
-        // 初始化标签管理器
+
+        // 初始化标签管理器和UI状态
         if (window.main_update_tabs) {
             window.main_update_tabs();
         }
-        
-        // 在恢复文档后再次更新标签
-        setTimeout(() => {
-            if (window.main_update_tabs) {
-                window.main_update_tabs();
-            }
-        }, 1000);
-        
-        } catch (error) {
-            console.error('初始化失败:', error);
-            window.main_show_error_dialog(
-                window.i18n?.format_translate('errors.initFailed') || '初始化失败',
-                window.i18n?.format_translate('errors.initFailedDesc') || '应用初始化失败，请刷新页面重试'
-            );
+        if (window.main_update_ui_state) {
+            window.main_update_ui_state();
         }
+
+        // 延迟加载黑板（窗口已显示后再加载，不阻塞启动）
+        if (window.__blackboardEnabled !== false) {
+            setTimeout(async () => {
+                try {
+                    const bb = await window.blackboard_ensure_loaded(document.body);
+                    if (bb) {
+                        bb.setup_toolbar_events();
+                    }
+                } catch (e) {
+                    console.error('[init] blackboard lazy load error:', e);
+                }
+            }, 0);
+        }
+
+        // 恢复上次打开的文档
+        if (window.documentReaderManager) {
+            window.__TAURI__?.core?.invoke('settings_fetch_all').then(result => {
+                const settings = (result && typeof result === 'object' && result.settings)
+                    ? result.settings : {};
+                if (settings.restoreLastDoc !== false) {
+                    window.documentReaderManager.restore_last_document().catch(e => {
+                        console.log('[init] 恢复上次文档失败:', e);
+                    });
+                }
+            }).catch(e => {
+                console.log('[init] 读取设置失败:', e);
+            });
+        }
+
+    } catch (error) {
+        console.error('初始化失败:', error);
+        window.main_show_error_dialog(
+            window.i18n?.format_translate('errors.initFailed') || '初始化失败',
+            window.i18n?.format_translate('errors.initFailedDesc') || '应用初始化失败，请刷新页面重试'
+        );
     }
+}
 
 // 启动
 if (document.readyState === 'loading') {

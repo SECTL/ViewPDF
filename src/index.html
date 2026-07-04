@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>ViewStage</title>
+    <title>ViewPDF</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="blackboard.css">
     <script type="module" src="modules/pdf/pdf.min.mjs"></script>
@@ -13,13 +13,17 @@
         window.__TAURI__?.core.invoke('main_signal_loaded').catch(()=>{});
         (async()=>{
             try {
-                await import('./themes/theme.js');
-                await import('./modules/canvas/batch-draw.js');
-                await import('./modules/canvas/pen_tessellator.js');
-                await import('./modules/canvas/tile-renderer.js');
+                // Wave 1: independent modules in parallel
+                await Promise.all([
+                    import('./themes/theme.js'),
+                    import('./modules/canvas/batch-draw.js'),
+                    import('./modules/canvas/pen_tessellator.js'),
+                    import('./modules/canvas/tile-renderer.js'),
+                    import('./modules/pdf/document_reader_page.js'),
+                    import('./modules/pdf/document_reader.js'),
+                ]);
+                // Wave 2: dependent modules (imports resolve from cache)
                 await import('./main.js');
-                await import('./modules/pdf/document_reader_page.js');
-                await import('./modules/pdf/document_reader.js');
                 await import('./init.js');
             } catch(e) {
                 console.error('[boot] module load error:', e);
@@ -64,71 +68,87 @@
                 <div class="app-body">
                     <div class="app-sidebar">
                         <div class="sidebar-section">
-                            <div class="sidebar-section-title">新建导入</div>
+                            <div class="sidebar-section-title">新建</div>
                             <button class="sidebar-item" id="sideImportPdf">
-                                <img data-icon="pdf" width="14" height="14" alt=""><span>导入 PDF</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 3v7M8 3L5.5 5.5M8 3l2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    <path d="M3 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <span>打开文件</span>
                             </button>
                         </div>
                         <div class="sidebar-section">
-                            <div class="sidebar-section-title">文件视图</div>
+                            <div class="sidebar-section-title">文件</div>
                             <button class="sidebar-item active" id="sideRecent">
-                                <img data-icon="clock" width="14" height="14" alt=""><span>最近</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M8 5v3l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <span>最近</span>
                             </button>
                             <button class="sidebar-item" id="sideStarred">
-                                <img data-icon="star" width="14" height="14" alt=""><span>星标</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 2.5l1.8 3.6 4 .6-2.9 2.8.7 4L8 11.4 4.4 13.5l.7-4L2.2 6.7l4-.6L8 2.5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+                                </svg>
+                                <span>星标</span>
                             </button>
                         </div>
                         <div class="sidebar-footer">
                             <button class="sidebar-item" id="sideSettings">
-                                <img data-icon="settings" width="14" height="14" alt=""><span>系统设置</span>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                    <path d="M12.0122 2.25C12.7462 2.25846 13.4773 2.34326 14.1937 2.50304C14.5064 2.57279 14.7403 2.83351 14.7758 3.15196L14.946 4.67881C15.0231 5.37986 15.615 5.91084 16.3206 5.91158C16.5103 5.91188 16.6979 5.87238 16.8732 5.79483L18.2738 5.17956C18.5651 5.05159 18.9055 5.12136 19.1229 5.35362C20.1351 6.43464 20.8889 7.73115 21.3277 9.14558C21.4223 9.45058 21.3134 9.78203 21.0564 9.9715L19.8149 10.8866C19.4607 11.1468 19.2516 11.56 19.2516 11.9995C19.2516 12.4389 19.4607 12.8521 19.8157 13.1129L21.0582 14.0283C21.3153 14.2177 21.4243 14.5492 21.3297 14.8543C20.8911 16.2685 20.1377 17.5649 19.1261 18.6461C18.9089 18.8783 18.5688 18.9483 18.2775 18.8206L16.8712 18.2045C16.4688 18.0284 16.0068 18.0542 15.6265 18.274C15.2463 18.4937 14.9933 18.8812 14.945 19.3177L14.7759 20.8444C14.741 21.1592 14.5122 21.4182 14.204 21.4915C12.7556 21.8361 11.2465 21.8361 9.79803 21.4915C9.48991 21.4182 9.26105 21.1592 9.22618 20.8444L9.05736 19.32C9.00777 18.8843 8.75434 18.498 8.37442 18.279C7.99451 18.06 7.5332 18.0343 7.1322 18.2094L5.72557 18.8256C5.43422 18.9533 5.09403 18.8833 4.87678 18.6509C3.86462 17.5685 3.11119 16.2705 2.6732 14.8548C2.57886 14.5499 2.68786 14.2186 2.94485 14.0293L4.18818 13.1133C4.54232 12.8531 4.75147 12.4399 4.75147 12.0005C4.75147 11.561 4.54232 11.1478 4.18771 10.8873L2.94516 9.97285C2.6878 9.78345 2.5787 9.45178 2.67337 9.14658C3.11212 7.73215 3.86594 6.43564 4.87813 5.35462C5.09559 5.12236 5.43594 5.05259 5.72724 5.18056L7.12762 5.79572C7.53056 5.97256 7.9938 5.94585 8.37577 5.72269C8.75609 5.50209 9.00929 5.11422 9.05817 4.67764L9.22824 3.15196C9.26376 2.83335 9.49786 2.57254 9.8108 2.50294C10.5281 2.34342 11.26 2.25865 12.0122 2.25ZM12.0124 3.7499C11.5583 3.75524 11.1056 3.79443 10.6578 3.86702L10.5489 4.84418C10.4471 5.75368 9.92003 6.56102 9.13042 7.01903C8.33597 7.48317 7.36736 7.53903 6.52458 7.16917L5.62629 6.77456C5.05436 7.46873 4.59914 8.25135 4.27852 9.09168L5.07632 9.67879C5.81513 10.2216 6.25147 11.0837 6.25147 12.0005C6.25147 12.9172 5.81513 13.7793 5.07632 14.3221L4.27852 14.9093C4.59914 15.7496 5.05436 16.5322 5.62629 17.2264L6.52458 16.8317C7.36736 16.4619 8.33597 16.5177 9.13042 16.9819C9.92003 17.4399 10.4471 18.2472 10.5489 19.1567L10.6578 20.1339C11.1056 20.2065 11.5583 20.2457 12.0124 20.251C12.4666 20.2457 12.9193 20.2065 13.3671 20.1339L13.476 19.1567C13.5778 18.2472 14.1049 17.4399 14.8945 16.9819C15.689 16.5177 16.6576 16.4619 17.5004 16.8317L18.3987 17.2264C18.9706 16.5322 19.4258 15.7496 19.7464 14.9093L18.9486 14.3221C18.2098 13.7793 17.7735 12.9172 17.7735 12.0005C17.7735 11.0837 18.2098 10.2216 18.9486 9.67879L19.7464 9.09168C19.4258 8.25135 18.9706 7.46873 18.3987 6.77456L17.5004 7.16917C16.6576 7.53903 15.689 7.48317 14.8945 7.01903C14.1049 6.56102 13.5778 5.75368 13.476 4.84418L13.3671 3.86702C12.9193 3.79443 12.4666 3.75524 12.0124 3.7499ZM12.0122 8.00046C14.2133 8.00046 16.0122 9.79932 16.0122 12.0005C16.0122 14.2016 14.2133 16.0005 12.0122 16.0005C9.81111 16.0005 8.01225 14.2016 8.01225 12.0005C8.01225 9.79932 9.81111 8.00046 12.0122 8.00046ZM12.0122 9.50046C10.6396 9.50046 9.51225 10.6278 9.51225 12.0005C9.51225 13.3731 10.6396 14.5005 12.0122 14.5005C13.3849 14.5005 14.5122 13.3731 14.5122 12.0005C14.5122 10.6278 13.3849 9.50046 12.0122 9.50046Z" fill="currentColor"/>
+                                </svg>
+                                <span>设置</span>
                             </button>
                         </div>
                     </div>
                     <div class="app-main">
-                        <div class="file-area-header">
-                            <div class="file-area-search">
-                                <img data-icon="search" width="13" height="13" alt="">
-                                <input type="text" id="fileSearch" placeholder="在当前列表搜索..." class="file-search-input">
-                                <button class="search-clear" id="searchClear" style="display:none">×</button>
+                        <div class="main-toolbar">
+                            <div class="search-field">
+                                <svg viewBox="0 0 14 14" fill="none">
+                                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <input type="text" placeholder="搜索文件..." id="fileSearch">
+                                <button class="clear-btn" id="searchClear" style="display:none">×</button>
                             </div>
-                            <div class="file-area-filters">
-                                <select class="filter-select" id="filterTime">
+                            <div class="toolbar-right">
+                                <select class="toolbar-filter" id="filterTime">
                                     <option value="all">全部时间</option>
                                     <option value="today">今天</option>
                                     <option value="yesterday">昨天</option>
                                     <option value="week">本周</option>
                                     <option value="month">本月</option>
                                 </select>
-                                <select class="filter-select" id="filterSize2">
+                                <select class="toolbar-filter" id="filterSize2">
                                     <option value="all">全部大小</option>
                                     <option value="small">小 (≤1MB)</option>
                                     <option value="medium">中 (1-10MB)</option>
                                     <option value="large">大 (10-100MB)</option>
                                     <option value="huge">超大 (100MB+)</option>
                                 </select>
-                                <select class="filter-select" id="filterSort">
+                                <select class="toolbar-filter" id="filterSort">
                                     <option value="time">按时间</option>
                                     <option value="name">按名称</option>
                                     <option value="size">按大小</option>
                                 </select>
-                                <button class="sort-btn" id="fileSortToggle" title="切换排序">↑↓</button>
                                 <div class="view-toggle">
-                                    <button class="view-toggle-btn active" id="viewList" title="列表视图">☰</button>
-                                    <button class="view-toggle-btn" id="viewGrid" title="缩略图视图">▦</button>
+                                    <button class="view-toggle-btn active" id="viewList" title="列表">☰</button>
+                                    <button class="view-toggle-btn" id="viewGrid" title="网格">▦</button>
                                 </div>
                             </div>
                         </div>
-                        <div class="file-browser-list" id="recentFileList">
-                            <div class="file-list-empty" id="recentFileEmpty">
-                                <div class="file-list-empty-icon">
-                                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" opacity="0.25">
-                                        <rect x="10" y="6" width="28" height="36" rx="3" stroke="currentColor" stroke-width="1.5"/>
-                                        <path d="M10 18h28M10 26h28M10 34h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                                        <path d="M24 42V30m-6 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        <div class="file-area" id="recentFileList">
+                            <div class="empty-state" id="recentFileEmpty">
+                                <div class="empty-state-icon">
+                                    <svg viewBox="0 0 28 28" fill="none">
+                                        <path d="M6 4h10l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z" stroke="currentColor" stroke-width="1.3"/>
+                                        <path d="M16 4v6h6" stroke="currentColor" stroke-width="1.3"/>
+                                        <path d="M10 15h8M10 18h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                                     </svg>
                                 </div>
-                                <span class="file-list-empty-title">拖拽文件到此处</span>
-                                <span class="file-list-empty-sub">支持 PDF、Office 文档，或点击左侧「导入 PDF」按钮</span>
+                                <div class="empty-state-title">没有最近的文件</div>
+                                <div class="empty-state-sub">拖拽 PDF、Office 文档到此处，或点击按钮打开</div>
                             </div>
                         </div>
                     </div>
@@ -145,6 +165,55 @@
 
             <div class="document-reader-panel" id="documentReaderPanel">
                 <div class="doc-reader-scroll-container" id="docReaderScrollContainer"></div>
+            </div>
+
+            <div class="sp-settings-panel" id="settingsPanel" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;z-index:15;flex-direction:column;background:var(--color-canvas);">
+                <div class="sp-aurora-bg" id="auroraBg"></div>
+                <div class="sp-main-container">
+                    <div class="app-sidebar" id="settingsSidebar">
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">设置</div>
+                            <button class="sidebar-item sp-active" id="btnApp"><span class="sp-btn-icon"><img data-icon="app-settings" width="16" height="16"></span><span class="btn-text">应用设置</span></button>
+                            <button class="sidebar-item" id="btnStorage"><span class="sp-btn-icon"><img data-icon="folder" width="16" height="16"></span><span class="btn-text">存储</span></button>
+                            <button class="sidebar-item" id="btnCanvas"><span class="sp-btn-icon"><img data-icon="canvas" width="16" height="16"></span><span class="btn-text">Canvas</span></button>
+                            <button class="sidebar-item" id="btnDocReader"><span class="sp-btn-icon"><img data-icon="file-text" width="16" height="16"></span><span class="btn-text">文档阅读器</span></button>
+                            <button class="sidebar-item" id="btnTheme"><span class="sp-btn-icon"><img data-icon="theme-icon" width="16" height="16"></span><span class="btn-text">主题</span></button>
+                            <button class="sidebar-item" id="btnAbout"><span class="sp-btn-icon"><img data-icon="about" width="16" height="16"></span><span class="btn-text">关于</span></button>
+                            <button class="sidebar-item" id="btnDevOptions" style="display:none;"><span class="sp-btn-icon"><img data-icon="gear" width="16" height="16"></span><span class="btn-text">开发者选项</span></button>
+                        </div>
+                    </div>
+                    <div class="sp-content">
+                        <div class="sp-page" id="pageApp">
+                            <h2 class="sp-page-title" data-i18n="settings.appSettings">应用设置</h2>
+                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.language">语言</span><div class="sp-custom-select" id="languageSelect"><div class="sp-select-selected" id="selectSelected">简体中文</div><div class="sp-select-options" id="selectOptions"><div class="sp-select-option" data-value="zh-CN">简体中文</div><div class="sp-select-option" data-value="zh-TW">繁體中文</div><div class="sp-select-option" data-value="en-US">English</div><div class="sp-select-option" data-value="ja-JP">日本語</div><div class="sp-select-option" data-value="ko-KR">한국어</div><div class="sp-select-option" data-value="fr-FR">Français</div><div class="sp-select-option" data-value="de-DE">Deutsch</div><div class="sp-select-option" data-value="es-ES">Español</div><div class="sp-select-option" data-value="ru-RU">Русский</div></div></div></div>
+                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.settingsManagement">设置管理</span><div class="sp-button-group"><button class="sp-btn-action" id="btnExportSettings" data-i18n="settings.exportSettings">导出设置</button><button class="sp-btn-action" id="btnImportSettings" data-i18n="settings.importSettings">导入设置</button></div></div>
+                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.blackboardEnabled">小黑板</span><label class="sp-toggle-switch"><input type="checkbox" id="blackboardEnabledToggle" checked><span class="sp-toggle-slider"></span></label></div>
+                            <div class="sp-setting-item sp-flex-start" id="telemetryItem"><span class="sp-setting-label" data-i18n="settings.telemetry">遥测功能</span><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><label class="sp-toggle-switch"><input type="checkbox" id="telemetryToggle" checked><span class="sp-toggle-slider"></span></label><span class="sp-setting-hint" data-i18n="settings.telemetryHint" style="text-align:right;">遥测数据仅用于分析使用情况</span></div></div>
+                            <div class="sp-setting-item"><button class="sp-btn-reset" id="btnReset" data-i18n="settings.resetApp">重置应用</button></div>
+                        </div>
+                        <div class="sp-page" id="pageCanvas">
+                            <h2 class="sp-page-title" data-i18n="settings.canvasAdjust">Canvas调节</h2>
+                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.frameRateMode">帧率模式</span><div class="sp-option-group" id="frameRateModeGroup"><button class="sp-option-btn" data-value="low" data-i18n="settings.frameRateLow">低帧率</button><button class="sp-option-btn" data-value="adaptive" data-i18n="settings.frameRateAdaptive">自适应</button><button class="sp-option-btn" data-value="high" data-i18n="settings.frameRateHigh">高帧率</button></div></div>
+                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.penEffect">钢笔效果</span><div class="sp-option-group" id="penEffectModeGroup"><button class="sp-option-btn" data-value="off" data-i18n="settings.penEffectOff">关闭</button><button class="sp-option-btn" data-value="limited" data-i18n="settings.penEffectLimited">限制</button><button class="sp-option-btn" data-value="full" data-i18n="settings.penEffectFull">完整</button></div></div>
+                            <div class="sp-setting-item sp-flex-start"><span class="sp-setting-label" data-i18n="settings.dynamicResolution">动态分辨率</span><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><label class="sp-toggle-switch"><input type="checkbox" id="dynamicDprToggle"><span class="sp-toggle-slider"></span></label><span class="sp-setting-hint" data-i18n="settings.dynamicResolutionHint">放大时自动提高画布分辨率以获得更清晰的显示</span></div></div>
+                            <div class="sp-setting-item sp-flex-start" id="palmEraserItem"><span class="sp-setting-label" data-i18n="settings.palmEraser">手掌擦除</span><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><label class="sp-toggle-switch"><input type="checkbox" id="palmEraserToggle"><span class="sp-toggle-slider"></span></label><span class="sp-setting-hint" data-i18n="settings.palmEraserHint">手掌/多指触摸时自动切换为方块擦除</span></div></div>
+                            <div class="sp-setting-item" id="dprRangeItem"><span class="sp-setting-label">DPR <span data-i18n="settings.range">范围</span></span><div class="sp-range-group"><div class="sp-custom-select sp-mini-select" id="dprMinSelect"><div class="sp-select-selected" id="dprMinSelected">1x</div><div class="sp-select-options" id="dprMinOptions"><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x</div></div></div><span class="sp-range-sep">~</span><div class="sp-custom-select sp-mini-select" id="dprMaxSelect"><div class="sp-select-selected" id="dprMaxSelected">4x</div><div class="sp-select-options" id="dprMaxOptions"><div class="sp-select-option" data-value="2">2x</div><div class="sp-select-option" data-value="3">3x</div><div class="sp-select-option" data-value="4">4x</div><div class="sp-select-option" data-value="6">6x</div></div></div></div></div>
+                            <div class="sp-setting-item" id="dprLimitItem"><span class="sp-setting-label" data-i18n="settings.dprLimit">画面精度</span><div class="sp-custom-select" id="dprLimitSelect"><div class="sp-select-selected" id="dprLimitSelected">2x</div><div class="sp-select-options" id="dprLimitOptions"><div class="sp-select-option" data-value="0"><span data-i18n="settings.dprAuto">自动</span></div><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x (<span data-i18n="settings.resolutionStandard">标准</span>)</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x (<span data-i18n="settings.resolutionStandard">标准</span>)</div><div class="sp-select-option" data-value="3">3x (<span data-i18n="settings.resolutionVeryHigh">超高</span>)</div><div class="sp-select-option" data-value="4">4x (<span data-i18n="settings.resolutionMax">最高</span>)</div></div></div></div>
+                            <div class="sp-setting-item" id="overlayDprItem"><span class="sp-setting-label" data-i18n="settings.overlayDpr">叠加层 DPR</span><div class="sp-custom-select" id="overlayDprSelect"><div class="sp-select-selected" id="overlayDprSelected">2x</div><div class="sp-select-options" id="overlayDprOptions"><div class="sp-select-option" data-value="0"><span data-i18n="settings.overlayDprAuto">自动</span></div><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x</div></div></div></div>
+                            <div class="sp-setting-item sp-flex-start"><span class="sp-setting-label" data-i18n="settings.penColors">画笔颜色</span><div class="sp-color-editor" id="colorEditor"><div class="sp-color-editor-row"><div class="sp-color-edit-item" data-index="0"><span class="sp-color-edit-label">1</span><div class="sp-color-edit-btn" style="background-color:#3498db;" data-color="#3498db"></div></div><div class="sp-color-edit-item" data-index="1"><span class="sp-color-edit-label">2</span><div class="sp-color-edit-btn" style="background-color:#2ecc71;" data-color="#2ecc71"></div></div><div class="sp-color-edit-item" data-index="2"><span class="sp-color-edit-label">3</span><div class="sp-color-edit-btn" style="background-color:#e74c3c;" data-color="#e74c3c"></div></div><div class="sp-color-edit-item" data-index="3"><span class="sp-color-edit-label">4</span><div class="sp-color-edit-btn" style="background-color:#f39c12;" data-color="#f39c12"></div></div><div class="sp-color-edit-item" data-index="4"><span class="sp-color-edit-label">5</span><div class="sp-color-edit-btn" style="background-color:#9b59b6;" data-color="#9b59b6"></div></div></div><div class="sp-color-editor-row"><div class="sp-color-edit-item" data-index="5"><span class="sp-color-edit-label">6</span><div class="sp-color-edit-btn" style="background-color:#1abc9c;" data-color="#1abc9c"></div></div><div class="sp-color-edit-item" data-index="6"><span class="sp-color-edit-label">7</span><div class="sp-color-edit-btn" style="background-color:#34495e;" data-color="#34495e"></div></div><div class="sp-color-edit-item" data-index="7"><span class="sp-color-edit-label">8</span><div class="sp-color-edit-btn" style="background-color:#e91e63;" data-color="#e91e63"></div></div><div class="sp-color-edit-item" data-index="8"><span class="sp-color-edit-label">9</span><div class="sp-color-edit-btn" style="background-color:#00bcd4;" data-color="#00bcd4"></div></div><div class="sp-color-edit-item" data-index="9"><span class="sp-color-edit-label">10</span><div class="sp-color-edit-btn" style="background-color:#8bc34a;" data-color="#8bc34a"></div></div></div><div class="sp-color-editor-row"><div class="sp-color-edit-item" data-index="10"><span class="sp-color-edit-label">11</span><div class="sp-color-edit-btn" style="background-color:#ff5722;" data-color="#ff5722"></div></div><div class="sp-color-edit-item" data-index="11"><span class="sp-color-edit-label">12</span><div class="sp-color-edit-btn" style="background-color:#673ab7;" data-color="#673ab7"></div></div><div class="sp-color-edit-item" data-index="12"><span class="sp-color-edit-label">13</span><div class="sp-color-edit-btn" style="background-color:#795548;" data-color="#795548"></div></div><div class="sp-color-edit-item" data-index="13"><span class="sp-color-edit-label">14</span><div class="sp-color-edit-btn" style="background-color:#000000;" data-color="#000000"></div></div><div class="sp-color-edit-item" data-index="14"><span class="sp-color-edit-label">15</span><div class="sp-color-edit-btn" style="background-color:#ffffff;" data-color="#ffffff"></div></div></div></div><div class="sp-color-picker-popup" id="colorPickerPopup"><div class="sp-color-picker-sv" id="colorPickerSV"><div class="sp-color-picker-sv-white"></div><div class="sp-color-picker-sv-black"></div><div class="sp-color-picker-sv-cursor" id="colorPickerSVCursor"></div></div><div class="sp-color-picker-hue" id="colorPickerHue"><div class="sp-color-picker-hue-cursor" id="colorPickerHueCursor"></div></div><div class="sp-color-picker-presets" id="colorPickerPresets"></div><div class="sp-color-picker-input-row"><div class="sp-color-picker-preview" id="colorPickerPreview"></div><input type="text" class="sp-color-picker-input" id="colorPickerInput" placeholder="#RRGGBB"><div class="sp-color-picker-btns"><button class="sp-color-picker-btn sp-color-picker-btn-cancel" id="colorPickerCancel" data-i18n="common.cancel">取消</button><button class="sp-color-picker-btn" id="colorPickerConfirm" data-i18n="common.confirm">确定</button></div></div></div></div>
+                            <div class="sp-setting-item sp-flex-start"><span class="sp-setting-label" data-i18n="settings.penSizePresets">画笔预设粗细</span><div class="sp-preset-editor" id="penPresetEditor"><div class="sp-preset-editor-row"><div class="sp-preset-item"><span class="sp-preset-label">1</span><input type="number" class="sp-preset-input" id="penPreset0" min="0" max="100" value="2"><span class="sp-preset-default-dot" data-default="pen" data-index="0"></span></div><div class="sp-preset-item"><span class="sp-preset-label">2</span><input type="number" class="sp-preset-input" id="penPreset1" min="0" max="100" value="5"><span class="sp-preset-default-dot" data-default="pen" data-index="1"></span></div><div class="sp-preset-item"><span class="sp-preset-label">3</span><input type="number" class="sp-preset-input" id="penPreset2" min="0" max="100" value="10"><span class="sp-preset-default-dot" data-default="pen" data-index="2"></span></div><div class="sp-preset-item"><span class="sp-preset-label">4</span><input type="number" class="sp-preset-input" id="penPreset3" min="0" max="100" value="15"><span class="sp-preset-default-dot" data-default="pen" data-index="3"></span></div><div class="sp-preset-item"><span class="sp-preset-label">5</span><input type="number" class="sp-preset-input" id="penPreset4" min="0" max="100" value="21"><span class="sp-preset-default-dot" data-default="pen" data-index="4"></span></div><button class="sp-preset-restore-btn" id="penPresetRestore" data-i18n="settings.restoreDefaults">恢复默认</button></div></div></div>
+                            <div class="sp-setting-item sp-flex-start" id="eraserPresetsItem"><span class="sp-setting-label" data-i18n="settings.eraserSizePresets">橡皮擦粗细预设</span><div class="sp-preset-editor" id="eraserPresetEditor"><div class="sp-preset-editor-row"><div class="sp-preset-item"><span class="sp-preset-label">1</span><input type="number" class="sp-preset-input" id="eraserPreset0" min="0" max="200" value="5"><span class="sp-preset-default-dot" data-default="eraser" data-index="0"></span></div><div class="sp-preset-item"><span class="sp-preset-label">2</span><input type="number" class="sp-preset-input" id="eraserPreset1" min="0" max="200" value="15"><span class="sp-preset-default-dot" data-default="eraser" data-index="1"></span></div><div class="sp-preset-item"><span class="sp-preset-label">3</span><input type="number" class="sp-preset-input" id="eraserPreset2" min="0" max="200" value="25"><span class="sp-preset-default-dot" data-default="eraser" data-index="2"></span></div><div class="sp-preset-item"><span class="sp-preset-label">4</span><input type="number" class="sp-preset-input" id="eraserPreset3" min="0" max="200" value="38"><span class="sp-preset-default-dot" data-default="eraser" data-index="3"></span></div><div class="sp-preset-item"><span class="sp-preset-label">5</span><input type="number" class="sp-preset-input" id="eraserPreset4" min="0" max="200" value="50"><span class="sp-preset-default-dot" data-default="eraser" data-index="4"></span></div><button class="sp-preset-restore-btn" id="eraserPresetRestore" data-i18n="settings.restoreDefaults">恢复默认</button></div></div></div>
+                        </div>
+                        <div class="sp-page" id="pageDocReader"><h2 class="sp-page-title" data-i18n="settings.docReader">文档阅读器</h2><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.docReaderDefaultZoom">默认缩放</span><div class="sp-option-group" id="docReaderZoomGroup"><button class="sp-option-btn sp-active" data-value="fitWidth" data-i18n="settings.docReaderFitWidth">适合宽度</button><button class="sp-option-btn" data-value="fitPage" data-i18n="settings.docReaderFitPage">适合页面</button></div></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.pdfDefaultOpen">PDF 默认打开方式</span><div class="sp-button-group"><button class="sp-btn-action" id="btnSetPdf" data-i18n="settings.setDefault">设置为默认</button><span id="pdfDefaultStatus" class="sp-association-status"></span></div></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.wordDefaultOpen">Word 文档默认打开方式</span><div class="sp-button-group"><button class="sp-btn-action" id="btnSetWord" data-i18n="settings.setDefault">设置为默认</button><span id="wordDefaultStatus" class="sp-association-status"></span></div></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.restoreLastDoc">恢复上次文档状态</span><label class="sp-toggle-switch"><input type="checkbox" id="restoreLastDocToggle"><span class="sp-toggle-slider"></span></label></div></div>
+                        <div class="sp-page" id="pageTheme"><h2 class="sp-page-title" data-i18n="settings.theme">主题</h2><div class="sp-theme-grid" id="themeGrid"></div></div>
+                        <div class="sp-page" id="pageStorage"><h2 class="sp-page-title" data-i18n="settings.storage">存储</h2><div class="sp-setting-item"><span class="sp-setting-label"><span data-i18n="settings.cache">缓存</span> <span id="cacheSize" style="color:#888;font-size:12px;"></span></span><button class="sp-btn-clear-cache" id="btnClearCache" data-i18n="settings.clearCache">清除缓存</button></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.autoClearCache">自动清除缓存</span><div class="sp-custom-select" id="autoClearCacheSelect"><div class="sp-select-selected" id="autoClearCacheSelected" data-i18n="settings.biweekly">每半月</div><div class="sp-select-options" id="autoClearCacheOptions"><div class="sp-select-option" data-value="0" data-i18n="settings.close">关闭</div><div class="sp-select-option" data-value="1" data-i18n="settings.daily">每天</div><div class="sp-select-option" data-value="7" data-i18n="settings.weekly">每周</div><div class="sp-select-option" data-value="15" data-i18n="settings.biweekly">每半月</div><div class="sp-select-option" data-value="30" data-i18n="settings.monthly">每月</div></div></div></div><div class="sp-setting-item"><span class="sp-setting-label"><span data-i18n="settings.wordCache">Word 转换缓存</span> <span id="wordCacheSize" style="color:#888;font-size:12px;"></span></span><button class="sp-btn-clear-cache" id="btnClearWordCache" data-i18n="settings.clearWordCache">清除 Word 缓存</button></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.autoClearWordCache">自动清除 Word 缓存</span><div class="sp-custom-select" id="autoClearWordCacheSelect"><div class="sp-select-selected" id="autoClearWordCacheSelected" data-i18n="settings.monthly">每月</div><div class="sp-select-options" id="autoClearWordCacheOptions"><div class="sp-select-option" data-value="0" data-i18n="settings.close">关闭</div><div class="sp-select-option" data-value="7" data-i18n="settings.weekly">每周</div><div class="sp-select-option" data-value="15" data-i18n="settings.biweekly">每半月</div><div class="sp-select-option" data-value="30" data-i18n="settings.monthly">每月</div><div class="sp-select-option" data-value="90" data-i18n="settings.quarterly">每季</div></div></div></div><div class="sp-setting-item" style="flex-direction:column;align-items:flex-start;"><span class="sp-setting-label" data-i18n="settings.docStateCleanup">文档状态清理</span><span class="sp-setting-desc" data-i18n="settings.docStateCleanupDesc">自动清理超过 15 天未打开的文档状态记录（随缓存清理一起执行）</span></div><div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.log">日志</span><button class="sp-btn-clear-cache" id="btnOpenLogDir" data-i18n="settings.openLogDir">打开日志目录</button></div></div>
+                        <div class="sp-page" id="pageAbout"><div class="sp-about-inner"><div class="sp-about-logo"><img class="sp-logo-icon" src="assets/Square1024x1024Logo.png" alt="ViewPDF"><h1>ViewPDF</h1></div><div class="sp-about-version"><span class="sp-version-label" data-i18n="settings.version">版本</span><span class="sp-version-number" id="versionNumber">...</span></div><div class="sp-about-info"><p data-i18n="about.description">ViewPDF 是一款用于视频演示和文档批注的应用程序。</p></div><div class="sp-about-links"><a href="#" class="sp-link-item" id="linkGithub"><span class="sp-link-icon"><img data-icon="github" width="14" height="14"></span><span>GitHub</span></a><a href="#" class="sp-link-item" id="linkLicense"><span class="sp-link-icon"><img data-icon="file-text" width="14" height="14"></span><span data-i18n="settings.openSource">开源许可</span></a><button class="sp-link-item" id="btnUpdate"><span class="sp-link-icon"><img data-icon="update" width="14" height="14"></span><span data-i18n="settings.update">更新</span></button></div><div class="sp-about-copyright"><p id="copyrightText">© <span id="copyrightYear"></span> SECTL. All rights reserved.</p></div></div></div>
+                        <div class="sp-page" id="pageDevOptions"></div>
+                        <div class="sp-page" id="pageUpdate"><div class="sp-update-banner" id="updateBanner" style="display:none"></div><div class="sp-update-app-info" id="updateAppInfo" style="display:none"><img class="sp-update-logo" src="assets/Square1024x1024Logo.png" alt="ViewPDF"><span class="sp-update-app-name">ViewPDF</span></div><div class="sp-release-notes" id="updateNotes" style="display:none"></div><div class="sp-update-actions" id="updateActions"><button class="sp-btn-action sp-btn-update-download" id="btnUpdateDownload" style="display:none" data-i18n="settings.downloadUpdate">下载更新</button></div><div class="sp-update-download-progress" id="updateDownloadProgress" style="display:none"><div class="sp-progress-bar"><div class="sp-progress-fill" id="updateProgressBar"></div></div><div class="sp-progress-label" id="updateProgressText">0%</div></div><div id="updateStatus"><div class="sp-spinner"></div><div class="sp-update-text">检查更新...</div></div></div>
+                    </div>
+                </div>
+                <div class="sp-modal-overlay" id="modalOverlay"><div class="sp-modal-dialog"><div class="sp-modal-title" data-i18n="settings.confirmReset">确认重置</div><div class="sp-modal-message" data-i18n="settings.resetWarning">确定要重置应用吗？这将删除所有设置并重启应用。</div><div class="sp-modal-buttons"><button class="sp-modal-btn sp-modal-btn-cancel" id="modalCancel" data-i18n="common.cancel">取消</button><button class="sp-modal-btn sp-modal-btn-confirm" id="modalConfirm" data-i18n="common.confirm">确认</button></div></div></div>
+                <div class="sp-modal-overlay" id="restartModal"><div class="sp-modal-dialog"><div class="sp-modal-title" data-i18n="settings.restartApp">重启应用</div><div class="sp-modal-message" data-i18n="settings.languageChanged">语言设置已更改，需要重启应用才能生效。</div><div class="sp-modal-buttons"><button class="sp-modal-btn sp-modal-btn-cancel" id="restartLater" data-i18n="settings.restartLater">稍后</button><button class="sp-modal-btn sp-modal-btn-confirm" id="restartNow" data-i18n="settings.restartNow">立即重启</button></div></div></div>
             </div>
         </div>
     </div>

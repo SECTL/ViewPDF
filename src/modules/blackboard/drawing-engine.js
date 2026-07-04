@@ -1,5 +1,5 @@
 /**
- * ViewStage 公共绘制引擎
+ * ViewPDF 公共绘制引擎
  * 封装笔画生命周期、batch_draw 集成、橡皮擦、历史管理
  * 通过 CoordinateProvider 抽象与具体坐标系解耦
  *
@@ -57,15 +57,6 @@ export class DrawingEngine {
 
         // 缓存鼠标/触摸位置的 rect（减少 getBoundingClientRect 调用）
         this.draw_canvas_rect = null;
-
-        // 速度擦除状态
-        this._eraser_speed_state = null;
-        this._last_draw_time = 0;
-        this._last_draw_x = null;
-        this._last_draw_y = null;
-        this._speed_buffer = new Array(5);
-        this._speed_buffer_idx = 0;
-        this._speed_buffer_count = 0;
 
         // batch_draw
         this.batch_draw = null;
@@ -186,10 +177,7 @@ export class DrawingEngine {
             lineWidth: type === 'draw' ? DRAW_CONFIG.penWidth * inv_scale : baseEraserSize,
             eraserSize: baseEraserSize,
             eraserSizeRaw: DRAW_CONFIG.eraserSize,
-            eraserSpeedEnabled: DRAW_CONFIG.eraserSpeedEnabled,
-            eraserSpeedMinSize: (DRAW_CONFIG.eraserSpeedMinSize || 0) * inv_scale,
-            eraserSpeedMaxSize: (DRAW_CONFIG.eraserSpeedMaxSize || 0) * inv_scale,
-            eraserSpeedFactor: DRAW_CONFIG.eraserSpeedFactor,
+
             scale: this.coord.get_scale() || 1,
             bounds: {
                 minX: Infinity, minY: Infinity,
@@ -206,14 +194,6 @@ export class DrawingEngine {
         this.cached_draw_color = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
         const currentScale = this._fetch_safe_scale();
         this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth / currentScale : DRAW_CONFIG.eraserSize / currentScale;
-
-        this._last_draw_time = performance.now();
-        this._last_draw_x = null;
-        this._last_draw_y = null;
-        this._speed_buffer = new Array(5);
-        this._speed_buffer_idx = 0;
-        this._speed_buffer_count = 0;
-        this._eraser_speed_state = window.__eraserSpeed?.eraser_speed_create_state() ?? null;
 
         if (this.batch_draw) {
             this.batch_draw.batch_draw_init_start();
@@ -244,32 +224,6 @@ export class DrawingEngine {
             currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
             this.current_line_width = currentWidth;
             this.cached_draw_line_width = DRAW_CONFIG.penWidth / currentScale;
-        } else if (stroke.type === 'erase' && stroke.eraserSpeedEnabled) {
-            if (this._eraser_speed_state && window.__eraserSpeed) {
-                currentWidth = window.__eraserSpeed.eraser_speed_update(this._eraser_speed_state, stroke, to_x, to_y);
-            } else {
-                const now = performance.now();
-                const dt = now - this._last_draw_time;
-                if (this._last_draw_x !== null && dt > 0) {
-                    const dx = to_x - this._last_draw_x;
-                    const dy = to_y - this._last_draw_y;
-                    const speed = Math.sqrt(dx * dx + dy * dy) / dt;
-                    // 环形缓冲区替代 push/shift，避免数组扩容和 O(n) 移位
-                    this._speed_buffer[this._speed_buffer_idx] = speed;
-                    this._speed_buffer_idx = (this._speed_buffer_idx + 1) % 5;
-                    if (this._speed_buffer_count < 5) this._speed_buffer_count++;
-                    let speed_sum = 0;
-                    for (let i = 0; i < this._speed_buffer_count; i++) speed_sum += this._speed_buffer[i];
-                    const avgSpeed = speed_sum / this._speed_buffer_count;
-                    const sizeRange = stroke.eraserSpeedMaxSize - stroke.eraserSpeedMinSize;
-                    currentWidth = stroke.eraserSpeedMinSize + Math.min(avgSpeed * stroke.eraserSpeedFactor * 100, sizeRange);
-                    currentWidth = Math.max(stroke.eraserSpeedMinSize, Math.min(stroke.eraserSpeedMaxSize, currentWidth));
-                }
-                this._last_draw_time = now;
-                this._last_draw_x = to_x;
-                this._last_draw_y = to_y;
-            }
-            this.cached_draw_line_width = currentWidth;
         } else if (stroke.type === 'erase') {
             this.cached_draw_line_width = DRAW_CONFIG.eraserSize / currentScale;
         }

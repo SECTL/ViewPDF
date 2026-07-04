@@ -1,4 +1,4 @@
-// lib.rs — ViewStage Rust 后端
+// lib.rs — ViewPDF Rust 后端
 // Tauri IPC 命令注册入口，集成了图像处理、设置管理、文件转换、更新检测等核心模块
 
 use tauri::{Manager, Emitter};
@@ -70,6 +70,98 @@ fn dir_fetch_cache(app: tauri::AppHandle) -> Result<String, String> {
     Ok(paths.cache_dir.to_string_lossy().to_string())
 }
 
+/// Tauri IPC 命令：获取 Word 转换缓存目录总字节数
+#[tauri::command]
+fn word_cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    
+    if !word_cache.exists() {
+        return Ok(0);
+    }
+    
+    Ok(directory_calc_size(&word_cache))
+}
+
+/// Tauri IPC 命令：清空 Word 转换缓存
+#[tauri::command]
+fn word_cache_delete_all(app: tauri::AppHandle) -> Result<String, String> {
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    
+    if !word_cache.exists() {
+        return Ok("Word 转换缓存目录不存在".to_string());
+    }
+    
+    let (cleared_size, cleared_files) = directory_delete_contents(&word_cache);
+    let _ = std::fs::remove_dir(&word_cache);
+    
+    log::info!("清除 Word 转换缓存: {} 字节, {} 个文件", cleared_size, cleared_files);
+    
+    Ok(format!("已清除 {} 个 Word 转换缓存文件，共 {:.2} MB", cleared_files, cleared_size as f64 / 1024.0 / 1024.0))
+}
+
+/// Tauri IPC 命令：以天为单位格式化当前日期（供 JS 比较自动清理间隔）
+#[tauri::command]
+fn word_cache_last_clear(app: tauri::AppHandle) -> Result<(String, u64), String> {
+    let paths = AppPaths::new(&app)?;
+    let config_file = &paths.config_path;
+    
+    if !config_file.exists() {
+        return Ok(("".to_string(), 0));
+    }
+    
+    let config_content = std::fs::read_to_string(config_file).map_err(|e| e.to_string())?;
+    let config: serde_json::Value = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    let days = config.get("wordCacheClearDays").and_then(|v| v.as_u64()).unwrap_or(0);
+    let last = config.get("lastWordCacheClearDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    
+    Ok((last, days))
+}
+
+/// 递归计算目录总大小（字节）
+fn directory_calc_size(path: &std::path::Path) -> u64 {
+    let mut size = 0;
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    size += directory_calc_size(&path);
+                } else {
+                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+    }
+    size
+}
+
+/// 递归清空目录内容（不删除目录本身）
+fn directory_delete_contents(path: &std::path::Path) -> (u64, u32) {
+    let mut size = 0u64;
+    let mut count = 0u32;
+    
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                let (s, c) = directory_delete_contents(&entry_path);
+                size += s;
+                count += c;
+                let _ = std::fs::remove_dir(&entry_path);
+            } else {
+                size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(&entry_path).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    (size, count)
+}
+
 /// Tauri IPC 命令：获取缓存目录总字节数
 #[tauri::command]
 fn cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
@@ -77,23 +169,6 @@ fn cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
     
     if !paths.cache_dir.exists() {
         return Ok(0);
-    }
-    
-    fn directory_calc_size(path: &std::path::Path) -> u64 {
-        let mut size = 0;
-        if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        size += directory_calc_size(&path);
-                    } else {
-                        size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    }
-                }
-            }
-        }
-        size
     }
     
     Ok(directory_calc_size(&paths.cache_dir))
@@ -106,29 +181,6 @@ fn cache_delete_all(app: tauri::AppHandle) -> Result<String, String> {
     
     if !paths.cache_dir.exists() {
         return Ok("缓存目录不存在".to_string());
-    }
-    
-    fn directory_delete_contents(path: &std::path::Path) -> (u64, u32) {
-        let mut size = 0u64;
-        let mut count = 0u32;
-        
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    let (s, c) = directory_delete_contents(&entry_path);
-                    size += s;
-                    count += c;
-                    let _ = std::fs::remove_dir(&entry_path);
-                } else {
-                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    if std::fs::remove_file(&entry_path).is_ok() {
-                        count += 1;
-                    }
-                }
-            }
-        }
-        (size, count)
     }
     
     let (cleared_size, cleared_files) = directory_delete_contents(&paths.cache_dir);
@@ -335,6 +387,87 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         write_atomic(&temp_path, config_file, &updated_config)?;
         
         log::info!("自动清除缓存完成");
+        return Ok(true);
+    }
+    
+    Ok(false)
+}
+
+/// Tauri IPC 命令：检查是否达到自动清除 Word 转换缓存的间隔，若达到则执行清理
+#[tauri::command]
+fn word_cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
+    let paths = AppPaths::new(&app)?;
+    let config_file = &paths.config_path;
+    
+    if !config_file.exists() {
+        return Ok(false);
+    }
+    
+    let config_content = match std::fs::read_to_string(config_file) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("word_cache_validate_auto_clear 读取配置文件失败: {}，跳过自动清除", e);
+            return Ok(false);
+        }
+    };
+    
+    let config: serde_json::Value = match serde_json::from_str(&config_content) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("word_cache_validate_auto_clear 解析配置文件失败: {}，跳过自动清除", e);
+            return Ok(false);
+        }
+    };
+    
+    let auto_clear_days = config.get("wordCacheClearDays")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    
+    if auto_clear_days == 0 {
+        log::info!("自动清除 Word 转换缓存已关闭");
+        return Ok(false);
+    }
+    
+    let last_clear_date = config.get("lastWordCacheClearDate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    
+    if last_clear_date == today {
+        log::info!("今日已执行过自动清除 Word 转换缓存");
+        return Ok(false);
+    }
+    
+    if last_clear_date.is_empty() {
+        let mut updated_config = config.clone();
+        updated_config["lastWordCacheClearDate"] = serde_json::json!(today);
+        let temp_path = config_file.with_extension("json.tmp");
+        write_atomic(&temp_path, config_file, &updated_config)?;
+        log::info!("首次设置自动清除 Word 转换缓存日期");
+        return Ok(false);
+    }
+    
+    let last_date = chrono::NaiveDate::parse_from_str(last_clear_date, "%Y-%m-%d")
+        .map_err(|e| format!("Failed to parse last word cache clear date: {}", e))?;
+    let today_date = chrono::Local::now().date_naive();
+    
+    let days_since_last_clear = (today_date - last_date).num_days();
+    
+    if days_since_last_clear >= auto_clear_days as i64 {
+        log::info!("执行自动清除 Word 转换缓存，距上次清除 {} 天", days_since_last_clear);
+        
+        let word_cache = paths.cache_dir.join("word-cache");
+        if word_cache.exists() {
+            directory_delete_contents(&word_cache);
+            log::info!("自动清除 Word 转换缓存完成");
+        }
+        
+        let mut updated_config = config.clone();
+        updated_config["lastWordCacheClearDate"] = serde_json::json!(today);
+        let temp_path = config_file.with_extension("json.tmp");
+        write_atomic(&temp_path, config_file, &updated_config)?;
+        
         return Ok(true);
     }
     
@@ -763,35 +896,6 @@ static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 // ==================== 设置窗口 ====================
 
-/// Tauri IPC 命令：打开或聚焦设置窗口（600×600，无边框，置顶）
-#[tauri::command]
-async fn window_show_settings(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
-    
-    if let Some(window) = app.get_webview_window("settings") {
-        window.set_focus().map_err(|e| format!("Failed to focus settings window: {}", e))?;
-        return Ok(());
-    }
-    
-    let window = WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        tauri::WebviewUrl::App("settings.html".into())
-    )
-    .title("设置")
-    .inner_size(960.0, 540.0)
-    .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .center()
-    .build()
-    .map_err(|e| format!("Failed to create settings window: {}", e))?;
-
-    window.set_focus().map_err(|e| format!("Failed to focus new settings window: {}", e))?;
-
-    Ok(())
-}
-
 /// Tauri IPC 命令：切换窗口最大化/还原状态
 #[tauri::command]
 async fn window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
@@ -970,7 +1074,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION");
     
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
         .https_only(true)
         .build()
@@ -978,7 +1082,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     
     // 1. 通过 SECTL 获取最新 Tag
     let response = client
-        .get("https://appwrite.sectl.cn/api/software/latest-tag?projectSlug=ViewStage")
+        .get("https://appwrite.sectl.cn/api/software/latest-tag?projectSlug=ViewPDF")
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -1008,7 +1112,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     // 2. 有更新时获取该 Release 的详细数据（GitHub，已知版本）
     let release = if has_update {
         let github_url = format!(
-            "https://api.github.com/repos/ospneam/ViewStage/releases/tags/{}",
+            "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
             latest_tag
         );
         match client.get(&github_url).send().await {
@@ -1035,7 +1139,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     let current_tag = format!("v{}", current_version);
     let current_release = match client
         .get(format!(
-            "https://api.github.com/repos/ospneam/ViewStage/releases/tags/{}",
+            "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
             current_tag
         ))
         .send()
@@ -1058,7 +1162,7 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
 #[tauri::command]
 async fn telemetry_http_post(url: String, body: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1089,7 +1193,7 @@ async fn telemetry_http_post(url: String, body: String) -> Result<String, String
 #[tauri::command]
 async fn telemetry_http_get(url: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1206,14 +1310,14 @@ fn config_fetch_default() -> serde_json::Value {
         "autoClearCacheDays": 15,
         "lastCacheClearDate": "",
         "theme": "com.viewstage.theme.simplify",
-        "eraserSpeedEnabled": false,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
+        "wordCacheClearDays": 30,
+        "lastWordCacheClearDate": "",
         "developerMode": false,
         "penMinWidthRatio": 0.2,
         "lastOpenDoc": null,
-        "restoreLastDoc": true,
-        "blurEnabled": false
+        "restoreLastDoc": true
     })
 }
 
@@ -1465,7 +1569,7 @@ fn write_atomic(temp_path: &std::path::Path, config_path: &std::path::Path, valu
     Ok(())
 }
 
-/// Tauri IPC 命令（Windows）：检测 ViewStage 是否已设为 PDF 默认打开程序
+/// Tauri IPC 命令（Windows）：检测 ViewStage/ViewPDF 是否已设为 PDF 默认打开程序
 ///
 /// 分别检查 HKCU UserChoice 和 HKCR 注册表路径
 #[cfg(target_os = "windows")]
@@ -1478,7 +1582,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     
     if let Ok(prog_id_key) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.pdf\\UserChoice") {
         if let Ok(prog_id) = prog_id_key.get_value::<String, _>("ProgId") {
-            if prog_id.contains("ViewStage") || prog_id.contains("viewstage") {
+            if prog_id.contains("ViewStage") || prog_id.contains("viewstage") || prog_id.contains("ViewPDF") || prog_id.contains("viewpdf") {
                 return Ok(true);
             }
         }
@@ -1487,7 +1591,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     if let Ok(pdf_key) = hkcr.open_subkey(".pdf") {
         if let Ok(default_prog) = pdf_key.get_value::<String, _>("") {
-            if default_prog.contains("ViewStage") || default_prog.contains("viewstage") {
+            if default_prog.contains("ViewStage") || default_prog.contains("viewstage") || default_prog.contains("ViewPDF") || default_prog.contains("viewpdf") {
                 return Ok(true);
             }
         }
@@ -1503,7 +1607,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     Ok(false)
 }
 
-/// Tauri IPC 命令（Windows）：检测 Word 文档（.docx/.doc）是否关联到 ViewStage
+/// Tauri IPC 命令（Windows）：检测 Word 文档（.docx/.doc）是否关联到 ViewStage/ViewPDF
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn filetype_validate_word_default() -> Result<bool, String> {
@@ -1514,7 +1618,7 @@ async fn filetype_validate_word_default() -> Result<bool, String> {
         let path = format!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{}\\UserChoice", ext);
         if let Ok(prog_id_key) = hkcu.open_subkey(&path) {
             if let Ok(prog_id) = prog_id_key.get_value::<String, _>("ProgId") {
-                if prog_id.contains("ViewStage") || prog_id.contains("viewstage") {
+                if prog_id.contains("ViewStage") || prog_id.contains("viewstage") || prog_id.contains("ViewPDF") || prog_id.contains("viewpdf") {
                     return Ok(true);
                 }
             }
@@ -1522,7 +1626,7 @@ async fn filetype_validate_word_default() -> Result<bool, String> {
         let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
         if let Ok(ext_key) = hkcr.open_subkey(ext) {
             if let Ok(default_prog) = ext_key.get_value::<String, _>("") {
-                if default_prog.contains("ViewStage") || default_prog.contains("viewstage") {
+                if default_prog.contains("ViewStage") || default_prog.contains("viewstage") || default_prog.contains("ViewPDF") || default_prog.contains("viewpdf") {
                     return Ok(true);
                 }
             }
@@ -1593,7 +1697,7 @@ async fn download_from_sectl(
     file_name: &str,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(300))
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
@@ -1601,7 +1705,7 @@ async fn download_from_sectl(
         .map_err(|e| format!("Failed to build client: {}", e))?;
 
     let params = [
-        ("projectSlug", "ViewStage"),
+        ("projectSlug", "ViewPDF"),
         ("tag", tag),
         ("fileName", file_name),
         ("source", "server"),
@@ -1649,7 +1753,7 @@ async fn download_from_sectl(
         response
     } else {
         let download_client = reqwest::Client::builder()
-            .user_agent("ViewStage")
+            .user_agent("ViewPDF")
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| format!("Failed to build download client: {}", e))?;
@@ -1751,7 +1855,7 @@ async fn update_download_file(
     };
 
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| {
@@ -2739,46 +2843,38 @@ fn office_convert_libreoffice(docx_path: &str, _pdf_path: &str, cache_dir: &std:
 
 /// Tauri IPC 命令：接收 docx 文件字节数据，转换为 PDF 后返回缓存路径
 ///
-/// 自动检测可用 Office 软件并按优先级尝试，使用临时缓存目录减少重复转换
+/// 使用 MD5 内容哈希实现缓存：已转换过的文件直接返回缓存的 PDF，避免重复转换
 #[tauri::command]
-async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String, file_md5: String, app: tauri::AppHandle) -> Result<String, String> {
     use std::fs;
     use std::io::Write;
 
     println!("收到文件数据: {} 字节", file_data.len());
     println!("文件名: {}", file_name);
+    println!("文件 MD5: {}", file_md5);
 
     if file_data.len() < 4 {
         return Err("文件数据太小，可能已损坏".to_string());
     }
 
-    let header: Vec<String> = file_data.iter().take(16).map(|b| format!("{:02x}", b)).collect();
-    println!("文件头: {}", header.join(" "));
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    fs::create_dir_all(&word_cache).map_err(|e| e.to_string())?;
 
-    if file_data[0] == 0x50 && file_data[1] == 0x4B {
-        println!("检测到 ZIP 格式 (docx)");
-    } else if file_data[0] == 0xD0 && file_data[1] == 0xCF {
-        println!("检测到 OLE 格式 (doc)");
-    } else {
-        println!("未知文件格式");
+    let cached_pdf_path = word_cache.join(format!("{}.pdf", file_md5));
+
+    // 缓存命中 — 直接返回
+    if cached_pdf_path.exists() {
+        println!("Word 转换缓存命中: {}", cached_pdf_path.display());
+        return Ok(cached_pdf_path.to_string_lossy().to_string());
     }
+
+    println!("Word 转换缓存未命中，开始转换...");
 
     let detection = office_detect_all();
     println!("推荐使用: {:?}", detection.recommended);
 
-    let paths = AppPaths::new(&app)?;
-    fs::create_dir_all(&paths.cache_dir).map_err(|e| e.to_string())?;
-
-    let folder_name = format!("document_{}", chrono::Local::now().format("%Y%m%d%H%M%S"));
-    let doc_cache_dir = paths.cache_dir.join(&folder_name);
-    fs::create_dir_all(&doc_cache_dir).map_err(|e| e.to_string())?;
-
-    let ext = std::path::Path::new(&file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("docx");
-    let temp_name = format!("temp_{}.{}", chrono::Local::now().format("%Y%m%d%H%M%S"), ext);
-    let temp_docx_path = doc_cache_dir.join(&temp_name);
+    let temp_docx_path = word_cache.join(format!("{}.docx", file_md5));
 
     {
         let mut file = fs::File::create(&temp_docx_path)
@@ -2789,15 +2885,8 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
             .map_err(|e| format!("同步文件失败: {}", e))?;
     }
 
-    let pdf_name = format!("{}.pdf", folder_name);
-    let pdf_path = doc_cache_dir.join(&pdf_name);
-
-    if pdf_path.exists() {
-        fs::remove_file(&pdf_path).map_err(|e| e.to_string())?;
-    }
-
     let docx_path_str = temp_docx_path.to_string_lossy().to_string();
-    let pdf_path_str = pdf_path.to_string_lossy().to_string();
+    let pdf_path_str = cached_pdf_path.to_string_lossy().to_string();
 
     println!("临时文件路径: {}", docx_path_str);
     println!("输出 PDF 路径: {}", pdf_path_str);
@@ -2812,7 +2901,7 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
                     office_convert_wps(&docx_path_str, &pdf_path_str)
                 } else if r.is_err() && detection.has_libreoffice {
                     println!("Word 转换失败，尝试 LibreOffice...");
-                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
                 } else {
                     r
                 }
@@ -2831,7 +2920,7 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
                     office_convert_word(&docx_path_str, &pdf_path_str)
                 } else if r.is_err() && detection.has_libreoffice {
                     println!("WPS 转换失败，尝试 LibreOffice...");
-                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
                 } else {
                     r
                 }
@@ -2842,27 +2931,27 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
             }
         }
         OfficeSoftware::LibreOffice => {
-            office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+            office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
         }
         OfficeSoftware::None => {
             Err("未检测到可用的 Office 软件，请安装 Microsoft Word、WPS Office 或 LibreOffice".to_string())
         }
     };
 
-    if let Err(e) = fs::remove_file(&temp_docx_path) {
-        println!("清理临时文件失败: {}", e);
-    }
+    // 清理临时 docx 文件
+    let _ = fs::remove_file(&temp_docx_path);
 
     result?;
 
     for _ in 0..10 {
-        if pdf_path.exists() {
+        if cached_pdf_path.exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    if pdf_path.exists() {
+    if cached_pdf_path.exists() {
+        println!("Word 转换成功，已缓存: {}", cached_pdf_path.display());
         Ok(pdf_path_str)
     } else {
         Err("PDF 文件生成失败".to_string())
@@ -3071,7 +3160,7 @@ async fn filetype_set_icons(app: tauri::AppHandle) -> Result<(), String> {
     Err("此功能仅支持 Windows 和 Linux 系统".to_string())
 }
 
-/// Linux 平台：通过 XDG 规范注册 ViewStage 为 PDF/DOCX/DOC 默认程序
+/// Linux 平台：通过 XDG 规范注册 ViewPDF 为 PDF/DOCX/DOC 默认程序
 #[cfg(target_os = "linux")]
 fn filetype_set_icons_linux(app: &tauri::AppHandle) -> Result<(), String> {
     use std::process::Command;
@@ -3108,7 +3197,7 @@ fn filetype_set_icons_linux(app: &tauri::AppHandle) -> Result<(), String> {
     let desktop_entry = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=ViewStage\n\
+         Name=ViewPDF\n\
          Exec={} %f\n\
          MimeType=application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;\n\
          Icon=viewstage\n\
@@ -3180,7 +3269,7 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
         .map_err(|e| format!("获取可执行文件路径失败: {}", e))?;
     let exe_path_str = exe_path.display().to_string();
     
-    let app_id = "SECTL.ViewStage";
+    let app_id = "SECTL.ViewPDF";
     
     log::info!("开始设置文件关联");
     log::info!("可执行文件: {}", exe_path_str);
@@ -3226,9 +3315,9 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
         Ok(())
     }
     
-    filetype_create_progid(&classes_key, &format!("{}.pdf", app_id), &pdf_icon, &exe_path_str, "ViewStage PDF Document")?;
-    filetype_create_progid(&classes_key, &format!("{}.docx", app_id), &word_icon, &exe_path_str, "ViewStage Word Document")?;
-    filetype_create_progid(&classes_key, &format!("{}.doc", app_id), &word_icon, &exe_path_str, "ViewStage Word 97-2003 Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.pdf", app_id), &pdf_icon, &exe_path_str, "ViewPDF PDF Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.docx", app_id), &word_icon, &exe_path_str, "ViewPDF Word Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.doc", app_id), &word_icon, &exe_path_str, "ViewPDF Word 97-2003 Document")?;
     
     /// 在扩展名下注册关联，设置默认值使图标生效
     fn filetype_create_association(classes_key: &RegKey, ext: &str, prog_id: &str) -> Result<(), String> {
@@ -3340,7 +3429,7 @@ pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
     let classes_key = hkcu.create_subkey(classes_path)
         .map_err(|e| format!("打开 Classes 失败: {}", e))?.0;
 
-    let app_id = "SECTL.ViewStage";
+    let app_id = "SECTL.ViewPDF";
     let exts = [".pdf", ".docx", ".doc"];
     let prog_ids: Vec<String> = exts.iter().map(|ext| format!("{}{}", app_id, ext)).collect();
 
@@ -3405,7 +3494,7 @@ pub fn app_init_run() {
     
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("SECTL.ViewStage");
+        .join("SECTL.ViewPDF");
     let log_dir = config_dir.join("log");
     
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
@@ -3415,10 +3504,16 @@ pub fn app_init_run() {
     let log_file = log_dir.join(format!("viewstage_{}.log", chrono::Local::now().format("%Y%m%d")));
     
     if let Ok(file) = File::create(&log_file) {
-        let _ = CombinedLogger::init(vec![
+        #[cfg(debug_assertions)]
+        let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
             WriteLogger::new(LevelFilter::Info, Config::default(), file),
             TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-        ]);
+        ];
+        #[cfg(not(debug_assertions))]
+        let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
+            WriteLogger::new(LevelFilter::Info, Config::default(), file),
+        ];
+        let _ = CombinedLogger::init(loggers);
         log::info!("日志系统初始化成功");
     }
 
@@ -3472,7 +3567,7 @@ pub fn app_init_run() {
                     "oobe",
                     tauri::WebviewUrl::App("oobe.html".into())
                 )
-                .title("欢迎使用 ViewStage")
+                .title("欢迎使用 ViewPDF")
                 .inner_size(960.0, 540.0)
                 .resizable(false)
                 .decorations(false)
@@ -3491,10 +3586,6 @@ pub fn app_init_run() {
                 if let Some(main_win) = app.get_webview_window("main") {
                     let _ = main_win.hide();
                 }
-                
-                if let Some(splashscreen) = app.get_webview_window("splashscreen") {
-                    let _ = splashscreen.close();
-                }
             } else {
                 let args: Vec<String> = std::env::args().collect();
                 println!("启动参数: {:?}", args);
@@ -3505,7 +3596,7 @@ pub fn app_init_run() {
                     
                     let app_handle = app.handle().clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         println!("发送文件打开事件: {}", file_path);
                         let _ = app_handle.emit("file-opened", file_path.clone());
                         println!("已发送文件打开事件: {}", file_path);
@@ -3523,13 +3614,16 @@ pub fn app_init_run() {
             cache_delete_all,
             cache_delete_doc_annotations,
             cache_validate_auto_clear,
+            word_cache_fetch_size,
+            word_cache_delete_all,
+            word_cache_last_clear,
+            word_cache_validate_auto_clear,
             dir_fetch_config, 
             dir_fetch_log,
             dir_fetch_theme,
             theme_list_user,
             theme_delete,
             theme_import_vst,
-            window_show_settings,
             window_toggle_maximize,
             mirror_update_state,
             mirror_fetch_state,

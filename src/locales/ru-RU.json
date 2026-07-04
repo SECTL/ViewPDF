@@ -76,8 +76,6 @@
     "selectTheme": "Выбор темы",
     "themeDark": "Тёмная",
     "themeSimplify": "Светлая",
-    "importTheme": "Импорт темы",
-    "importThemeBtn": "Импорт темы .vst",
     "installedThemes": "Установленные темы",
     "themeOverwriteConfirm": "Тема уже существует. Перезаписать?",
     "themeImportSuccess": "Тема импортирована. Перезапустите для применения.",
@@ -95,8 +93,6 @@
     "resolution": "Разрешение",
     "dynamicResolution": "Динамическое разрешение",
     "dynamicResolutionHint": "Автоматически повышать разрешение холста при масштабировании для чёткого отображения",
-    "eraserSpeed": "Скоростной ластик",
-    "eraserSpeedHint": "Размер ластика автоматически меняется в зависимости от скорости движения",
     "palmEraser": "Ластик для ладони",
     "palmEraserHint": "Автоматическое переключение на квадратный ластик при касании ладонью/мультитач",
     "momentum": "Инерция",
@@ -143,6 +139,10 @@
     "cache": "Кэш",
     "clearCache": "Очистить кэш",
     "autoClearCache": "Автоочистка кэша",
+    "wordCache": "Кэш конвертации Word",
+    "clearWordCache": "Очистить кэш Word",
+    "autoClearWordCache": "Автоочистка кэша Word",
+    "quarterly": "Ежеквартально",
     "docStateCleanup": "Очистка состояния документов",
     "docStateCleanupDesc": "Автоматически удалять записи состояний документов, не открывавшихся 15 дней (выполняется при очистке кэша)",
     "log": "Журнал",
@@ -219,7 +219,7 @@
     "wordDefaultRemoved": "Настройка Word по умолчанию удалена"
   },
   "oobe": {
-    "welcome": "Добро пожаловать в ViewStage",
+    "welcome": "Добро пожаловать в ViewPDF",
     "selectLanguage": "Выбор языка",
     "selectSetupMethod": "Выберите способ настройки",
     "quickSetup": "Быстрая настройка",
@@ -245,7 +245,7 @@
     "memCleanAdminHint": "Для первой настройки запланированной задачи требуются права администратора",
     "max": "Макс",
     "featureTour": "Обзор функций",
-    "featureTourDesc": "Краткий обзор основных возможностей ViewStage",
+    "featureTourDesc": "Краткий обзор основных возможностей ViewPDF",
     "featAnnotate": "Аннотация документов",
     "featAnnotateDesc": "Аннотируйте PDF и Word-документы с сохранением состояния",
     "featPdf": "Читатель PDF",
@@ -258,7 +258,7 @@
     "defaultApps": "Настройки чтения",
     "defaultAppsDesc": "Настройка ассоциаций файлов и предпочтений чтения",
     "checkUpdate": "Проверить обновления",
-    "checkUpdateDesc": "Обновите ViewStage до последней версии",
+    "checkUpdateDesc": "Обновите ViewPDF до последней версии",
     "checkingUpdate": "Проверка обновлений...",
     "updateUpToDate": "Уже актуально",
     "updateAvailable": "Доступно обновление",
@@ -272,8 +272,8 @@
     "saving": "Сохранение настроек..."
   },
   "about": {
-    "description": "ViewStage — это приложение для видеопрезентаций и аннотирования документов.",
-    "copyright": "© {year} ViewStage. Все права защищены."
+    "description": "ViewPDF — это приложение для видеопрезентаций и аннотирования документов.",
+    "copyright": "© {year} ViewPDF. Все права защищены."
   },
   "rotation": {
     "rotateLeft": "Повернуть",

@@ -1,5 +1,5 @@
 /**
- * ViewStage OOBE — 首次引导设置
+ * ViewPDF OOBE — 首次引导设置
  * 纯原生 JS，滑动向导
  */
 import { checkForUpdate, startDownload, onProgress, offProgress } from './modules/update/update.js';

@@ -1,5 +1,5 @@
 /**
- * ViewStage 小黑板模块
+ * ViewPDF 小黑板模块
  * 从顶部弹出的独立绘制面板，支持多页绘制
  * 使用 DrawingEngine 管理绘制管线
  */
@@ -92,6 +92,7 @@ class BlackboardManager {
         this.screen_w = 0;
         this.screen_h = 0;
         this._last_loaded_index = -1;
+        this._tiles_changed_since_snapshot = false;
 
         // 弹性 overscroll 状态
         this._is_overscrolling = false;
@@ -678,6 +679,7 @@ class BlackboardManager {
         this.drawing_engine.set_painting_allowed(false);
 
         this.is_open = true;
+        this._tiles_changed_since_snapshot = false;
 
         const panel = this._el.panel;
         panel.classList.add('active');
@@ -1214,7 +1216,6 @@ class BlackboardManager {
                     this._update_mode_buttons('move');
                     return;
                 }
-                if (mode === 'eraser' && window.DRAW_CONFIG?.eraserSpeedEnabled) return;
                 window.main_show_pen_control_panel?.(btn, mode);
             } else {
                 this.draw_mode = mode;
@@ -1267,6 +1268,8 @@ class BlackboardManager {
     _save_tile_snapshots() {
         const tr = this.tile_renderer;
         if (!tr) return null;
+        if (!this._tiles_changed_since_snapshot) return null;
+        this._tiles_changed_since_snapshot = false;
         return tr.tileInfos.map(info => {
             const w = info.canvas.width;
             const h = info.canvas.height;
@@ -1319,6 +1322,7 @@ class BlackboardManager {
             } finally {
                 window.state.scale = orig_scale;
             }
+            this._tiles_changed_since_snapshot = true;
         }
         page.snapshot_dirty = true;
     }
@@ -1332,7 +1336,9 @@ class BlackboardManager {
     }
 
     _restore_page_tile_snapshots(page) {
-        return this._restore_tile_snapshots(page.tile_snapshots);
+        const restored = this._restore_tile_snapshots(page.tile_snapshots);
+        if (restored) this._tiles_changed_since_snapshot = true;
+        return restored;
     }
 
     async _rebuild_from_history(page) {

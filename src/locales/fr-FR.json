@@ -76,8 +76,6 @@
     "selectTheme": "Choisir le thème",
     "themeDark": "Sombre",
     "themeSimplify": "Clair",
-    "importTheme": "Importer un thème",
-    "importThemeBtn": "Importer un thème .vst",
     "installedThemes": "Thèmes installés",
     "themeOverwriteConfirm": "Le thème existe déjà. Remplacer ?",
     "themeImportSuccess": "Thème importé. Redémarrez pour appliquer.",
@@ -95,8 +93,6 @@
     "resolution": "Résolution",
     "dynamicResolution": "Résolution dynamique",
     "dynamicResolutionHint": "Augmente automatiquement la résolution de la toile lors du zoom pour un affichage plus net",
-    "eraserSpeed": "Gomme de vitesse",
-    "eraserSpeedHint": "La taille de la gomme change automatiquement selon la vitesse de déplacement",
     "palmEraser": "Gomme paume",
     "palmEraserHint": "Bascule automatiquement vers la gomme carrée au contact de la paume/du multi-touch",
     "momentum": "Momentum",
@@ -143,6 +139,10 @@
     "cache": "Cache",
     "clearCache": "Vider le cache",
     "autoClearCache": "Auto vidage cache",
+    "wordCache": "Cache de conversion Word",
+    "clearWordCache": "Vider le cache Word",
+    "autoClearWordCache": "Auto vidage cache Word",
+    "quarterly": "Trimestriel",
     "docStateCleanup": "Nettoyage de l'état des documents",
     "docStateCleanupDesc": "Nettoie automatiquement les enregistrements d'état des documents non ouverts depuis 15 jours (exécuté lors du nettoyage du cache)",
     "log": "Journal",
@@ -219,7 +219,7 @@
     "wordDefaultRemoved": "Le paramètre par défaut de Word a été supprimé"
   },
   "oobe": {
-    "welcome": "Bienvenue sur ViewStage",
+    "welcome": "Bienvenue sur ViewPDF",
     "selectLanguage": "Choisissez langue",
     "selectSetupMethod": "Choisir méthode installation",
     "quickSetup": "Configuration rapide",
@@ -245,7 +245,7 @@
     "memCleanAdminHint": "Privilèges administrateur requis pour la première configuration de la tâche planifiée",
     "max": "Max",
     "featureTour": "Visite guidée",
-    "featureTourDesc": "Aperçu rapide des fonctionnalités principales de ViewStage",
+    "featureTourDesc": "Aperçu rapide des fonctionnalités principales de ViewPDF",
     "featAnnotate": "Annotation de documents",
     "featAnnotateDesc": "Annotez les PDF et documents Word avec sauvegarde de l'état",
     "featPdf": "Lecteur PDF",
@@ -258,7 +258,7 @@
     "defaultApps": "Paramètres du lecteur",
     "defaultAppsDesc": "Configurez les associations de fichiers et les préférences du lecteur",
     "checkUpdate": "Vérifier les mises à jour",
-    "checkUpdateDesc": "Mettez à jour ViewStage vers la dernière version",
+    "checkUpdateDesc": "Mettez à jour ViewPDF vers la dernière version",
     "checkingUpdate": "Vérification des mises à jour...",
     "updateUpToDate": "Vous êtes à jour",
     "updateAvailable": "Mise à jour disponible",
@@ -272,8 +272,8 @@
     "saving": "Sauvegarde..."
   },
   "about": {
-    "description": "ViewStage est une application pour la présentation vidéo et l'annotation de documents.",
-    "copyright": "© {year} ViewStage. Tous droits réservés."
+    "description": "ViewPDF est une application pour la présentation vidéo et l'annotation de documents.",
+    "copyright": "© {year} ViewPDF. Tous droits réservés."
   },
   "rotation": {
     "rotateLeft": "Pivoter",

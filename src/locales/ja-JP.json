@@ -76,8 +76,6 @@
     "selectTheme": "テーマを選択",
     "themeDark": "ダーク",
     "themeSimplify": "ライト",
-    "importTheme": "テーマをインポート",
-    "importThemeBtn": ".vst テーマをインポート",
     "installedThemes": "インストール済みテーマ",
     "themeOverwriteConfirm": "テーマは既に存在します。上書きしますか？",
     "themeImportSuccess": "テーマがインポートされました。再起動して適用してください。",
@@ -95,8 +93,6 @@
     "resolution": "解像度",
     "dynamicResolution": "動的解像度",
     "dynamicResolutionHint": "ズーム時にキャンバス解像度を自動的に上げて鮮明に表示",
-    "eraserSpeed": "スピード消しゴム",
-    "eraserSpeedHint": "移動速度に応じて消しゴムサイズが自動変化",
     "palmEraser": "パームイレイサー",
     "palmEraserHint": "手のひら/マルチタッチ接触時に角消しゴムに自動切替",
     "momentum": "慣性移動",
@@ -143,6 +139,10 @@
     "cache": "キャッシュ",
     "clearCache": "キャッシュをクリア",
     "autoClearCache": "キャッシュを自動クリア",
+    "wordCache": "Word 変換キャッシュ",
+    "clearWordCache": "Word キャッシュをクリア",
+    "autoClearWordCache": "Word キャッシュを自動クリア",
+    "quarterly": "四半期",
     "docStateCleanup": "文書状態のクリーンアップ",
     "docStateCleanupDesc": "15日間未開封の文書状態レコードを自動クリーンアップ（キャッシュクリア時に実行）",
     "log": "ログ",
@@ -219,7 +219,7 @@
     "wordDefaultRemoved": "Word のデフォルト設定が解除されました"
   },
   "oobe": {
-    "welcome": "ViewStage へようこそ",
+    "welcome": "ViewPDF へようこそ",
     "selectLanguage": "言語を選択",
     "selectSetupMethod": "セットアップ方法を選択",
     "quickSetup": "クイックセットアップ",
@@ -245,7 +245,7 @@
     "memCleanAdminHint": "初回のスケジュールタスク設定には管理者権限が必要です",
     "max": "最大",
     "featureTour": "機能紹介",
-    "featureTourDesc": "ViewStage のコア機能の概要",
+    "featureTourDesc": "ViewPDF のコア機能の概要",
     "featAnnotate": "文書注釈",
     "featAnnotateDesc": "PDF や Word 文書に注釈を付け、状態を保存",
     "featPdf": "PDF リーダー",
@@ -258,7 +258,7 @@
     "defaultApps": "リーダー設定",
     "defaultAppsDesc": "ファイルの関連付けとリーダー設定を構成",
     "checkUpdate": "アップデートを確認",
-    "checkUpdateDesc": "ViewStage を最新バージョンに更新",
+    "checkUpdateDesc": "ViewPDF を最新バージョンに更新",
     "checkingUpdate": "アップデートを確認中...",
     "updateUpToDate": "最新です",
     "updateAvailable": "更新があります",
@@ -272,8 +272,8 @@
     "saving": "設定を保存中..."
   },
   "about": {
-    "description": "ViewStage はビデオプレゼンテーションと文書注釈のためのアプリケーションです。",
-    "copyright": "© {year} ViewStage. All rights reserved."
+    "description": "ViewPDF はビデオプレゼンテーションと文書注釈のためのアプリケーションです。",
+    "copyright": "© {year} ViewPDF. All rights reserved."
   },
   "rotation": {
     "rotateLeft": "回転",

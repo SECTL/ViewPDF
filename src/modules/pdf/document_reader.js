@@ -43,6 +43,16 @@ class DocumentReaderManager {
 
         this._scroll_container = null;
         this._dr_tool_group = null;
+
+        // 缓存的 DOM 引用（避免重复 getElementById）
+        this._el_undo_btn = null;
+        this._el_prev_btn = null;
+        this._el_next_btn = null;
+        this._el_page_indicator = null;
+        this._el_move_btn = null;
+        this._el_comment_btn = null;
+        this._el_eraser_btn = null;
+
         this._eraser_hint = null;
         this._eraser_hint_raf_id = null;
         this._eraser_hint_pending_pos = null;
@@ -238,6 +248,11 @@ class DocumentReaderManager {
     // ====== 面板管理 ======
 
     async open(folder_index, page_index = 0) {
+        // 先设置 folder_index，让标签栏能立刻响应切换
+        this.folder_index = folder_index;
+        const folder = window.state.fileList[folder_index];
+        if (!folder || !folder.pages || folder.pages.length === 0) return;
+
         // 如果已打开其他文档，先关闭再打开新的
         if (this.is_open) {
             await this.close();
@@ -263,10 +278,6 @@ class DocumentReaderManager {
         history_init_manager({
             on_state_change: () => this._update_button_status()
         });
-
-        this.folder_index = folder_index;
-        const folder = window.state.fileList[folder_index];
-        if (!folder || !folder.pages || folder.pages.length === 0) return;
 
         this.page_manager.init_from_folder_pages(folder.pages);
         this.active_page_index = page_index;
@@ -506,7 +517,16 @@ class DocumentReaderManager {
         }
 
         this._switch_toolbar(false);
-        
+
+        // 清理缓存的 DOM 引用
+        this._el_undo_btn = null;
+        this._el_prev_btn = null;
+        this._el_next_btn = null;
+        this._el_page_indicator = null;
+        this._el_move_btn = null;
+        this._el_comment_btn = null;
+        this._el_eraser_btn = null;
+
         // 更新UI状态（显示启动界面）
         if (window.main_update_ui_state) {
             window.main_update_ui_state();
@@ -524,7 +544,6 @@ class DocumentReaderManager {
         const pages = this.page_manager.pages_list;
         const folder = window.state.fileList[this.folder_index];
 
-        // 序列化全局 undo/redo 栈（保留 page_index 和 stroke _cache_uid 用于重建）
         const serialize_cmd = (cmd) => {
             if (cmd.type === 'draw') {
                 return { type: 'draw', page_index: cmd.page_index, stroke_uid: cmd.stroke?._cache_uid || null };
@@ -565,14 +584,29 @@ class DocumentReaderManager {
             redo_stack: history_state.redo_list.map(serialize_cmd).filter(Boolean)
         };
 
-        try {
+        const doc_state_dir = `${config_dir}/doc_state`;
+        const file_path = `${doc_state_dir}/doc_annotations_${cache_id}.json`;
+
+        // 异步序列化：先确保目录存在，再在空闲时执行 JSON.stringify 避免阻塞
+        const do_write = async (json_str) => {
             const { writeTextFile, mkdir } = window.__TAURI__.fs;
-            const doc_state_dir = `${config_dir}/doc_state`;
             try { await mkdir(doc_state_dir, { recursive: true }); } catch (_) {}
-            const file_path = `${doc_state_dir}/doc_annotations_${cache_id}.json`;
-            await writeTextFile(file_path, JSON.stringify(cache_data));
-        } catch (err) {
-            console.error('[document_reader] 保存批注缓存失败:', err);
+            await writeTextFile(file_path, json_str);
+        };
+
+        if (window.requestIdleCallback) {
+            await new Promise((resolve) => {
+                window.requestIdleCallback(() => {
+                    do_write(JSON.stringify(cache_data)).then(resolve).catch((err) => {
+                        console.error('[document_reader] 保存批注缓存失败:', err);
+                        resolve();
+                    });
+                }, { timeout: 3000 });
+            });
+        } else {
+            await do_write(JSON.stringify(cache_data)).catch((err) => {
+                console.error('[document_reader] 保存批注缓存失败:', err);
+            });
         }
     }
 
@@ -902,7 +936,6 @@ class DocumentReaderManager {
     _check_page_visibility() {
         if (!this._scroll_container || !this.page_manager || !this._zoom_wrapper) return;
 
-        // 容器位置在滚动/缩放中不变，缓存复用避免触发布局
         if (!this._cached_container_rect) {
             const cr = this._scroll_container.getBoundingClientRect();
             this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left };
@@ -910,7 +943,6 @@ class DocumentReaderManager {
         const container_top = this._cached_container_rect.top;
         const container_bottom = this._cached_container_rect.bottom;
 
-        // wrapper 的 getBoundingClientRect 会因 css transform 变化，需要实时获取
         const wrapper_top = this._zoom_wrapper.getBoundingClientRect().top;
         const s = this.dr_scale;
 
@@ -919,33 +951,44 @@ class DocumentReaderManager {
         const viewport_center = (container_top + container_bottom) / 2;
         const viewport_height = container_bottom - container_top;
 
-        // 预渲染范围：视口上下扩展 viewport_height * _prerender_distance
         const prerender_margin = viewport_height * this._prerender_distance;
         const prerender_top = container_top - prerender_margin;
         const prerender_bottom = container_bottom + prerender_margin;
 
-        // ［性能］页面位置缓存未命中时批量读取（仅触发一次布局，避免与后续 DOM 写入交插）
         if (this._page_positions.stale) {
             this._batch_read_page_positions();
         }
         const page_tops = this._page_positions.tops;
         const page_heights = this._page_positions.heights;
+        const total_pages = this.page_manager.pages_list.length;
+
+        // 二分查找第一个可能在预渲染范围内的页（page_bottom * s + wrapper_top > prerender_top）
+        const inv_s = s || 1;
+        const min_page_bottom = Math.max(0, (prerender_top - wrapper_top) * inv_s);
+        let start_i = 0;
+        {
+            let lo = 0, hi = total_pages;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                const pb = (page_tops[mid] ?? 0) + (page_heights[mid] ?? 0);
+                if (pb < min_page_bottom) lo = mid + 1; else hi = mid;
+            }
+            start_i = lo;
+        }
 
         const visible_pages = [];
         const prerender_pages = [];
 
-        for (let i = 0; i < this.page_manager.pages_list.length; i++) {
+        for (let i = start_i; i < total_pages; i++) {
             const page_data = this.page_manager.pages_list[i];
             if (!page_data?.page_element) continue;
 
             const page_top = page_tops[i] ?? 0;
             const page_bottom = page_top + (page_heights[i] ?? 0);
 
-            // visual_y = wrapper_top + offsetTop * scale（canvas_y 已包含在 wrapper_top 中）
             const visual_top = wrapper_top + page_top * s;
             const visual_bottom = wrapper_top + page_bottom * s;
 
-            // 页面按 offsetTop 递增排列，越过预渲染下边界后不再有可见页，直接 break
             if (visual_top > prerender_bottom) break;
 
             const is_intersecting = visual_bottom > container_top && visual_top < container_bottom;
@@ -955,14 +998,12 @@ class DocumentReaderManager {
                 visible_pages.push(i);
                 this._on_page_visible(i);
             } else if (is_in_prerender_range && this._prerender_enabled) {
-                // 在预渲染范围内但不在视口中 → 添加到预渲染队列
                 prerender_pages.push(i);
                 this._on_page_hidden(i);
             } else {
                 this._on_page_hidden(i);
             }
 
-            // 找距离视口中心最近的页（无论是否可见，用于翻页同步）
             const visual_center = (visual_top + visual_bottom) / 2;
             const dist = Math.abs(visual_center - viewport_center);
             if (dist < nearest_dist) {
@@ -1324,6 +1365,7 @@ class DocumentReaderManager {
         for (let i = 0; i < pages.length; i++) {
             const pd = pages[i];
             if (!pd || pd.is_visible || i === this.active_page_index) continue;
+            if (!pd.loaded && !pd.image_url) continue;
 
             if (!this._is_page_near_active(i, this._image_keep_distance)) {
                 this._virtualize_page(i);
@@ -2686,7 +2728,6 @@ class DocumentReaderManager {
             eraserSize: baseEraserSize,
             eraserSizeRaw: DRAW_CONFIG.eraserSize,
             eraserShape: 'square',
-            ...(window.__eraserSpeed ? window.__eraserSpeed.eraser_speed_build_config(DRAW_CONFIG, 1) : { eraserSpeedEnabled: false }),
             scale: 1,
             bounds: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
             variableWidths: [],
@@ -2700,8 +2741,6 @@ class DocumentReaderManager {
         this.cached_draw_type = type;
         this.cached_draw_color = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
         this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth / Math.max(0.001, this.dr_scale || 1) : baseEraserSize / Math.max(0.001, this.dr_scale || 1);
-
-        this._eraser_speed_state = window.__eraserSpeed?.eraser_speed_create_state() ?? null;
 
         if (this.batch_draw) {
             this.batch_draw.batch_draw_init_start();
@@ -2732,9 +2771,6 @@ class DocumentReaderManager {
             currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
             this.current_line_width = currentWidth;
             this.cached_draw_line_width = DRAW_CONFIG.penWidth / currentScale;
-        } else if (stroke.type === 'erase' && stroke.eraserSpeedEnabled) {
-            currentWidth = window.__eraserSpeed.eraser_speed_update(this._eraser_speed_state, stroke, to_x, to_y);
-            this.cached_draw_line_width = currentWidth;
         } else if (stroke.type === 'erase') {
             this.cached_draw_line_width = DRAW_CONFIG.eraserSize / currentScale;
         }
@@ -2909,7 +2945,7 @@ class DocumentReaderManager {
     }
 
     _update_page_indicator() {
-        const el = document.getElementById('drPageIndicator');
+        const el = this._el_page_indicator || document.getElementById('drPageIndicator');
         if (el) {
             el.textContent = `${this.page_manager.current_index + 1} / ${this.page_manager.get_page_count()}`;
         }
@@ -2984,10 +3020,10 @@ class DocumentReaderManager {
     }
 
     _sync_page_buttons() {
-        const prev_btn = document.getElementById('drPagePrev');
-        const next_btn = document.getElementById('drPageNext');
-        if (prev_btn) prev_btn.disabled = this.page_manager.current_index <= 0;
-        if (next_btn) next_btn.disabled = this.page_manager.current_index >= this.page_manager.get_page_count() - 1;
+        const prev = this._el_prev_btn || document.getElementById('drPagePrev');
+        const next = this._el_next_btn || document.getElementById('drPageNext');
+        if (prev) prev.disabled = this.page_manager.current_index <= 0;
+        if (next) next.disabled = this.page_manager.current_index >= this.page_manager.get_page_count() - 1;
     }
 
     // ====== 工具栏切换 ======
@@ -3015,43 +3051,43 @@ class DocumentReaderManager {
             });
         }
 
-        const prev_btn = document.getElementById('drPagePrev');
-        const next_btn = document.getElementById('drPageNext');
-        if (prev_btn) prev_btn.addEventListener('click', () => this.handle_page_nav_prev());
-        if (next_btn) next_btn.addEventListener('click', () => this.handle_page_nav_next());
+        this._el_prev_btn = document.getElementById('drPagePrev');
+        this._el_next_btn = document.getElementById('drPageNext');
+        if (this._el_prev_btn) this._el_prev_btn.addEventListener('click', () => this.handle_page_nav_prev());
+        if (this._el_next_btn) this._el_next_btn.addEventListener('click', () => this.handle_page_nav_next());
 
-        const page_indicator = document.getElementById('drPageIndicator');
-        if (page_indicator) {
-            page_indicator.style.cursor = 'pointer';
-            page_indicator.addEventListener('click', () => this._toggle_page_sidebar());
-            page_indicator.addEventListener('dblclick', () => this._show_page_jump_input());
+        this._el_page_indicator = document.getElementById('drPageIndicator');
+        if (this._el_page_indicator) {
+            this._el_page_indicator.style.cursor = 'pointer';
+            this._el_page_indicator.addEventListener('click', () => this._toggle_page_sidebar());
+            this._el_page_indicator.addEventListener('dblclick', () => this._show_page_jump_input());
         }
 
-        const move_btn = document.getElementById('drBtnMove');
-        const comment_btn = document.getElementById('drBtnComment');
-        const eraser_btn = document.getElementById('drBtnEraser');
-        const undo_btn = document.getElementById('drBtnUndo');
+        this._el_move_btn = document.getElementById('drBtnMove');
+        this._el_comment_btn = document.getElementById('drBtnComment');
+        this._el_eraser_btn = document.getElementById('drBtnEraser');
+        this._el_undo_btn = document.getElementById('drBtnUndo');
 
-        if (move_btn) move_btn.addEventListener('click', () => this._set_draw_mode('move'));
-        if (comment_btn) comment_btn.addEventListener('click', () => {
+        if (this._el_move_btn) this._el_move_btn.addEventListener('click', () => this._set_draw_mode('move'));
+        if (this._el_comment_btn) this._el_comment_btn.addEventListener('click', () => {
             if (this.draw_mode === 'comment') {
                 if (window.main_show_pen_control_panel) {
-                    window.main_show_pen_control_panel(comment_btn, 'comment');
+                    window.main_show_pen_control_panel(this._el_comment_btn, 'comment');
                 }
             } else {
                 this._set_draw_mode('comment');
             }
         });
-        if (eraser_btn) eraser_btn.addEventListener('click', () => {
-            if (this.draw_mode === 'eraser' && !window.DRAW_CONFIG.eraserSpeedEnabled) {
+        if (this._el_eraser_btn) this._el_eraser_btn.addEventListener('click', () => {
+            if (this.draw_mode === 'eraser') {
                 if (window.main_show_pen_control_panel) {
-                    window.main_show_pen_control_panel(eraser_btn, 'eraser');
+                    window.main_show_pen_control_panel(this._el_eraser_btn, 'eraser');
                 }
             } else {
                 this._set_draw_mode('eraser');
             }
         });
-        if (undo_btn) undo_btn.addEventListener('click', () => this.handle_undo());
+        if (this._el_undo_btn) this._el_undo_btn.addEventListener('click', () => this.handle_undo());
 
         const bb_btn = document.getElementById('drBtnBlackboard');
         if (bb_btn) {
@@ -3093,13 +3129,13 @@ class DocumentReaderManager {
 
         this.draw_mode = mode;
 
-        const move_btn = document.getElementById('drBtnMove');
-        const comment_btn = document.getElementById('drBtnComment');
-        const eraser_btn = document.getElementById('drBtnEraser');
+        const move = this._el_move_btn || document.getElementById('drBtnMove');
+        const comment = this._el_comment_btn || document.getElementById('drBtnComment');
+        const eraser = this._el_eraser_btn || document.getElementById('drBtnEraser');
 
-        if (move_btn) move_btn.classList.toggle('active', mode === 'move');
-        if (comment_btn) comment_btn.classList.toggle('active', mode === 'comment');
-        if (eraser_btn) eraser_btn.classList.toggle('active', mode === 'eraser');
+        if (move) move.classList.toggle('active', mode === 'move');
+        if (comment) comment.classList.toggle('active', mode === 'comment');
+        if (eraser) eraser.classList.toggle('active', mode === 'eraser');
 
         // 无原生滚动条，touch-action 仅用于控制双指手势由 touch handler 接管
         if (this._scroll_container) {
@@ -3795,7 +3831,7 @@ class DocumentReaderManager {
                     pd.tile_renderer?.update_visible_tile_dpr(this.dr_scale, false, true);
                 }
             }
-        }, 300);
+        }, 150);
     }
 
     /** 撤销、翻页等操作应强制立即重绘，取消缩放延迟 */
@@ -3959,8 +3995,8 @@ class DocumentReaderManager {
     // ====== 按钮状态 ======
 
     _update_button_status() {
-        const undo_btn = document.getElementById('drBtnUndo');
-        if (undo_btn) undo_btn.disabled = !history_validate_undo();
+        const btn = this._el_undo_btn || document.getElementById('drBtnUndo');
+        if (btn) btn.disabled = !history_validate_undo();
     }
 }
 

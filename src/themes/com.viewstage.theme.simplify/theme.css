@@ -47,8 +47,6 @@
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
     
-    --blur-bg: rgba(255, 255, 255, 0.6);
-    --blur-surface: rgba(245, 245, 245, 0.6);
     
     --btn-height: 40px;
     --btn-height-sm: 32px;
@@ -57,6 +55,7 @@
     --scrollbar-track: rgba(0, 0, 0, 0.05);
     --scrollbar-thumb: rgba(0, 0, 0, 0.2);
     --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+    --icon-filter: none;
 }
 
 /* ===== 基础覆盖 ===== */
@@ -548,8 +547,7 @@ body {
 }
 
 .toolbar-left,
-.toolbar-center,
-.toolbar-right {
+.toolbar-center {
     display: inline-flex;
     align-items: center;
     gap: 2px;
@@ -560,6 +558,13 @@ body {
     box-shadow: var(--shadow-md);
     flex: none;
     transition: all 0.2s ease;
+    pointer-events: auto;
+}
+
+.toolbar-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     pointer-events: auto;
 }
 
@@ -1585,4 +1590,595 @@ body {
 
 .error-btn-retry:hover {
     background: var(--color-primary-active);
+}
+
+/* ===== 主页组件覆盖 ===== */
+.app-sidebar {
+    background: var(--color-canvas);
+    border-right: 1px solid var(--color-hairline);
+}
+
+.sidebar-item {
+    border-radius: var(--rounded-md);
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--color-body);
+}
+
+.sidebar-item:hover {
+    background: var(--color-surface-card);
+    color: var(--color-ink);
+}
+
+.sidebar-item.active {
+    background: var(--color-surface-card);
+    color: var(--color-ink);
+    font-weight: 500;
+}
+
+.sidebar-item img {
+    opacity: 0.5;
+}
+
+.sidebar-item:hover img,
+.sidebar-item.active img {
+    opacity: 1;
+}
+
+.sidebar-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-muted);
+    opacity: 0.5;
+    padding: 8px 12px 4px;
+    letter-spacing: 0.3px;
+}
+
+.file-area-search {
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline-soft);
+    border-radius: var(--rounded-md);
+    padding: 6px 12px;
+}
+
+.file-area-search:focus-within {
+    border-color: var(--color-brand-accent);
+    background: var(--color-canvas);
+}
+
+.filter-select {
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline-soft);
+    border-radius: var(--rounded-md);
+    color: var(--color-body);
+    font-size: 12px;
+    padding: 5px 22px 5px 10px;
+}
+
+.filter-select:hover {
+    border-color: var(--color-hairline);
+}
+
+.sort-btn {
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline-soft);
+    border-radius: var(--rounded-md);
+    color: var(--color-muted);
+}
+
+.sort-btn:hover {
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.view-toggle-btn {
+    border-radius: var(--rounded-md);
+    color: var(--color-muted);
+}
+
+.view-toggle-btn:hover {
+    background: var(--color-surface-card);
+}
+
+.view-toggle-btn.active {
+    background: var(--color-surface-card);
+    color: var(--color-ink);
+}
+
+.file-row {
+    border-radius: var(--rounded-sm);
+    margin: 0 8px;
+    width: calc(100% - 16px);
+    padding: 8px 12px;
+}
+
+.file-row:hover {
+    background: var(--color-surface-card);
+}
+
+.file-type-icon {
+    border-radius: var(--rounded-md);
+}
+
+.file-type-icon.type-pdf { background: #ef4444; }
+.file-type-icon.type-doc { background: #3b82f6; }
+.file-type-icon.type-xls { background: #10b981; }
+.file-type-icon.type-ppt { background: #f59e0b; }
+.file-type-icon.type-image { background: #8b5cf6; }
+.file-type-icon.type-mindmap { background: #8b5cf6; }
+.file-type-icon.type-other { background: #6b7280; }
+
+.file-time-header {
+    padding: 8px 12px 4px;
+    font-size: 11px;
+    color: var(--color-muted);
+}
+
+.file-list-empty {
+    border: 1px dashed var(--color-hairline);
+    border-radius: var(--rounded-lg);
+    margin: 16px;
+    min-height: 240px;
+}
+
+.file-list-empty-title {
+    font-size: 15px;
+    color: var(--color-body);
+    opacity: 0.6;
+}
+
+.file-list-empty-sub {
+    font-size: 13px;
+    opacity: 0.4;
+    max-width: 280px;
+    line-height: 1.5;
+}
+
+.titlebar {
+    background: var(--color-canvas);
+    border-bottom: 1px solid var(--color-hairline);
+}
+
+.titlebar-tab.active {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    border-bottom-color: var(--color-primary);
+}
+
+/* ===== 设置面板 - 主题覆盖 ===== */
+.sp-btn-icon img {
+    filter: none !important;
+}
+
+/* ===== 页面标题 ===== */
+.sp-page-title {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-hairline);
+}
+
+.sp-section-title {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-hairline);
+}
+
+.sp-setting-label {
+    color: var(--color-ink);
+}
+
+.sp-setting-hint {
+    color: var(--color-muted);
+}
+
+/* ===== 选择器/开关/滑块 ===== */
+.sp-select-selected {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.select-selected:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+}
+
+.select-selected::after {
+    border-color: var(--color-muted);
+}
+
+.sp-toggle-slider {
+    background-color: var(--color-surface-strong);
+}
+
+.sp-toggle-slider:before {
+    background-color: var(--color-ink);
+}
+
+.sp-toggle-switch input:checked + .sp-toggle-slider {
+    background-color: var(--color-brand-accent);
+}
+
+.sp-switch .sp-slider {
+    background-color: var(--color-surface-strong);
+}
+
+.sp-switch .sp-slider:before {
+    background-color: var(--color-ink);
+}
+
+.sp-switch input:checked + .sp-slider {
+    background-color: var(--color-brand-accent);
+}
+
+.sp-switch input:checked + .sp-slider::before {
+    background-color: var(--color-on-primary);
+}
+
+.sp-slider {
+    background: var(--color-surface-strong);
+}
+
+.sp-slider::-webkit-slider-thumb {
+    background: var(--color-brand-accent);
+}
+
+.sp-slider::-moz-range-thumb {
+    background: var(--color-brand-accent);
+}
+
+.sp-slider-value {
+    color: var(--color-brand-accent);
+}
+
+.sp-version-label {
+    color: var(--color-muted);
+}
+
+.sp-version-number {
+    color: var(--color-brand-accent);
+}
+
+.sp-about-info p {
+    color: var(--color-muted);
+}
+
+.sp-about-copyright {
+    color: var(--color-muted);
+}
+
+.sp-model-name {
+    color: var(--color-ink);
+}
+
+.sp-model-status {
+    background: var(--color-surface-card);
+    color: var(--color-muted);
+}
+
+.sp-model-description {
+    color: var(--color-muted);
+}
+
+.sp-model-description code {
+    background: var(--color-surface-card);
+    color: var(--color-brand-accent);
+}
+
+.sp-progress-bar {
+    background: var(--color-surface-strong);
+}
+
+.sp-progress-fill {
+    background: var(--color-brand-accent);
+}
+
+.sp-progress-text {
+    color: var(--color-muted);
+}
+
+.sp-update-app-info {
+    background: var(--color-surface-card);
+}
+
+.sp-release-notes-content {
+    background: var(--color-surface-card);
+    color: var(--color-muted);
+}
+
+.sp-release-notes-content h3,
+.sp-release-notes-content h4,
+.sp-release-notes-content h5 {
+    color: var(--color-ink);
+}
+
+.sp-release-notes-content code {
+    background: var(--color-surface-strong);
+    color: var(--color-brand-accent);
+}
+
+.sp-status-latest {
+    color: var(--color-success);
+}
+
+.sp-status-available {
+    color: var(--color-brand-accent);
+}
+
+.sp-status-success {
+    color: var(--color-success);
+}
+
+.sp-status-error {
+    color: var(--color-error);
+}
+
+.sp-settings-dialog-title {
+    color: var(--color-ink);
+}
+
+.sp-settings-dialog-message {
+    color: var(--color-muted);
+}
+
+.sp-settings-dialog-btn {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.sp-settings-dialog-btn:hover {
+    background: var(--color-surface-strong);
+}
+
+.sp-modal-title {
+    color: var(--color-ink);
+}
+
+.sp-modal-message {
+    color: var(--color-muted);
+}
+
+.sp-setting-group {
+    background: var(--color-surface-soft);
+}
+
+.sp-setting-group-header:hover {
+    background: var(--color-surface-card);
+}
+
+.sp-group-arrow {
+    color: var(--color-muted);
+}
+
+.sp-checkbox-label {
+    color: var(--color-ink);
+}
+
+.sp-color-picker-preset:hover {
+    border-color: var(--color-muted);
+}
+
+.sp-color-picker-btns {
+    gap: 6px;
+}
+
+.sp-btn-back {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-muted);
+}
+
+.sp-btn-back:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+    color: var(--color-ink);
+}
+
+.sp-btn-action {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.2);
+    color: var(--color-brand-accent);
+}
+
+.sp-btn-action:hover {
+    background: rgba(59, 130, 246, 0.2);
+    border-color: rgba(59, 130, 246, 0.4);
+}
+
+.sp-btn-action.delete {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: var(--color-error);
+}
+
+.sp-btn-action.delete:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.4);
+}
+
+.sp-btn-reset {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: var(--color-error);
+}
+
+.sp-btn-reset:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.4);
+}
+
+.sp-btn-clear-cache {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.sp-btn-clear-cache:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: var(--color-error);
+}
+
+.sp-link-item {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+    color: var(--color-body);
+}
+
+.sp-link-item:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+    color: var(--color-ink);
+}
+
+.sp-modal-btn-cancel {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-body);
+}
+
+.sp-modal-btn-cancel:hover {
+    background: var(--color-surface-strong);
+}
+
+.sp-modal-btn-confirm {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.25);
+    color: var(--color-error);
+}
+
+.sp-modal-btn-confirm:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+.sp-color-picker-btn {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+}
+
+.sp-color-picker-btn:hover {
+    background: var(--color-primary-active);
+}
+
+.sp-color-picker-btn-cancel {
+    background: var(--color-surface-card);
+    color: var(--color-ink);
+}
+
+.sp-color-picker-btn-cancel:hover {
+    background: var(--color-surface-strong);
+}
+
+.sp-model-progress .sp-progress-bar {
+    background: var(--color-surface-strong);
+}
+
+.sp-model-progress .sp-progress-fill {
+    background: linear-gradient(90deg, var(--color-brand-accent), #6bb3ff);
+}
+
+.sp-model-progress .sp-progress-text {
+    color: var(--color-muted);
+}
+
+/* ===== 选择器/模态框 ===== */
+.sp-select-options {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.sp-select-option:hover {
+    background: var(--color-surface-card);
+}
+
+.sp-select-option.sp-selected {
+    background: rgba(59, 130, 246, 0.1);
+}
+
+.sp-modal-dialog {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.sp-settings-dialog {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.sp-model-card {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+}
+
+.sp-model-card:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-hairline);
+}
+
+.sp-setting-section {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+}
+
+.sp-checkbox-item {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+}
+
+.sp-checkbox-item:hover {
+    background: var(--color-surface-strong);
+}
+
+.sp-color-edit-btn {
+    border-color: var(--color-hairline);
+}
+
+.sp-color-edit-btn:hover {
+    border-color: var(--color-primary);
+}
+
+.sp-color-picker-popup {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.sp-color-picker-input {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.sp-color-picker-input:focus {
+    border-color: var(--color-brand-accent);
+}
+
+.sp-color-picker-preview {
+    border-color: var(--color-hairline);
+}
+
+/* ===== 极光背景 ===== */
+.sp-aurora-bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    overflow: hidden;
+}
+
+.sp-aurora-bg.active {
+    opacity: 1;
+}
+
+.sp-aurora-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(100px);
+    opacity: 0.4;
+    will-change: transform;
+    transform: translateZ(0);
 }

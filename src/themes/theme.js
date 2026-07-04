@@ -3,15 +3,12 @@ const ThemeManager = {
   currentTheme: null,
   currentThemeModule: null,
   userThemePath: null,
-  isSettingsPage: false,
 
   /**
    * 初始化主题管理器，加载指定主题（默认从配置读取）
    * @param {string|null} themeName - 主题包名，不传则从后端配置读取
    */
   async init(themeName = null) {
-    this.isSettingsPage = window.location.pathname.includes('settings.html');
-    
     if (!themeName) {
       themeName = await this.theme_fetch_saved();
     }
@@ -87,7 +84,7 @@ const ThemeManager = {
       this.currentTheme = themeName;
       
       if (this.currentThemeModule.load_theme) {
-        await this.currentThemeModule.load_theme(this.isSettingsPage);
+        await this.currentThemeModule.load_theme();
       }
       this.theme_update_toolbar_text_visibility();
       this.theme_load_icons();
@@ -156,12 +153,10 @@ const ThemeManager = {
       config: mergedConfig,
       themeDir: normalizedThemeDir,
       
-      async load_theme(isSettingsPage = false) {
+      async load_theme() {
         const link = document.createElement('link');
         link.rel = 'stylesheet';
-        const cssFile = isSettingsPage ? 'settings.css' : 'theme.css';
-        // convertFileSrc 需要系统路径格式（Windows 用反斜杠）
-        const cssPath = `${this.themeDir}/${cssFile}`.replace(/\//g, '\\');
+        const cssPath = `${this.themeDir}/theme.css`.replace(/\//g, '\\');
         link.href = convertFileSrc(cssPath);
         document.head.appendChild(link);
       },
@@ -286,11 +281,9 @@ const ThemeManager = {
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    ThemeManager.isSettingsPage = window.location.pathname.includes('settings.html');
     ThemeManager.theme_update_active('com.viewstage.theme.simplify');
   });
 } else {
-  ThemeManager.isSettingsPage = window.location.pathname.includes('settings.html');
   ThemeManager.theme_update_active('com.viewstage.theme.simplify');
 }
 

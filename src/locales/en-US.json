@@ -75,15 +75,11 @@
     "selectTheme": "Select Theme",
     "themeDark": "Dark",
     "themeSimplify": "Light",
-    "importTheme": "Import Theme",
-    "importThemeBtn": "Import .vst Theme",
     "installedThemes": "Installed Themes",
     "themeOverwriteConfirm": "Theme already exists. Overwrite?",
     "themeImportSuccess": "Theme imported, restart to apply.",
     "themeImportFailed": "Theme import failed",
     "themeChanged": "Theme changed, restart to apply.",
-    "blur": "Interface Blur",
-    "blurHint": "Add frosted glass blur effect to toolbars and sidebars",
     "themeBuiltinSuffix": " (Built-in)",
     "apply": "Apply",
     "delete": "Delete",
@@ -96,8 +92,6 @@
     "resolution": "Resolution",
     "dynamicResolution": "Dynamic Resolution",
     "dynamicResolutionHint": "Automatically increase canvas resolution when zooming for clearer display",
-    "eraserSpeed": "Speed Eraser",
-    "eraserSpeedHint": "Eraser size changes automatically with movement speed",
     "palmEraser": "Palm Eraser",
     "palmEraserHint": "Auto-switch to square eraser on palm/multi-touch contact",
     "momentum": "Momentum",
@@ -144,6 +138,10 @@
     "cache": "Cache",
     "clearCache": "Clear Cache",
     "autoClearCache": "Auto Clear Cache",
+    "wordCache": "Word Conversion Cache",
+    "clearWordCache": "Clear Word Cache",
+    "autoClearWordCache": "Auto Clear Word Cache",
+    "quarterly": "Quarterly",
     "docStateCleanup": "Document State Cleanup",
     "docStateCleanupDesc": "Automatically clean up document state records not opened for 15 days (runs with cache cleanup)",
     "log": "Log",
@@ -220,7 +218,7 @@
     "wordDefaultRemoved": "Word default setting has been removed"
   },
   "oobe": {
-    "welcome": "Welcome to ViewStage",
+    "welcome": "Welcome to ViewPDF",
     "selectLanguage": "Select Your Language",
     "selectSetupMethod": "Select Setup Method",
     "quickSetup": "Quick Setup",
@@ -246,7 +244,7 @@
     "memCleanAdminHint": "Administrator privileges required for first-time scheduled task setup",
     "max": "Max",
     "featureTour": "Feature Tour",
-    "featureTourDesc": "Quick overview of ViewStage core features",
+    "featureTourDesc": "Quick overview of ViewPDF core features",
     "featAnnotate": "Document Annotation",
     "featAnnotateDesc": "Annotate PDFs and Word documents with saved annotation state",
     "featPdf": "PDF Reader",
@@ -259,7 +257,7 @@
     "defaultApps": "Reader Settings",
     "defaultAppsDesc": "Configure file associations and reader preferences",
     "checkUpdate": "Check for Updates",
-    "checkUpdateDesc": "Update to the latest version of ViewStage",
+    "checkUpdateDesc": "Update to the latest version of ViewPDF",
     "checkingUpdate": "Checking for updates...",
     "updateUpToDate": "You're up to date",
     "updateAvailable": "Update Available",
@@ -273,8 +271,8 @@
     "saving": "Saving settings..."
   },
   "about": {
-    "description": "ViewStage is an application for video presentation and document annotation.",
-    "copyright": "© {year} ViewStage. All rights reserved."
+    "description": "ViewPDF is an application for video presentation and document annotation.",
+    "copyright": "© {year} ViewPDF. All rights reserved."
   },
   "rotation": {
     "rotateLeft": "Rotate",

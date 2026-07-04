@@ -1,5 +1,5 @@
 /**
- * ViewStage — 简易 Markdown 渲染器
+ * ViewPDF — 简易 Markdown 渲染器
  * 用于在 OOBE / 设置中渲染 GitHub Releases 的更新日志
  */
 function escapeHtml(text) {

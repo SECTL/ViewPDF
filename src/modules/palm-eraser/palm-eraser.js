@@ -115,7 +115,6 @@ export class PalmEraserSession {
             eraserSize: baseSize,
             eraserSizeRaw: this.palmEraserSize,
             eraserShape: 'square',
-            eraserSpeedEnabled: false,
             scale: scale || 1,
             bounds: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
             variableWidths: []

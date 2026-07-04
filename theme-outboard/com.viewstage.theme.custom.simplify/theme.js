@@ -14,10 +14,9 @@ const SimplifyTheme = {
   },
 
   /**
-   * 加载主题 CSS 和 JSON 配置，按 settings/主页面注入不同样式表
-   * @param {boolean} isSettingsPage - 是否在设置页面中加载
+   * 加载主题 CSS 和 JSON 配置
    */
-  async load_theme(isSettingsPage = false) {
+  async load_theme() {
     const base = this.fetch_base_path();
     const [themeRes, configRes] = await Promise.all([
       fetch(`${base}themes/${this.name}/theme.json`),
@@ -29,17 +28,10 @@ const SimplifyTheme = {
     ]);
     this.config = { ...themeJson, ...configJson };
 
-    if (isSettingsPage) {
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = `${base}themes/${this.name}/settings.css`;
-      document.head.appendChild(link);
-    } else {
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = `${base}themes/${this.name}/theme.css`;
-      document.head.appendChild(link);
-    }
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `${base}themes/${this.name}/theme.css`;
+    document.head.appendChild(link);
   },
 
   /**

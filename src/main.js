@@ -1,5 +1,5 @@
 /**
- * ViewStage 主逻辑 —— PDF阅读器及批注应用核心
+ * ViewPDF 主逻辑 —— PDF阅读器及批注应用核心
  * 架构: 图像层(img) + 批注层(canvas)，批注系统含笔画记录/压缩/撤销
  * 性能: RAF批量绘制减少重绘；Blob URL替代Data URL节省内存
  */
@@ -46,10 +46,6 @@ const DRAW_CONFIG = {
     penSizePresets: [2, 5, 10, 15, 21],
     eraserSize: 15,
     eraserSizePresets: [5, 15, 25, 38, 50],
-    eraserSpeedEnabled: false,
-    eraserSpeedMinSize: 5,
-    eraserSpeedMaxSize: 120,
-    eraserSpeedFactor: 0.3,
     palmEraserEnabled: false,
     palmEraserSize: 60,
     momentumEnabled: false,
@@ -907,9 +903,6 @@ function main_setup_pdf_file_open() {
             });
         }
 
-        if (settings.blurEnabled !== undefined) {
-            document.body.classList.toggle('blur-enabled', settings.blurEnabled === true);
-        }
 
         if (settings.penMinWidthRatio !== undefined && DRAW_CONFIG.developerMode) {
             DRAW_CONFIG.penMinWidthRatio = settings.penMinWidthRatio;
@@ -967,6 +960,19 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
     const fileName_lower = filePath.toLowerCase();
     const isWord = fileName_lower.endsWith('.docx') || fileName_lower.endsWith('.doc');
     
+    // 检查是否已打开
+    function main_check_file_open(md5) {
+        const found = state.fileList.findIndex(f => f && f.fileMd5 === md5);
+        if (found !== -1) {
+            console.log('文件已打开，切换到已有标签:', found);
+            if (autoOpen) {
+                main_switch_to_tab(found);
+            }
+            return true;
+        }
+        return false;
+    }
+    
     if (isWord) {
         main_show_loading_overlay(window.i18n?.format_translate('loading.detectingOffice') || '正在检测 Office 软件...');
         
@@ -1022,6 +1028,10 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('文件大小:', uint8Array.length, '字节');
         const fileMd5 = main_calculate_md5(uint8Array);
+        if (main_check_file_open(fileMd5)) {
+            main_hide_loading_overlay();
+            return;
+        }
         
         main_update_loading_progress(window.i18n?.format_translate('loading.processingWord') || '正在处理 Word 文档...');
         
@@ -1034,7 +1044,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         try {
             pdfPath = await invoke('office_convert_docx_to_pdf_bytes', {
                 fileData: fileDataForConvert,
-                fileName: fileName
+                fileName: fileName,
+                fileMd5: fileMd5
             });
             console.log('Word 文档已转换为 PDF:', pdfPath);
         } catch (convertError) {
@@ -1124,13 +1135,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 window.documentReaderManager.open(fileIndex);
             }
             
-
             
-            try {
-                await fs.remove(pdfPath);
-            } catch (e) {
-                console.log('清理转换的 PDF 失败:', e);
-            }
+            
         } catch (error) {
             main_hide_loading_overlay();
             console.error('文件导入失败:', error);
@@ -1195,6 +1201,12 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             isEvalSupported: false
         }).promise;
         const fileMd5 = main_calculate_md5(uint8Array);
+        if (main_check_file_open(fileMd5)) {
+            fileData = null;
+            uint8Array = null;
+            main_hide_loading_overlay();
+            return;
+        }
         const pdf = await pdfPromise;
         fileData = null;
         uint8Array = null;
@@ -1563,8 +1575,9 @@ function main_show_pen_control_panel(triggerBtn, mode) {
 function main_update_ui_state() {
     const startupScreen = document.getElementById('startupScreen');
     if (startupScreen) {
+        const reader = window.documentReaderManager;
         const hasOpenDoc = window.state?.fileList?.length > 0 &&
-            window.documentReaderManager?.is_open === true;
+            (reader?.is_open === true || reader?._switching === true);
         startupScreen.style.display = hasOpenDoc ? 'none' : 'flex';
     }
     main_update_tabs();
@@ -1581,9 +1594,12 @@ function main_update_tabs() {
 
     tabsContainer.innerHTML = '';
 
+    const settingsPanel = document.getElementById('settingsPanel');
+    const settingsVisible = settingsPanel && settingsPanel.style.display === 'flex';
+
     const homeTab = document.createElement('button');
     homeTab.className = 'titlebar-tab';
-    if (!isReaderOpen && !state.settingsOpen) homeTab.classList.add('active');
+    if (!isReaderOpen && !settingsVisible && !window.documentReaderManager?._switching) homeTab.classList.add('active');
     const homeLabel = document.createElement('span');
     homeLabel.className = 'tab-label';
     homeLabel.textContent = window.i18n?.format_translate('toolbar.home') || '主页';
@@ -1594,7 +1610,7 @@ function main_update_tabs() {
     // 设置标签
     if (state.settingsOpen) {
         const settingsTab = document.createElement('button');
-        settingsTab.className = 'titlebar-tab active';
+        settingsTab.className = settingsVisible ? 'titlebar-tab active' : 'titlebar-tab';
         const settingsLabel = document.createElement('span');
         settingsLabel.className = 'tab-label';
         settingsLabel.textContent = '设置';
@@ -1608,7 +1624,15 @@ function main_update_tabs() {
         });
         settingsTab.appendChild(close);
         settingsTab.addEventListener('click', () => {
-            if (!state.settingsOpen) main_show_settings_window();
+            const panel = document.getElementById('settingsPanel');
+            if (!state.settingsOpen) {
+                main_show_settings_window();
+            } else if (panel && panel.style.display !== 'flex') {
+                const drToolbar = document.getElementById('drToolbar');
+                if (drToolbar) drToolbar.style.display = 'none';
+                panel.style.display = 'flex';
+                main_update_tabs();
+            }
         });
         tabsContainer.appendChild(settingsTab);
     }
@@ -1617,7 +1641,7 @@ function main_update_tabs() {
         const tab = document.createElement('button');
         tab.className = 'titlebar-tab';
         tab.dataset.index = index;
-        if (isReaderOpen && window.documentReaderManager?.folder_index === index) {
+        if (window.documentReaderManager?.folder_index === index && !settingsVisible) {
             tab.classList.add('active');
         }
 
@@ -1641,23 +1665,32 @@ function main_update_tabs() {
 }
 
 async function main_switch_home() {
-    if (state.settingsOpen) main_close_settings();
+    if (state.settingsOpen) main_hide_settings();
     if (window.documentReaderManager?.is_open) {
         await window.documentReaderManager.close();
+        window.documentReaderManager.folder_index = -1;
     }
     main_update_tabs();
     main_update_ui_state();
 }
 
+function main_hide_settings() {
+    const panel = document.getElementById('settingsPanel');
+    if (panel) panel.style.display = 'none';
+}
+
 async function main_switch_to_tab(index) {
-    if (state.settingsOpen) main_close_settings();
+    if (state.settingsOpen) main_hide_settings();
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
-    const isReaderOpen = window.documentReaderManager?.is_open === true;
-    if (isReaderOpen && window.documentReaderManager?.folder_index === index) return;
-    if (window.documentReaderManager) {
-        await window.documentReaderManager.open(index);
-    }
+    const reader = window.documentReaderManager;
+    if (!reader) return;
+    if (reader.is_open && reader.folder_index === index) return;
+    reader._switching = true;
+    reader.folder_index = index;
+    main_update_tabs();
+    await reader.open(index);
+    reader._switching = false;
     main_update_tabs();
     main_update_ui_state();
 }
@@ -1665,9 +1698,11 @@ async function main_switch_to_tab(index) {
 async function main_close_tab(index) {
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
-    const isReaderOpen = window.documentReaderManager?.is_open === true;
-    if (isReaderOpen && window.documentReaderManager?.folder_index === index) {
-        await window.documentReaderManager.close();
+    const reader = window.documentReaderManager;
+    const isReaderOpen = reader?.is_open === true;
+    if (isReaderOpen && reader?.folder_index === index) {
+        await reader.close();
+        reader.folder_index = -1;
     }
     const folder = fileList[index];
     if (folder?.docNumber !== undefined) {
@@ -1753,7 +1788,6 @@ function main_start_stroke(type, eraserShape) {
         eraserSize: baseEraserSize,
         eraserSizeRaw: DRAW_CONFIG.eraserSize,
         eraserShape: eraserShape || 'square',
-        ...(window.__eraserSpeed ? window.__eraserSpeed.eraser_speed_build_config(DRAW_CONFIG, invScale) : { eraserSpeedEnabled: false }),
         scale: state.scale,
         bounds: {
             minX: Infinity,
@@ -1772,8 +1806,6 @@ function main_start_stroke(type, eraserShape) {
     state.cachedDrawColor = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
     const startScale = main_fetch_safe_scale();
     state.cachedDrawLineWidth = type === 'draw' ? DRAW_CONFIG.penWidth / startScale : DRAW_CONFIG.eraserSize / startScale;
-    
-    state.eraserSpeedState = window.__eraserSpeed?.eraser_speed_create_state() ?? null;
     
     batchDrawManager.eraserShape = state.currentStroke.eraserShape;
     batchDrawManager.batch_draw_init_start();
@@ -1802,9 +1834,6 @@ function main_save_stroke_point(fromX, fromY, toX, toY, pressure = 0.5) {
         currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
         state.currentLineWidth = currentWidth;
         state.cachedDrawLineWidth = DRAW_CONFIG.penWidth / currentScale;
-    } else if (stroke.type === 'erase' && stroke.eraserSpeedEnabled) {
-        currentWidth = window.__eraserSpeed.eraser_speed_update(state.eraserSpeedState, stroke, toX, toY);
-        state.cachedDrawLineWidth = currentWidth;
     } else if (stroke.type === 'erase') {
         state.cachedDrawLineWidth = DRAW_CONFIG.eraserSize / currentScale;
     }
@@ -2068,36 +2097,32 @@ function main_show_settings_window() {
     state.settingsOpen = true;
     const startup = document.getElementById('startupScreen');
     if (startup) startup.style.display = 'none';
-    
-    const existing = document.getElementById('settingsPanel');
-    if (existing) existing.remove();
-    
-    const panel = document.createElement('div');
-    panel.id = 'settingsPanel';
-    panel.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0;';
-    
-    const frame = document.createElement('iframe');
-    frame.id = 'settingsFrame';
-    frame.src = 'settings.html';
-    frame.style.cssText = 'flex:1;width:100%;border:none;background:var(--color-canvas);';
-    // 允许同源脚本访问父窗口 __TAURI__
-    frame.setAttribute('allow', 'same-origin');
-    panel.appendChild(frame);
-    
-    const parent = document.querySelector('.main-function');
-    if (parent) parent.appendChild(panel);
-    
-    frame.addEventListener('load', () => {
-        try {
-            if (frame.contentWindow && window.__TAURI__) {
-                Object.defineProperty(frame.contentWindow, '__TAURI__', {
-                    value: window.__TAURI__,
-                    writable: false,
-                    configurable: true
-                });
-            }
-        } catch (e) { console.warn('settings __TAURI__ passthrough:', e); }
-    });
+
+    // 隐藏阅读器工具栏
+    const drToolbar = document.getElementById('drToolbar');
+    if (drToolbar) drToolbar.style.display = 'none';
+
+    const panel = document.getElementById('settingsPanel');
+    if (!panel) return;
+    panel.style.display = 'flex';
+
+    // 动态加载 settings.css
+    if (!document.querySelector('link[href="settings.css"]')) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'settings.css';
+        document.head.appendChild(link);
+    }
+
+    // 加载 settings.js（仅首次）
+    if (!window._settingsJsLoaded) {
+        window._settingsJsLoaded = true;
+        const s = document.createElement('script');
+        s.type = 'module';
+        s.src = 'settings.js';
+        document.body.appendChild(s);
+    }
+
     main_update_tabs();
 }
 
@@ -2105,7 +2130,15 @@ function main_close_settings() {
     if (!state.settingsOpen) return;
     state.settingsOpen = false;
     const panel = document.getElementById('settingsPanel');
-    panel?.remove();
+    if (panel) panel.style.display = 'none';
+    // 移除 settings.css 避免影响主页面
+    const link = document.querySelector('link[href="settings.css"]');
+    if (link) link.remove();
+    // 如果阅读器还开着，恢复其工具栏
+    if (window.documentReaderManager?.is_open) {
+        const drToolbar = document.getElementById('drToolbar');
+        if (drToolbar) drToolbar.style.display = '';
+    }
     const startup = document.getElementById('startupScreen');
     if (startup) startup.style.removeProperty('display');
     main_update_tabs();
@@ -2135,27 +2168,11 @@ async function main_update_image_rotation(direction) {
         console.log('没有图片可旋转');
         return;
     }
-    
-    let rotatedDataUrl;
-    
-    if (window.__TAURI__) {
-        try {
-            const { invoke } = window.__TAURI__.core;
-            rotatedDataUrl = await invoke('image_update_rotation', { 
-                imageData: state.currentImage.src, 
-                direction: direction 
-            });
-            console.log('Rust 图片旋转完成');
-        } catch (error) {
-            console.error('Rust 图片旋转失败，使用前端降级方案:', error);
-            rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
-        }
-    } else {
-        rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
-    }
+
+    const rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
     
     const rotatedImg = new Image();
-    rotatedImg.onload = async () => {
+    rotatedImg.onload = () => {
         state.currentImage = rotatedImg;
         
         if (state.currentImageIndex >= 0 && state.currentImageIndex < state.imageList.length) {

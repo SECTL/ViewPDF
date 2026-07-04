@@ -52,7 +52,7 @@ if ($ThemeDirs.Count -eq 0) {
 # --- 需要包含的文件扩展名 ---
 $IncludeExtensions = @('.json', '.css', '.js', '.png', '.svg')
 
-Write-Host "=== ViewStage 主题打包工具 ===" -ForegroundColor Cyan
+Write-Host "=== ViewPDF 主题打包工具 ===" -ForegroundColor Cyan
 Write-Host "源目录: $SourceDir"
 Write-Host "输出目录: $OutputRoot"
 Write-Host ""
