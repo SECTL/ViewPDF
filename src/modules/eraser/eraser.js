@@ -4,7 +4,7 @@ export function renderEraseSegment(ctx, fromX, fromY, toX, toY, lineWidth) {
     const dy = toY - fromY;
     ctx.rect(fromX - hw, fromY - hw, lineWidth, lineWidth);
     ctx.rect(toX - hw, toY - hw, lineWidth, lineWidth);
-    if (dx !== 0 && dy !== 0) {
+    if (dx !== 0 || dy !== 0) {
         if ((dx >= 0) === (dy >= 0)) {
             ctx.moveTo(fromX + hw, fromY - hw);
             ctx.lineTo(fromX - hw, fromY + hw);
