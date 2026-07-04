@@ -2505,6 +2505,13 @@ class DocumentReaderManager {
             this.dr_canvas_x = ev.centerX - this.dr_start_finger0_cx * this.dr_scale;
             this.dr_canvas_y = ev.centerY - this.dr_start_finger0_cy * this.dr_scale;
 
+            // 同步到 window.state（供 batch_draw overlay 变换使用）
+            if (window.state) {
+                window.state.scale = this.dr_scale;
+                window.state.canvasX = this.dr_canvas_x;
+                window.state.canvasY = this.dr_canvas_y;
+            }
+
             this._dr_update_move_bound();
             this._dr_update_canvas_position();
 
