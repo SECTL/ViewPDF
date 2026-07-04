@@ -42,6 +42,8 @@ class BlackboardManager {
         this.bb_state = {
             canvas_x: 0,
             canvas_y: 0,
+            canvas_w: 0,
+            canvas_h: 0,
             scale: 1,
             move_bound: { min_x: 0, max_x: 0, min_y: 0, max_y: 0 },
             is_dragging: false,
@@ -217,8 +219,8 @@ class BlackboardManager {
 
         const screen_w = this.screen_w;
         const screen_h = this.screen_h;
-        const canvas_w = window.DRAW_CONFIG.canvasW;
-        const canvas_h = window.DRAW_CONFIG.canvasH;
+        const canvas_w = this.bb_state.canvas_w;
+        const canvas_h = this.bb_state.canvas_h;
         const scaled_w = canvas_w * this.bb_state.scale;
         const scaled_h = canvas_h * this.bb_state.scale;
         const mb = this.bb_state.move_bound;
@@ -464,8 +466,8 @@ class BlackboardManager {
         this._cached_visible_rect_y = s.canvas_y;
 
         const scale = s.scale || 1;
-        const canvas_w = window.DRAW_CONFIG.canvasW;
-        const canvas_h = window.DRAW_CONFIG.canvasH;
+        const canvas_w = this.bb_state.canvas_w;
+        const canvas_h = this.bb_state.canvas_h;
 
         let visible_x = Math.max(0, -s.canvas_x / scale);
         let visible_y = Math.max(0, -s.canvas_y / scale);
@@ -501,13 +503,17 @@ class BlackboardManager {
         this.screen_w = Math.max(1, panel.clientWidth || container?.clientWidth || window.innerWidth);
         this.screen_h = Math.max(1, panel.clientHeight || container?.clientHeight || window.innerHeight);
 
+        // 黑板画布大小为屏幕两倍
+        this.bb_state.canvas_w = Math.floor(this.screen_w * 2);
+        this.bb_state.canvas_h = Math.floor(this.screen_h * 2);
+
         const canvas_wrap = this._el.canvasWrap;
 
         // 创建分块包装器（CSS transform 目标）
         this.bb_wrapper = document.createElement('div');
         this.bb_wrapper.className = 'bb-canvas-wrapper';
-        this.bb_wrapper.style.width = window.DRAW_CONFIG.canvasW + 'px';
-        this.bb_wrapper.style.height = window.DRAW_CONFIG.canvasH + 'px';
+        this.bb_wrapper.style.width = this.bb_state.canvas_w + 'px';
+        this.bb_wrapper.style.height = this.bb_state.canvas_h + 'px';
         canvas_wrap.appendChild(this.bb_wrapper);
 
         // tile_renderer / overlay_canvas / DrawingEngine 子模块
@@ -517,8 +523,8 @@ class BlackboardManager {
         this.overlay_ctx = null;
 
         // 初始化状态位置：居中画布
-        const init_x = -(window.DRAW_CONFIG.canvasW - this.screen_w) / 2;
-        const init_y = -(window.DRAW_CONFIG.canvasH - this.screen_h) / 2;
+        const init_x = -(this.bb_state.canvas_w - this.screen_w) / 2;
+        const init_y = -(this.bb_state.canvas_h - this.screen_h) / 2;
         this.bb_state.canvas_x = init_x;
         this.bb_state.canvas_y = init_y;
         this.bb_state.scale = 1;
@@ -584,8 +590,8 @@ class BlackboardManager {
         this.tile_renderer = new window.TileRenderer({
             strokeHistoryRef: null,
             getVisibleRect: () => this._fetch_visible_rect(),
-            canvasW: window.DRAW_CONFIG.canvasW,
-            canvasH: window.DRAW_CONFIG.canvasH,
+            canvasW: this.bb_state.canvas_w,
+            canvasH: this.bb_state.canvas_h,
             skipBaseCache: true
         });
         this.tile_renderer.init_tiles(this.bb_wrapper, 1);
@@ -1486,6 +1492,10 @@ class BlackboardManager {
         this.screen_w = screen_w;
         this.screen_h = screen_h;
 
+        // 重新计算画布大小
+        this.bb_state.canvas_w = Math.floor(screen_w * 2);
+        this.bb_state.canvas_h = Math.floor(screen_h * 2);
+
         // overlay 在首次 open() 前为 null，首次 open 时才会创建
         if (this.overlay_canvas) {
             const dpr = this.drawing_engine?.batch_draw?._overlayDpr || 1;
@@ -1497,8 +1507,8 @@ class BlackboardManager {
         }
 
         // 重新居中画布
-        const init_x = -(window.DRAW_CONFIG.canvasW - screen_w) / 2;
-        const init_y = -(window.DRAW_CONFIG.canvasH - screen_h) / 2;
+        const init_x = -(this.bb_state.canvas_w - screen_w) / 2;
+        const init_y = -(this.bb_state.canvas_h - screen_h) / 2;
         this.bb_state.canvas_x = init_x;
         this.bb_state.canvas_y = init_y;
         this._cached_move_bound_scale = null;
