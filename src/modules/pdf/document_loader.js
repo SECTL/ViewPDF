@@ -11,7 +11,7 @@ export function init_pdfjs() {
     if (window.pdfjsLib) {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'modules/pdf/pdf.worker.min.mjs';
         // 抑制 PDF.js 的 CMap/ToUnicode 警告（不影响功能）
-        window.pdfjsLib.verbosity = 0;
+        window.pdfjsLib.verbosity = window.pdfjsLib.VerbosityLevel?.ERRORS ?? 0;
         return true;
     }
     console.warn('[DocLoader] PDF.js 库未加载');

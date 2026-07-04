@@ -543,18 +543,10 @@ class RealtimeBatchDrawManager {
 
                         const midX = (fromX + toX) / 2;
                         const midY = (fromY + toY) / 2;
-                        const isFirstSeg = (i === 0 && (this._strokeStart || this._lastMidX === null));
-                        if (isFirstSeg) {
-                            ctx.moveTo(fromX, fromY);
-                            ctx.lineTo(midX, midY);
-                        } else if (batchFirst) {
-                            const prevMx = (i === 0 ? this._lastMidX : ((commands[i - 1].fromX + commands[i - 1].toX) / 2));
-                            const prevMy = (i === 0 ? this._lastMidY : ((commands[i - 1].fromY + commands[i - 1].toY) / 2));
-                            ctx.moveTo(prevMx, prevMy);
-                            ctx.quadraticCurveTo(fromX, fromY, midX, midY);
-                        } else {
-                            ctx.quadraticCurveTo(fromX, fromY, midX, midY);
-                        }
+                        const prevMx = (i === 0 ? (this._lastMidX ?? fromX) : ((commands[i - 1].fromX + commands[i - 1].toX) / 2));
+                        const prevMy = (i === 0 ? (this._lastMidY ?? fromY) : ((commands[i - 1].fromY + commands[i - 1].toY) / 2));
+                        ctx.moveTo(prevMx, prevMy);
+                        ctx.quadraticCurveTo(fromX, fromY, midX, midY);
                         batchFirst = false;
                     } else {
                         const midX = (fromX + toX) / 2;

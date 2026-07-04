@@ -8,8 +8,6 @@ async function developer_options_init() {
     const invoke = window.__TAURI__?.core?.invoke;
     let savedWidthRatio = 0.4;
     let savedMaxScale = 4;
-    let savedPerfMonitor = false;
-    let savedPerfInterval = 200;
     let savedDevMode = true;
     let savedFrameDelta = 60;
     let savedTailDuration = 50;
@@ -26,8 +24,6 @@ async function developer_options_init() {
             savedMaxScale = window.DRAW_CONFIG?.maxScaleImage
                 ?? s.maxScaleImage
                 ?? 4;
-            savedPerfMonitor = s.perfMonitorEnabled === true;
-            savedPerfInterval = s.perfMonitorInterval ?? 200;
             savedDevMode = s.developerMode !== false;
             savedFrameDelta = window.DRAW_CONFIG?.gestureFrameDelta
                 ?? s.gestureFrameDelta
@@ -45,22 +41,29 @@ async function developer_options_init() {
         savedMaxScale = window.DRAW_CONFIG?.maxScaleImage ?? 4;
     }
 
-    developer_options_show_main(savedWidthRatio, savedMaxScale, savedPerfMonitor, savedPerfInterval, savedDevMode, savedFrameDelta, savedTailDuration, savedEllipseStroke);
+    developer_options_show_main(savedWidthRatio, savedMaxScale, savedDevMode, savedFrameDelta, savedTailDuration, savedEllipseStroke);
 }
-
-const PERF_INTERVAL_OPTIONS = [
-    { value: '100', i18nKey: 'developer.perfIntervalFast' },
-    { value: '200', i18nKey: 'developer.perfIntervalNormal' },
-    { value: '500', i18nKey: 'developer.perfIntervalSlow' },
-];
 
 function _tk(key) { return window.i18n?.format_translate(key) ?? key; }
-function _perf_interval_label(ms) {
-    const opt = PERF_INTERVAL_OPTIONS.find(p => parseInt(p.value) === ms);
-    return opt ? `${_tk(opt.i18nKey)}（${ms}ms）` : `${ms}ms`;
+function devClearSelectOpts(select) {
+    const opts = select.querySelector('.sp-select-options') || document.querySelector('body > .sp-select-options[id="' + select.querySelector('.sp-select-options')?.id + '"]');
+    if (opts && opts.parentNode !== select) {
+        select.appendChild(opts);
+    }
+    if (opts) {
+        opts.classList.remove('sp-up');
+        opts.style.position = '';
+        opts.style.left = '';
+        opts.style.top = '';
+        opts.style.bottom = '';
+        opts.style.minWidth = '';
+        opts.style.opacity = '';
+        opts.style.visibility = '';
+        opts.style.transform = '';
+    }
 }
 
-function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMonitorEnabled, perfMonitorInterval, devModeEnabled, currentFrameDelta, currentTailDuration, ellipseStrokeEnabled) {
+function developer_options_show_main(currentWidthRatio, currentMaxScale, devModeEnabled, currentFrameDelta, currentTailDuration, ellipseStrokeEnabled) {
     const page = document.getElementById('pageDevOptions');
     if (!page) return;
     const devModeOn = devModeEnabled !== false;
@@ -109,74 +112,56 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
     const currentTailDurationVal = currentTailDuration ?? 30;
 
     page.innerHTML = `
-        <h2 class="page-title">${_tk('developer.title')}</h2>
-        <div class="setting-item" style="border-bottom-color:var(--color-hairline, rgba(255,255,255,0.08));">
-            <span class="setting-label">${_tk('developer.devMode')}</span>
-            <label class="toggle-switch">
+        <h2 class="sp-page-title">${_tk('developer.title')}</h2>
+        <div class="sp-setting-item" style="border-bottom-color:var(--color-hairline, rgba(255,255,255,0.08));">
+            <span class="sp-setting-label">${_tk('developer.devMode')}</span>
+            <label class="sp-toggle-switch">
                 <input type="checkbox" id="devModeToggle"${devModeOn ? ' checked' : ''}>
-                <span class="toggle-slider"></span>
+                <span class="sp-toggle-slider"></span>
             </label>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.perfMonitor')}</span>
-            <label class="toggle-switch">
-                <input type="checkbox" id="devPerfMonitorToggle"${perfMonitorEnabled ? ' checked' : ''}>
-                <span class="toggle-slider"></span>
-            </label>
-        </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.perfInterval')}</span>
-            <div class="custom-select" id="devPerfIntervalSelect">
-                <div class="select-selected" id="devPerfIntervalSelected">${_perf_interval_label(perfMonitorInterval)}</div>
-                <div class="select-options" id="devPerfIntervalOptions">
-                    ${PERF_INTERVAL_OPTIONS.map(p => `
-                        <div class="select-option${parseInt(p.value) === perfMonitorInterval ? ' selected' : ''}" data-value="${p.value}">${_tk(p.i18nKey)}（${p.value}ms）</div>
-                    `).join('')}
-                </div>
-            </div>
-        </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.widthRatio')}</span>
-            <div class="custom-select" id="devWidthRatioSelect">
-                <div class="select-selected" id="devWidthRatioSelected">${currentWidthLabel}</div>
-                <div class="select-options" id="devWidthRatioOptions">
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.widthRatio')}</span>
+            <div class="sp-custom-select" id="devWidthRatioSelect">
+                <div class="sp-select-selected" id="devWidthRatioSelected">${currentWidthLabel}</div>
+                <div class="sp-select-options" id="devWidthRatioOptions">
                     ${widthPresets.map(p => `
-                        <div class="select-option${parseFloat(p.value) === currentWidthRatio ? ' selected' : ''}" data-value="${p.value}">${p.label}</div>
+                        <div class="sp-select-option${parseFloat(p.value) === currentWidthRatio ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
                     `).join('')}
                 </div>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.maxScale')}</span>
-            <div class="custom-select" id="devMaxScaleSelect">
-                <div class="select-selected" id="devMaxScaleSelected">${currentScaleLabel}</div>
-                <div class="select-options" id="devMaxScaleOptions">
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.maxScale')}</span>
+            <div class="sp-custom-select" id="devMaxScaleSelect">
+                <div class="sp-select-selected" id="devMaxScaleSelected">${currentScaleLabel}</div>
+                <div class="sp-select-options" id="devMaxScaleOptions">
                     ${scalePresets.map(p => `
-                        <div class="select-option${parseInt(p.value) === currentMaxScale ? ' selected' : ''}" data-value="${p.value}">${p.label}</div>
+                        <div class="sp-select-option${parseInt(p.value) === currentMaxScale ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
                     `).join('')}
                 </div>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.frameDelta')}</span>
-            <div class="custom-select" id="devFrameDeltaSelect">
-                <div class="select-selected" id="devFrameDeltaSelected">${currentFrameDeltaLabel}</div>
-                <div class="select-options" id="devFrameDeltaOptions">
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.frameDelta')}</span>
+            <div class="sp-custom-select" id="devFrameDeltaSelect">
+                <div class="sp-select-selected" id="devFrameDeltaSelected">${currentFrameDeltaLabel}</div>
+                <div class="sp-select-options" id="devFrameDeltaOptions">
                     ${frameDeltaPresets.map(p => `
-                        <div class="select-option${parseInt(p.value) === currentFrameDelta ? ' selected' : ''}" data-value="${p.value}">${p.label}</div>
+                        <div class="sp-select-option${parseInt(p.value) === currentFrameDelta ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
                     `).join('')}
                 </div>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.tailDuration')}</span>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.tailDuration')}</span>
             <div style="display:flex;align-items:center;gap:6px;">
-                <input type="number" id="devTailDurationInput" class="dev-number-input" value="${currentTailDurationVal}" min="0" max="500" step="1">
+                <input type="number" id="devTailDurationInput" class="sp-dev-number-input" value="${currentTailDurationVal}" min="0" max="500" step="1">
                 <span style="font-size:12px;color:var(--color-muted, #888);">ms</span>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.docDetection')}</span>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.docDetection')}</span>
             <span id="devGoDetection" style="cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;">→</span>
         </div>
     `;
@@ -203,48 +188,11 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
         });
     })();
 
-    // 性能监视器开关
-    (function setup_perf_monitor_toggle() {
-        const toggle = document.getElementById('devPerfMonitorToggle');
-        if (!toggle) return;
-        toggle.addEventListener('change', () => {
-            const enabled = toggle.checked;
-            if (invoke) {
-                invoke('settings_save_all', { settings: { perfMonitorEnabled: enabled, developerMode: true } });
-            }
-        });
-    })();
-
-    // 监视器更新频率选择器
-    (function setup_perf_interval_select() {
-        const select = document.getElementById('devPerfIntervalSelect');
-        const selected = document.getElementById('devPerfIntervalSelected');
-        const options = document.querySelectorAll('#devPerfIntervalOptions .select-option');
-
-        if (!select || !selected) return;
-
-        options.forEach(opt => {
-            opt.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const v = parseInt(opt.dataset.value);
-                selected.textContent = perf_interval_label(v);
-                options.forEach(o => o.classList.remove('selected'));
-                opt.classList.add('selected');
-                select.classList.remove('open');
-                devClearSelectOpts(select);
-
-                if (invoke) {
-                    invoke('settings_save_all', { settings: { perfMonitorInterval: v, developerMode: true } });
-                }
-            });
-        });
-    })();
-
     // 宽度比例选择器
     (function setup_width_ratio_select() {
         const select = document.getElementById('devWidthRatioSelect');
         const selected = document.getElementById('devWidthRatioSelected');
-        const options = document.querySelectorAll('#devWidthRatioOptions .select-option');
+        const options = document.querySelectorAll('#devWidthRatioOptions .sp-select-option');
 
         if (!select || !selected) return;
 
@@ -253,9 +201,9 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
                 e.stopPropagation();
                 const v = parseFloat(opt.dataset.value);
                 selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('selected'));
-                opt.classList.add('selected');
-                select.classList.remove('open');
+                options.forEach(o => o.classList.remove('sp-selected'));
+                opt.classList.add('sp-selected');
+                select.classList.remove('sp-open');
                 devClearSelectOpts(select);
 
                 if (window.DRAW_CONFIG) {
@@ -272,7 +220,7 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
     (function setup_max_scale_select() {
         const select = document.getElementById('devMaxScaleSelect');
         const selected = document.getElementById('devMaxScaleSelected');
-        const options = document.querySelectorAll('#devMaxScaleOptions .select-option');
+        const options = document.querySelectorAll('#devMaxScaleOptions .sp-select-option');
 
         if (!select || !selected) return;
 
@@ -281,9 +229,9 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
                 e.stopPropagation();
                 const v = parseInt(opt.dataset.value);
                 selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('selected'));
-                opt.classList.add('selected');
-                select.classList.remove('open');
+                options.forEach(o => o.classList.remove('sp-selected'));
+                opt.classList.add('sp-selected');
+                select.classList.remove('sp-open');
                 devClearSelectOpts(select);
 
                 if (window.DRAW_CONFIG) {
@@ -300,7 +248,7 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
     (function setup_frame_delta_select() {
         const select = document.getElementById('devFrameDeltaSelect');
         const selected = document.getElementById('devFrameDeltaSelected');
-        const options = document.querySelectorAll('#devFrameDeltaOptions .select-option');
+        const options = document.querySelectorAll('#devFrameDeltaOptions .sp-select-option');
 
         if (!select || !selected) return;
 
@@ -309,9 +257,9 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
                 e.stopPropagation();
                 const v = parseInt(opt.dataset.value);
                 selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('selected'));
-                opt.classList.add('selected');
-                select.classList.remove('open');
+                options.forEach(o => o.classList.remove('sp-selected'));
+                opt.classList.add('sp-selected');
+                select.classList.remove('sp-open');
                 devClearSelectOpts(select);
 
                 if (window.DRAW_CONFIG) {
@@ -374,53 +322,6 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, perfMon
         });
     })();
 
-    // 动态加载 memclean 模块（供子页面使用）
-    if (typeof memclean_init !== 'function') {
-        const script = document.createElement('script');
-        script.src = './modules/memclean/memclean.js';
-        document.body.appendChild(script);
-    }
-}
-
-function developer_options_show_memclean() {
-    const page = document.getElementById('pageDevOptions');
-    if (!page) return;
-
-    page.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
-            <span id="devBackFromMemclean" style="cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;">${_tk('developer.backToMain')}</span>
-            <h2 class="page-title" style="margin:0;">${_tk('memclean.title')}</h2>
-        </div>
-        <div class="memclean-status" id="memcleanStatusRow">
-            <span class="memclean-status-dot inactive" id="memcleanStatusDot"></span>
-            <span class="memclean-status-text" id="memcleanStatusText">${_tk('memclean.statusChecking')}</span>
-        </div>
-        <h3 class="memclean-section-title" style="margin-top:12px;">${_tk('memclean.regionHeader')}</h3>
-        <div class="memclean-regions" id="memcleanRegions"></div>
-        <hr class="memclean-divider">
-        <div class="memclean-btn-row">
-            <button class="btn-action" id="memcleanCleanBtn">${_tk('memclean.cleanNow')}</button>
-            <div id="memcleanSetupRow">
-                <button class="btn-action" id="memcleanSetupBtn">${_tk('memclean.setupTask')}</button>
-            </div>
-            <div id="memcleanUninstallRow" style="display:none;">
-                <button class="btn-action" id="memcleanUninstallBtn" style="color:var(--color-muted,#888);border-color:rgba(128,128,128,0.2);font-size:12px;padding:6px 14px;">${_tk('memclean.uninstallTask')}</button>
-            </div>
-        </div>
-        <div class="memclean-hint">${_tk('memclean.hint')}</div>
-    `;
-
-    document.getElementById('devBackFromMemclean')?.addEventListener('click', developer_options_init);
-
-    // 加载并初始化 memclean 模块
-    if (typeof memclean_init === 'function') {
-        memclean_init();
-    } else {
-        const script = document.createElement('script');
-        script.src = './modules/memclean/memclean.js';
-        script.onload = () => { if (typeof memclean_init === 'function') memclean_init(); };
-        document.body.appendChild(script);
-    }
 }
 
 function developer_options_show_detection() {
@@ -430,27 +331,27 @@ function developer_options_show_detection() {
     page.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
             <span id="devBackToMain" style="cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;">${_tk('developer.backToMain')}</span>
-            <h2 class="page-title" style="margin:0;">${_tk('developer.detectionTitle')}</h2>
+            <h2 class="sp-page-title" style="margin:0;">${_tk('developer.detectionTitle')}</h2>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.detectMsOffice')}</span>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.detectMsOffice')}</span>
             <div style="display:flex;align-items:center;gap:8px;">
                 <span id="devWordStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="btn-action" data-check="word">${_tk('developer.docDetection')}</button>
+                <button class="sp-btn-action" data-check="word">${_tk('developer.docDetection')}</button>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.detectWps')}</span>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.detectWps')}</span>
             <div style="display:flex;align-items:center;gap:8px;">
                 <span id="devWpsStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="btn-action" data-check="wps">${_tk('developer.docDetection')}</button>
+                <button class="sp-btn-action" data-check="wps">${_tk('developer.docDetection')}</button>
             </div>
         </div>
-        <div class="setting-item">
-            <span class="setting-label">${_tk('developer.detectLibreOffice')}</span>
+        <div class="sp-setting-item">
+            <span class="sp-setting-label">${_tk('developer.detectLibreOffice')}</span>
             <div style="display:flex;align-items:center;gap:8px;">
                 <span id="devLibreStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="btn-action" data-check="libreoffice">${_tk('developer.docDetection')}</button>
+                <button class="sp-btn-action" data-check="libreoffice">${_tk('developer.docDetection')}</button>
             </div>
         </div>
     `;

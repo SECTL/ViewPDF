@@ -3494,7 +3494,7 @@ pub fn app_init_run() {
         #[cfg(debug_assertions)]
         let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
             WriteLogger::new(LevelFilter::Info, Config::default(), file),
-            TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
+            simplelog::TermLogger::new(LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed, simplelog::ColorChoice::Auto),
         ];
         #[cfg(not(debug_assertions))]
         let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![

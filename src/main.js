@@ -914,31 +914,7 @@ function main_setup_pdf_file_open() {
             DRAW_CONFIG.gestureFrameDelta = settings.gestureFrameDelta;
         }
 
-        // 性能监视器动态开关（仅在开发者模式下生效）
-        if (settings.perfMonitorEnabled !== undefined && DRAW_CONFIG.developerMode) {
-            DRAW_CONFIG.perfMonitorEnabled = settings.perfMonitorEnabled;
-            const interval = settings.perfMonitorInterval || 200;
-            if (settings.perfMonitorEnabled) {
-                if (!window.perfMonitor) {
-                    import('./modules/developer/perf-monitor.js').then(mod => {
-                        window.perfMonitor = mod;
-                        mod.perf_monitor_init(interval);
-                    }).catch(e => {
-                        console.error('动态加载 perf monitor 失败:', e);
-                    });
-                } else {
-                    window.perfMonitor.perf_monitor_set_enabled(true, interval);
-                }
-            } else {
-                if (window.perfMonitor) {
-                    window.perfMonitor.perf_monitor_set_enabled(false);
-                }
-            }
-        } else if (settings.perfMonitorInterval !== undefined && DRAW_CONFIG.developerMode && window.perfMonitor) {
-            // 仅更新频率（不改变开关状态）
-            window.perfMonitor.perf_monitor_set_interval(settings.perfMonitorInterval);
-        }
-    }).catch(err => {
+        }).catch(err => {
         console.error('settings-changed 事件监听失败:', err);
     });
     
@@ -1675,8 +1651,14 @@ async function main_switch_home() {
 }
 
 function main_hide_settings() {
+    state.settingsOpen = false;
     const panel = document.getElementById('settingsPanel');
     if (panel) panel.style.display = 'none';
+    // 如果阅读器还开着，恢复其工具栏
+    if (window.documentReaderManager?.is_open) {
+        const drToolbar = document.getElementById('drToolbar');
+        if (drToolbar) drToolbar.style.display = '';
+    }
 }
 
 async function main_switch_to_tab(index) {
@@ -1685,7 +1667,10 @@ async function main_switch_to_tab(index) {
     if (index < 0 || index >= fileList.length) return;
     const reader = window.documentReaderManager;
     if (!reader) return;
-    if (reader.is_open && reader.folder_index === index) return;
+    if (reader.is_open && reader.folder_index === index) {
+        main_update_tabs();
+        return;
+    }
     reader._switching = true;
     reader.folder_index = index;
     main_update_tabs();

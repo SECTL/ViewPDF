@@ -612,15 +612,15 @@ class TileRenderer {
             const clipY = Math.max(rect.y, sy);
             const clipR = Math.min(rect.x + rect.width, sx + sw);
             const clipB = Math.min(rect.y + rect.height, sy + sh);
-            const clipW = clipR - clipX;
-            const clipH = clipB - clipY;
+            const clipW = Math.ceil(clipR - clipX);
+            const clipH = Math.ceil(clipB - clipY);
             if (clipW <= 0 || clipH <= 0) continue;
 
             ctx.save();
             ctx.setTransform(mainDpr, 0, 0, mainDpr, -rect.x * mainDpr, -rect.y * mainDpr);
             ctx.drawImage(
                 offscreen,
-                (clipX - sx) * mainDpr, (clipY - sy) * mainDpr,
+                Math.round((clipX - sx) * mainDpr), Math.round((clipY - sy) * mainDpr),
                 clipW * mainDpr, clipH * mainDpr,
                 clipX, clipY, clipW, clipH
             );

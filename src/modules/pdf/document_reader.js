@@ -2331,7 +2331,7 @@ class DocumentReaderManager {
             }
         });
 
-        input.on('inputMove', (ev) => {
+        input.on('inputMove', async (ev) => {
             if (!this.is_open) return;
 
             if (this.isPalmErasing) {
@@ -2370,6 +2370,14 @@ class DocumentReaderManager {
 
             const rect = this.draw_canvas_rect || page_data.page_element.getBoundingClientRect();
             const inv = this.dr_cached_inv_scale;
+            // 指针已移出页面元素时终止当前笔画（直接检测 DOM 元素，不受 setPointerCapture 影响）
+            const elAtPointer = document.elementFromPoint(ev.position.x, ev.position.y);
+            if (!elAtPointer?.closest?.('.doc-reader-page')) {
+                this.is_drawing = false;
+                this.draw_canvas_rect = null;
+                await this._submit_stroke();
+                return;
+            }
             const x = (ev.position.x - rect.left) * inv;
             const y = (ev.position.y - rect.top) * inv;
             const dx = x - this.last_x;
@@ -3062,18 +3070,20 @@ class DocumentReaderManager {
 
         if (this._el_move_btn) this._el_move_btn.addEventListener('click', () => this._set_draw_mode('move'));
         if (this._el_comment_btn) this._el_comment_btn.addEventListener('click', () => {
+            const btn = this._el_comment_btn || document.getElementById('drBtnComment');
             if (this.draw_mode === 'comment') {
-                if (window.main_show_pen_control_panel) {
-                    window.main_show_pen_control_panel(this._el_comment_btn, 'comment');
+                if (window.main_show_pen_control_panel && btn) {
+                    window.main_show_pen_control_panel(btn, 'comment');
                 }
             } else {
                 this._set_draw_mode('comment');
             }
         });
         if (this._el_eraser_btn) this._el_eraser_btn.addEventListener('click', () => {
+            const btn = this._el_eraser_btn || document.getElementById('drBtnEraser');
             if (this.draw_mode === 'eraser') {
-                if (window.main_show_pen_control_panel) {
-                    window.main_show_pen_control_panel(this._el_eraser_btn, 'eraser');
+                if (window.main_show_pen_control_panel && btn) {
+                    window.main_show_pen_control_panel(btn, 'eraser');
                 }
             } else {
                 this._set_draw_mode('eraser');
