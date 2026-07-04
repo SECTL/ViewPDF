@@ -1,6 +1,6 @@
 [package]
 name = "viewpdf"
-version = "0.0.1"
+version = "0.0.2"
 description = "An application for video presentation and document annotation"
 authors = ["SECTL"]
 edition = "2021"
