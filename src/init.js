@@ -2,6 +2,7 @@
  * ViewPDF 初始化 —— 文件管理
  */
 import ThemeManager from './themes/theme.js';
+import * as Eraser from './modules/eraser/eraser.js';
 
 console.log('[init] module loaded, readyState:', document.readyState);
 
@@ -550,6 +551,8 @@ window.blackboard_ensure_loaded = (async (container) => {
 async function main_init_all() {
     console.log('[init] main_init_all start');
     try {
+        window.__eraser = Eraser;
+
         if (window.i18n) {
             await window.i18n.init_start();
         }
