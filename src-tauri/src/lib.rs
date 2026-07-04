@@ -3476,7 +3476,7 @@ pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
 /// 首次运行打开 OOBE 引导窗口，非首次运行读取配置设置窗口尺寸并全屏显示。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn app_init_run() {
-    use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config, TermLogger, TerminalMode, ColorChoice};
+    use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config};
     use std::fs::File;
     
     let config_dir = dirs::config_dir()
