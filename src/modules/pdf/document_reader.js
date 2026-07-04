@@ -202,11 +202,6 @@ class DocumentReaderManager {
         toolbar.style.display = 'none';
         toolbar.innerHTML = `
             <div class="toolbar-dr-group">
-                <button class="toolbar-btn function-btn" id="drBtnClose">
-                    <img data-icon="dismiss" width="16" height="16" alt="关闭">
-                    <span>关闭</span>
-                </button>
-                <div class="toolbar-separator"></div>
                 <button class="toolbar-btn function-btn" id="drBtnMove" data-mode="move">
                     <img data-icon="move" width="16" height="16" alt="移动">
                     <span>移动</span>
@@ -3039,9 +3034,6 @@ class DocumentReaderManager {
     // ====== 工具栏事件 ======
 
     _setup_toolbar_events() {
-        const close_btn = document.getElementById('drBtnClose');
-        if (close_btn) close_btn.addEventListener('click', () => this.close());
-
         const minimize_btn = document.getElementById('drBtnMinimize');
         if (minimize_btn) {
             minimize_btn.addEventListener('click', async () => {

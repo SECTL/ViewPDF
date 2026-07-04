@@ -419,7 +419,13 @@ window.main_render_recent_files = (files) => {
 
             const icon = document.createElement('div');
             icon.className = 'file-type-icon ' + info.cls;
-            icon.textContent = info.label;
+            if (ext === 'pdf') {
+                icon.innerHTML = '<img src="assets/pdf.ico" style="width:20px;height:20px">';
+            } else if (ext === 'doc' || ext === 'docx') {
+                icon.innerHTML = '<img src="assets/word.ico" style="width:20px;height:20px">';
+            } else {
+                icon.textContent = info.label;
+            }
 
             const infoDiv = document.createElement('div');
             infoDiv.className = 'file-row-info';

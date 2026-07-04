@@ -856,8 +856,8 @@ body {
     flex-shrink: 0;
 }
 
-.file-type-icon.type-pdf { background: #ef4444; }
-.file-type-icon.type-doc { background: #3b82f6; }
+.file-type-icon.type-pdf { background: #fff; }
+.file-type-icon.type-doc { background: #fff; }
 .file-type-icon.type-xls { background: #10b981; }
 .file-type-icon.type-ppt { background: #f59e0b; }
 .file-type-icon.type-image { background: #8b5cf6; }
