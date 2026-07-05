@@ -1387,8 +1387,10 @@ class DocumentReaderManager {
         page_el.querySelectorAll('.doc-reader-page-virtual-placeholder').forEach(el => el.remove());
 
         if (page_data.render_mode === 'pdfjs') {
-            if (!page_el.querySelector('.doc-reader-pdf-canvas')) {
-                this._create_pdf_page_layers(page_data);
+            if (!page_data._pdf_canvas_el) {
+                const existing = page_el.querySelector('.doc-reader-pdf-canvas');
+                if (existing) page_data._pdf_canvas_el = existing;
+                else this._create_pdf_page_layers(page_data);
             }
             if (!page_data._tiles_container) {
                 const tiles_container = document.createElement('div');
@@ -2160,7 +2162,13 @@ class DocumentReaderManager {
             return { x: 0, y: 0, width: page_data?.page_width || 800, height: page_data?.page_height || 600 };
         }
         const rect = page_data.page_element.getBoundingClientRect();
-        const container_rect = this._scroll_container?.getBoundingClientRect();
+        // 复用 _check_page_visibility 的容器缓存，避免每页强制 layout
+        if (!this._cached_container_rect) {
+            const cr = this._scroll_container?.getBoundingClientRect();
+            const wr = this._zoom_wrapper?.getBoundingClientRect();
+            this._cached_container_rect = cr ? { top: cr.top, bottom: cr.bottom, left: cr.left, right: cr.right, wrapperTop: wr?.top ?? 0 } : null;
+        }
+        const container_rect = this._cached_container_rect;
         if (!container_rect) {
             return { x: 0, y: 0, width: rect.width, height: rect.height };
         }
@@ -3917,7 +3925,10 @@ class DocumentReaderManager {
             }
             this._wheel_raf_id = requestAnimationFrame(() => {
                 this._wheel_raf_id = null;
-                this._dr_apply_scale();
+                // 缩放进行中跳过 _dr_apply_scale（它内部也会 early-return，省掉入口处 4 次 layout 读取）
+                if (!this._dr_is_zooming) {
+                    this._dr_apply_scale();
+                }
                 this._dr_schedule_disable_smooth_transform();
             });
         }

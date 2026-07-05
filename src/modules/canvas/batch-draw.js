@@ -458,6 +458,8 @@ class RealtimeBatchDrawManager {
         let batchFirst = true;
         let batchWidth = 0;
         let batchColor = null;
+        let lastMidX = this._lastMidX;
+        let lastMidY = this._lastMidY;
 
         if (this._penEffectMode === 'limited') {
             const prev = this._segmentTimes.length > 0 ? this._segmentTimes[this._segmentTimes.length - 1] : 0;
@@ -490,11 +492,6 @@ class RealtimeBatchDrawManager {
                 }
             }
 
-            if (cmd.type === 'draw') {
-                this._storedWidths.push(lineWidth);
-            } else if (cmd.type === 'erase') {
-                this._storedWidths.push(lineWidth);
-            }
             lastLineWidth = lineWidth;
 
             if (cmd.type !== currentType || cmd.color !== currentColor) {
@@ -541,17 +538,21 @@ class RealtimeBatchDrawManager {
                         batchWidth = lineWidth;
                         ctx.beginPath();
 
-                        const midX = (fromX + toX) / 2;
-                        const midY = (fromY + toY) / 2;
-                        const prevMx = (i === 0 ? (this._lastMidX ?? fromX) : ((commands[i - 1].fromX + commands[i - 1].toX) / 2));
-                        const prevMy = (i === 0 ? (this._lastMidY ?? fromY) : ((commands[i - 1].fromY + commands[i - 1].toY) / 2));
+                        const midX = (fromX + toX) * 0.5;
+                        const midY = (fromY + toY) * 0.5;
+                        const prevMx = (i === 0 ? (this._lastMidX ?? fromX) : ((commands[i - 1].fromX + commands[i - 1].toX) * 0.5));
+                        const prevMy = (i === 0 ? (this._lastMidY ?? fromY) : ((commands[i - 1].fromY + commands[i - 1].toY) * 0.5));
                         ctx.moveTo(prevMx, prevMy);
                         ctx.quadraticCurveTo(fromX, fromY, midX, midY);
                         batchFirst = false;
+                        lastMidX = midX;
+                        lastMidY = midY;
                     } else {
-                        const midX = (fromX + toX) / 2;
-                        const midY = (fromY + toY) / 2;
+                        const midX = (fromX + toX) * 0.5;
+                        const midY = (fromY + toY) * 0.5;
                         ctx.quadraticCurveTo(fromX, fromY, midX, midY);
+                        lastMidX = midX;
+                        lastMidY = midY;
                     }
                 }
             }
@@ -571,8 +572,8 @@ class RealtimeBatchDrawManager {
             }
 
             if (i === count - 1) {
-                this._lastMidX = (fromX + toX) / 2;
-                this._lastMidY = (fromY + toY) / 2;
+                this._lastMidX = lastMidX;
+                this._lastMidY = lastMidY;
                 this._lastToX = toX;
                 this._lastToY = toY;
             }

@@ -1475,53 +1475,64 @@ function main_show_pen_control_panel(triggerBtn, mode) {
 
     if (mode === 'comment') {
         colorContainer.style.display = '';
-        colorContainer.innerHTML = '';
-        const colors = DRAW_CONFIG.penColors || [];
-        colors.forEach((color) => {
-            const btn = document.createElement('button');
-            btn.className = 'pen-color-btn';
-            btn.dataset.color = color;
-            btn.style.background = color;
-            btn.classList.toggle('active', color === DRAW_CONFIG.penColor);
-            const isLight = color.toLowerCase() === '#ffffff' || color.toLowerCase() === '#fff';
-            btn.classList.add(isLight ? 'light-color' : 'dark-color');
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                DRAW_CONFIG.penColor = color;
-                main_update_color_buttons();
-                panel.classList.remove('visible');
+        // 首次构建颜色按钮，之后仅切换 active 状态
+        if (!colorContainer.children.length) {
+            const colors = DRAW_CONFIG.penColors || [];
+            colors.forEach((color) => {
+                const btn = document.createElement('button');
+                btn.className = 'pen-color-btn';
+                btn.dataset.color = color;
+                btn.style.background = color;
+                const isLight = color.toLowerCase() === '#ffffff' || color.toLowerCase() === '#fff';
+                btn.classList.add(isLight ? 'light-color' : 'dark-color');
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    DRAW_CONFIG.penColor = color;
+                    main_update_color_buttons();
+                    panel.classList.remove('visible');
+                });
+                colorContainer.appendChild(btn);
             });
-            colorContainer.appendChild(btn);
+        }
+        // 仅切换 active 状态，不重建 DOM
+        colorContainer.querySelectorAll('.pen-color-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.color === DRAW_CONFIG.penColor);
         });
     } else {
         colorContainer.style.display = 'none';
     }
 
-    sizeContainer.innerHTML = '';
-    const presets = mode === 'eraser' ? DRAW_CONFIG.eraserSizePresets : DRAW_CONFIG.penSizePresets;
-    const currentSize = mode === 'eraser' ? DRAW_CONFIG.eraserSize : DRAW_CONFIG.penWidth;
-    presets.forEach((size) => {
-        const btn = document.createElement('button');
-        btn.className = 'size-preset-btn';
-        btn.dataset.size = size;
-        btn.style.setProperty('--dot-size', Math.max(4, Math.min(size * 1.2, 24)) + 'px');
-        const dotColor = mode === 'eraser' ? 'var(--color-muted)' : (DRAW_CONFIG.penColor || '#888');
-        btn.style.setProperty('--dot-color', dotColor);
-        btn.classList.toggle('active', size === currentSize);
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (mode === 'eraser') {
-                DRAW_CONFIG.eraserSize = size;
-                if (window.blackboardManager?.drawing_engine) {
-                    window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
+    // 尺寸按钮同理：首次构建，之后切换 active
+    if (!sizeContainer.children.length || sizeContainer._lastMode !== mode) {
+        sizeContainer.innerHTML = '';
+        sizeContainer._lastMode = mode;
+        const presets = mode === 'eraser' ? DRAW_CONFIG.eraserSizePresets : DRAW_CONFIG.penSizePresets;
+        presets.forEach((size) => {
+            const btn = document.createElement('button');
+            btn.className = 'size-preset-btn';
+            btn.dataset.size = size;
+            btn.style.setProperty('--dot-size', Math.max(4, Math.min(size * 1.2, 24)) + 'px');
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (mode === 'eraser') {
+                    DRAW_CONFIG.eraserSize = size;
+                    if (window.blackboardManager?.drawing_engine) {
+                        window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
+                    }
+                } else {
+                    DRAW_CONFIG.penWidth = size;
                 }
-            } else {
-                DRAW_CONFIG.penWidth = size;
-            }
-            main_update_color_buttons();
-            panel.classList.remove('visible');
+                main_update_color_buttons();
+                panel.classList.remove('visible');
+            });
+            sizeContainer.appendChild(btn);
         });
-        sizeContainer.appendChild(btn);
+    }
+    const currentSize = mode === 'eraser' ? DRAW_CONFIG.eraserSize : DRAW_CONFIG.penWidth;
+    sizeContainer.querySelectorAll('.size-preset-btn').forEach(btn => {
+        const sz = parseInt(btn.dataset.size);
+        btn.classList.toggle('active', sz === currentSize);
+        btn.style.setProperty('--dot-color', mode === 'eraser' ? 'var(--color-muted)' : (DRAW_CONFIG.penColor || '#888'));
     });
 
     sizeLabel.textContent = currentSize + 'px';

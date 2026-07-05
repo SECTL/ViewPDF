@@ -8,14 +8,18 @@ console.log('[init] module loaded, readyState:', document.readyState);
 
 let currentView = 'recent'; // 'recent' | 'starred'
 
-// 星标状态管理
+// 星标状态管理（缓存避免每次 is_starred 重复 JSON.parse）
+let _starredCache = null;
 function get_starred_set() {
+    if (_starredCache) return _starredCache;
     try {
-        return new Set(JSON.parse(localStorage.getItem('starred_files') || '[]'));
-    } catch(e) { return new Set(); }
+        _starredCache = new Set(JSON.parse(localStorage.getItem('starred_files') || '[]'));
+    } catch(e) { _starredCache = new Set(); }
+    return _starredCache;
 }
 function save_starred_set(set) {
     localStorage.setItem('starred_files', JSON.stringify([...set]));
+    _starredCache = set;
 }
 function toggle_starred(path) {
     const set = get_starred_set();
@@ -526,6 +530,7 @@ window.main_render_recent_files = (files) => {
     }
 
     const entries = files.map(norm_file_entry);
+    const fragment = document.createDocumentFragment();
 
     // 按时间分组
     const groups = {};
@@ -659,8 +664,10 @@ window.main_render_recent_files = (files) => {
             groupDiv.appendChild(row);
         }
 
-        dom.recentFileList.appendChild(groupDiv);
+        fragment.appendChild(groupDiv);
     }
+
+    dom.recentFileList.appendChild(fragment);
 
     if (window.ThemeManager?.theme_load_icons) {
         window.ThemeManager.theme_load_icons();

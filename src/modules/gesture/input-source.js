@@ -34,6 +34,7 @@ export class InputSource {
         this._activeEventsDirty = true;
         this._positionsCache = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
         this._positionsLen = 0;
+        this._relPosCache = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
 
         this._boundPointerDown = this._onPointerDown.bind(this);
         this._boundPointerMove = this._onPointerMove.bind(this);
@@ -180,14 +181,17 @@ export class InputSource {
      */
     getActivePositionsRelative(element) {
         const rect = element.getBoundingClientRect();
-        const result = [];
+        const len = this._activePointers.size;
+        // 复用预分配缓存，避免每次调用创建新数组/对象
+        while (this._relPosCache.length < len) this._relPosCache.push({ x: 0, y: 0 });
+        let i = 0;
         for (const ev of this._activePointers.values()) {
-            result.push({
-                x: ev.position.x - rect.left,
-                y: ev.position.y - rect.top,
-            });
+            this._relPosCache[i].x = ev.position.x - rect.left;
+            this._relPosCache[i].y = ev.position.y - rect.top;
+            i++;
         }
-        return result;
+        this._relPosCache.length = i;
+        return this._relPosCache;
     }
 
     // ==================== PointerEvent 处理 ====================
