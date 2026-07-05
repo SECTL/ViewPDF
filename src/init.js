@@ -278,6 +278,136 @@ function main_setup_events() {
         }
     }
     
+    // 工具栏筛选（时间/大小/排序）— 自定义下拉栏
+    const filterTimeDrop = document.getElementById('filterTimeDrop');
+    const filterSizeDrop = document.getElementById('filterSizeDrop');
+    const filterSortDrop = document.getElementById('filterSortDrop');
+    let openDropdown = null;
+    
+    function closeAllDropdowns() {
+        if (openDropdown) {
+            openDropdown.querySelector('.dropdown-trigger').classList.remove('open');
+            openDropdown.querySelector('.dropdown-menu').classList.remove('open');
+            openDropdown = null;
+        }
+    }
+    
+    function init_dropdown(dropEl) {
+        if (!dropEl) return;
+        const trigger = dropEl.querySelector('.dropdown-trigger');
+        const menu = dropEl.querySelector('.dropdown-menu');
+        const options = menu.querySelectorAll('.dropdown-option');
+        const label = trigger.querySelector('.dropdown-label');
+        
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasOpen = trigger.classList.contains('open');
+            closeAllDropdowns();
+            if (!wasOpen) {
+                trigger.classList.add('open');
+                menu.classList.add('open');
+                openDropdown = dropEl;
+            }
+        });
+        
+        options.forEach(opt => {
+            opt.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const value = opt.dataset.value;
+                // 更新选中状态
+                options.forEach(o => o.classList.remove('selected'));
+                opt.classList.add('selected');
+                // 更新 trigger 显示
+                trigger.dataset.value = value;
+                label.textContent = opt.textContent.replace('✓', '').trim();
+                // 关闭菜单
+                closeAllDropdowns();
+                // 触发筛选
+                apply_toolbar_filters();
+            });
+        });
+    }
+    
+    init_dropdown(filterTimeDrop);
+    init_dropdown(filterSizeDrop);
+    init_dropdown(filterSortDrop);
+    
+    // 点击外部关闭下拉栏
+    document.addEventListener('click', closeAllDropdowns);
+    
+    function getDropdownValue(dropEl) {
+        return dropEl?.querySelector('.dropdown-trigger')?.dataset.value || 'all';
+    }
+    
+    function apply_toolbar_filters() {
+        const rows = document.querySelectorAll('.file-row');
+        const groups = document.querySelectorAll('.file-time-group');
+        const timeVal = getDropdownValue(filterTimeDrop);
+        const sizeVal = getDropdownValue(filterSizeDrop);
+        const sortVal = getDropdownValue(filterSortDrop);
+        const now = Date.now();
+        const DAY = 86400000;
+        
+        // 1. 时间 + 大小过滤
+        rows.forEach(r => {
+            let show = true;
+            // 时间过滤
+            if (timeVal !== 'all') {
+                const t = parseInt(r.dataset.time) || 0;
+                if (!t) { show = false; } else {
+                    const age = now - t;
+                    if (timeVal === 'today' && age > DAY) show = false;
+                    else if (timeVal === 'yesterday' && (age <= DAY || age > 2 * DAY)) show = false;
+                    else if (timeVal === 'week' && age > 7 * DAY) show = false;
+                    else if (timeVal === 'month' && age > 30 * DAY) show = false;
+                }
+            }
+            // 大小过滤
+            if (show && sizeVal !== 'all') {
+                const sz = parseInt(r.dataset.size) || 0;
+                if (sizeVal === 'small' && sz > 1048576) show = false;
+                else if (sizeVal === 'medium' && (sz <= 1048576 || sz > 10485760)) show = false;
+                else if (sizeVal === 'large' && (sz <= 10485760 || sz > 104857600)) show = false;
+                else if (sizeVal === 'huge' && sz <= 104857600) show = false;
+            }
+            r.style.display = show ? '' : 'none';
+        });
+        
+        // 隐藏空分组
+        groups.forEach(g => {
+            const hasVisible = g.querySelector('.file-row:not([style*="display: none"])');
+            g.style.display = hasVisible ? '' : 'none';
+        });
+        
+        // 2. 排序
+        if (sortVal !== 'time') {
+            groups.forEach(g => {
+                const rowsArr = Array.from(g.querySelectorAll('.file-row'));
+                if (rowsArr.length < 2) return;
+                rowsArr.sort((a, b) => {
+                    if (sortVal === 'name') return (a.dataset.name || '').localeCompare(b.dataset.name || '');
+                    if (sortVal === 'size') return (parseInt(b.dataset.size) || 0) - (parseInt(a.dataset.size) || 0);
+                    return 0;
+                });
+                const header = g.querySelector('.file-time-header');
+                rowsArr.forEach(r => g.appendChild(r));
+                if (header) g.insertBefore(header, g.firstChild);
+            });
+        } else {
+            // 按时间排序（恢复原始顺序：每组内按时间降序）
+            groups.forEach(g => {
+                const rowsArr = Array.from(g.querySelectorAll('.file-row'));
+                if (rowsArr.length < 2) return;
+                rowsArr.sort((a, b) => (parseInt(b.dataset.time) || 0) - (parseInt(a.dataset.time) || 0));
+                const header = g.querySelector('.file-time-header');
+                rowsArr.forEach(r => g.appendChild(r));
+                if (header) g.insertBefore(header, g.firstChild);
+            });
+        }
+    }
+    
+    window.apply_toolbar_filters = apply_toolbar_filters;
+    
     // 文件打开事件
     window.main_setup_pdf_file_open();
     
@@ -426,6 +556,10 @@ window.main_render_recent_files = (files) => {
             row.className = 'file-row';
             row.tabIndex = 0;
             row.dataset.path = entry.path;
+            row.dataset.name = entry.name.toLowerCase();
+            row.dataset.time = entry.time || '';
+            row.dataset.size = entry.size != null ? String(entry.size) : '';
+            row.dataset.group = label;
 
             const icon = document.createElement('div');
             icon.className = 'file-type-icon ' + info.cls;
@@ -534,6 +668,8 @@ window.main_render_recent_files = (files) => {
     
     // 渲染后根据当前视图过滤
     if (currentView !== 'recent') window.apply_view_filter?.();
+    // 渲染后应用工具栏筛选
+    window.apply_toolbar_filters?.();
 };
 
 // 黑板懒加载函数

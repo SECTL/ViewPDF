@@ -93,8 +93,6 @@
     "resolution": "해상도",
     "dynamicResolution": "동적 해상도",
     "dynamicResolutionHint": "확대 시 캔버스 해상도를 자동으로 높여 선명하게 표시",
-    "palmEraser": "손바닥 지우개",
-    "palmEraserHint": "손바닥/멀티터치 접촉 시 사각 지우개로 자동 전환",
     "momentum": "관성 이동",
     "momentumHint": "드래그/확대 후 캔버스가 계속 슬라이딩",
     "settingsManagement": "관리",

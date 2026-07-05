@@ -20,6 +20,10 @@ class TileRenderer {
         this._strokeIndex = null;
         this._strokeIndexVersion = -1;
 
+        // 离屏 canvas 池：复用 add_stroke 多 tile 预渲染 canvas，减少 GC 压力
+        this._offscreen_pool = [];
+        this._OFFSCREEN_POOL_MAX = 2;
+
         this._strokeHistoryRef = options?.strokeHistoryRef || null;
         this._getVisibleRectFn = options?.getVisibleRect || null;
         this._canvasW = options?.canvasW || null;
@@ -537,6 +541,7 @@ class TileRenderer {
         this._strokeIndex = null;
         this._strokeIndexVersion = -1;
         this.dirty.clear();
+        this._offscreen_pool.length = 0;
     }
 
     destroy_all() {
@@ -596,9 +601,22 @@ class TileRenderer {
         const sw = stroke.bounds.maxX - stroke.bounds.minX + halfWidth * 2;
         const sh = stroke.bounds.maxY - stroke.bounds.minY + halfWidth * 2;
 
-        const offscreen = document.createElement('canvas');
-        offscreen.width = Math.ceil(sw * mainDpr);
-        offscreen.height = Math.ceil(sh * mainDpr);
+        // 从池中获取或创建 offscreen canvas
+        const offscreen_w = Math.ceil(sw * mainDpr);
+        const offscreen_h = Math.ceil(sh * mainDpr);
+        let offscreen;
+        for (let i = this._offscreen_pool.length - 1; i >= 0; i--) {
+            const c = this._offscreen_pool[i];
+            if (c.width >= offscreen_w && c.height >= offscreen_h) {
+                offscreen = this._offscreen_pool.splice(i, 1)[0];
+                break;
+            }
+        }
+        if (!offscreen) {
+            offscreen = document.createElement('canvas');
+        }
+        offscreen.width = offscreen_w;
+        offscreen.height = offscreen_h;
         const offCtx = offscreen.getContext('2d');
         offCtx.setTransform(mainDpr, 0, 0, mainDpr, -sx * mainDpr, -sy * mainDpr);
         window.main_render_strokes_to_context(offCtx, [stroke]);
@@ -626,6 +644,11 @@ class TileRenderer {
             );
             ctx.restore();
             this.dirty.delete(info.key);
+        }
+
+        // 归还 offscreen canvas 到池中（不超过上限）
+        if (this._offscreen_pool.length < this._OFFSCREEN_POOL_MAX) {
+            this._offscreen_pool.push(offscreen);
         }
     }
 }

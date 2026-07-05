@@ -25,14 +25,6 @@ import {
     history_state
 } from '../history.js';
 
-import {
-    is_palm_by_pointer,
-    is_palm_by_touch_count,
-    get_palm_center,
-    compute_palm_eraser_size_from_pointer,
-    PALM_CONFIG
-} from '../palm-eraser/palm-eraser.js';
-
 export class DrawingEngine {
     /**
      * @param {Object} coord - CoordinateProvider
@@ -71,12 +63,6 @@ export class DrawingEngine {
         this._eraser_hint = null;
         this._eraser_hint_raf_id = null;
         this._eraser_hint_pending_pos = null;
-
-        // 手掌擦除
-        this.isPalmErasing = false;
-        this.savedDrawMode = null;
-        this.palmEraserSize = 60;
-        this._palm_eraser_hint = null;
     }
 
     /**
@@ -323,13 +309,6 @@ export class DrawingEngine {
         this.draw_canvas_rect = this._get_canvas_rect();
         if (!this.draw_canvas_rect) return;
 
-        const palmResult = is_palm_by_pointer(e);
-        if (palmResult.isPalm && (window.DRAW_CONFIG?.palmEraserEnabled !== false)) {
-            const size = compute_palm_eraser_size_from_pointer(palmResult.width, palmResult.height);
-            this._start_palm_erase(e.clientX, e.clientY, size);
-            return;
-        }
-
         const inv = 1 / this._fetch_safe_scale();
 
         if (this.draw_mode === 'move') {
@@ -353,11 +332,6 @@ export class DrawingEngine {
     handle_pointer_move(e) {
         e.preventDefault();
         if (!this._painting_allowed) return;
-
-        if (this.isPalmErasing) {
-            this._update_palm_erase(e.clientX, e.clientY);
-            return;
-        }
 
         if (this.draw_mode === 'eraser' && this.is_drawing) {
             this._update_eraser_hint_position(e.clientX, e.clientY);
@@ -398,10 +372,6 @@ export class DrawingEngine {
     }
 
     async handle_pointer_up(e) {
-        if (this.isPalmErasing) {
-            await this._end_palm_erase();
-            return;
-        }
         if (this._move_state) {
             this._move_state = null;
             return;
@@ -489,12 +459,6 @@ export class DrawingEngine {
         this._eraser_hint.style.width = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         this._eraser_hint.style.height = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         container.appendChild(this._eraser_hint);
-
-        this._palm_eraser_hint = document.createElement('div');
-        this._palm_eraser_hint.className = 'palm-eraser-hint';
-        this._palm_eraser_hint.style.width = '60px';
-        this._palm_eraser_hint.style.height = '60px';
-        container.appendChild(this._palm_eraser_hint);
     }
 
     _show_eraser_hint() {
@@ -557,83 +521,6 @@ export class DrawingEngine {
 
     // ====== 手掌擦除 ======
 
-    _show_palm_eraser_hint() {
-        if (!this._palm_eraser_hint) return;
-        this._palm_eraser_hint.classList.add('active');
-    }
-
-    _hide_palm_eraser_hint() {
-        if (!this._palm_eraser_hint) return;
-        this._palm_eraser_hint.classList.remove('active');
-    }
-
-    _update_palm_eraser_hint(clientX, clientY, size) {
-        if (!this._palm_eraser_hint) return;
-        const rect = this.coord.get_eraser_hint_rect
-            ? this.coord.get_eraser_hint_rect()
-            : this._get_canvas_rect();
-        if (!rect) return;
-        const x = clientX - rect.left;
-        const y = clientY - rect.top;
-        this._palm_eraser_hint.style.width = size + 'px';
-        this._palm_eraser_hint.style.height = size + 'px';
-        this._palm_eraser_hint.style.left = `${x}px`;
-        this._palm_eraser_hint.style.top = `${y}px`;
-        this._palm_eraser_hint.style.transform = 'translate(-50%, -50%)';
-    }
-
-    _init_palm_session() {
-        if (this._palmSession || !window.__palmEraser) return;
-        const self = this;
-        this._palmSession = new window.__palmEraser.PalmEraserSession({
-            getCanvasRect: () => self.draw_canvas_rect,
-            getScale: () => self._fetch_safe_scale(),
-            showHint: () => self._show_palm_eraser_hint(),
-            updateHint: (cx, cy, size) => self._update_palm_eraser_hint(cx, cy, size),
-            hideHint: () => self._hide_palm_eraser_hint(),
-            saveStrokePoint: (fromX, fromY, toX, toY, pressure) => self._save_stroke_point(fromX, fromY, toX, toY, pressure),
-            submitStroke: () => self._submit_stroke(),
-            onSessionStart(stroke, session) {
-                self.isPalmErasing = true;
-                self.savedDrawMode = self.draw_mode;
-                self.draw_mode = 'eraser';
-                self.palmEraserSize = session.palmEraserSize;
-                self.is_drawing = true;
-                self.current_stroke = stroke;
-                self.cached_draw_type = 'erase';
-                self.cached_draw_color = '#000000';
-                self.cached_draw_line_width = session.palmEraserSize / Math.max(0.001, self._fetch_safe_scale());
-                if (self.batch_draw) {
-                    self.batch_draw.batch_draw_init_start();
-                    self.batch_draw.eraserShape = 'square';
-                }
-            },
-            onSessionEnd() {
-                self.isPalmErasing = false;
-                self.is_drawing = false;
-                self.draw_canvas_rect = null;
-                self.draw_mode = self.savedDrawMode || 'comment';
-                self.savedDrawMode = null;
-                self.current_stroke = null;
-            }
-        });
-    }
-
-    _start_palm_erase(clientX, clientY, eraserWidth) {
-        this.draw_canvas_rect = this._get_canvas_rect();
-        if (!this.draw_canvas_rect) return;
-        this._init_palm_session();
-        if (this._palmSession) this._palmSession.start(clientX, clientY, eraserWidth);
-    }
-
-    _update_palm_erase(clientX, clientY) {
-        if (this._palmSession) this._palmSession.update(clientX, clientY);
-    }
-
-    async _end_palm_erase() {
-        if (this._palmSession) await this._palmSession.end();
-    }
-
     // ====== 清理 ======
 
     destroy() {
@@ -644,11 +531,7 @@ export class DrawingEngine {
         if (this._eraser_hint?.parentNode) {
             this._eraser_hint.parentNode.removeChild(this._eraser_hint);
         }
-        if (this._palm_eraser_hint?.parentNode) {
-            this._palm_eraser_hint.parentNode.removeChild(this._palm_eraser_hint);
-        }
         this._eraser_hint = null;
-        this._palm_eraser_hint = null;
         this._eraser_hint_pending_pos = null;
         this.batch_draw = null;
         this.coord = null;

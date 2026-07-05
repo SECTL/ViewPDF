@@ -93,8 +93,6 @@
     "resolution": "Resolución",
     "dynamicResolution": "Resolución dinámica",
     "dynamicResolutionHint": "Aumenta automáticamente la resolución del lienzo al hacer zoom para una visualización más nítida",
-    "palmEraser": "Borrador de palma",
-    "palmEraserHint": "Cambio automático a borrador cuadrado al contacto con la palma/multitáctil",
     "momentum": "Momentum",
     "momentumHint": "El lienzo sigue deslizándose tras soltar arrastre/zoom",
     "settingsManagement": "Gestionar",

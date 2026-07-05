@@ -113,25 +113,43 @@
                                 <button class="clear-btn" id="searchClear" style="display:none">×</button>
                             </div>
                             <div class="toolbar-right">
-                                <select class="toolbar-filter" id="filterTime">
-                                    <option value="all">全部时间</option>
-                                    <option value="today">今天</option>
-                                    <option value="yesterday">昨天</option>
-                                    <option value="week">本周</option>
-                                    <option value="month">本月</option>
-                                </select>
-                                <select class="toolbar-filter" id="filterSize2">
-                                    <option value="all">全部大小</option>
-                                    <option value="small">小 (≤1MB)</option>
-                                    <option value="medium">中 (1-10MB)</option>
-                                    <option value="large">大 (10-100MB)</option>
-                                    <option value="huge">超大 (100MB+)</option>
-                                </select>
-                                <select class="toolbar-filter" id="filterSort">
-                                    <option value="time">按时间</option>
-                                    <option value="name">按名称</option>
-                                    <option value="size">按大小</option>
-                                </select>
+                                <div class="dropdown" id="filterTimeDrop">
+                                    <div class="dropdown-trigger" data-value="all">
+                                        <span class="dropdown-label">全部时间</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="all">全部时间<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="today">今天<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="yesterday">昨天<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="week">本周<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="month">本月<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
+                                <div class="dropdown" id="filterSizeDrop">
+                                    <div class="dropdown-trigger" data-value="all">
+                                        <span class="dropdown-label">全部大小</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="all">全部大小<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="small">小 (≤1MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="medium">中 (1-10MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="large">大 (10-100MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="huge">超大 (100MB+)<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
+                                <div class="dropdown" id="filterSortDrop">
+                                    <div class="dropdown-trigger" data-value="time">
+                                        <span class="dropdown-label">按时间</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="time">按时间<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="name">按名称<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="size">按大小<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
                                 <div class="view-toggle">
                                     <button class="view-toggle-btn active" id="viewList" title="列表">☰</button>
                                     <button class="view-toggle-btn" id="viewGrid" title="网格">▦</button>
@@ -159,8 +177,7 @@
                 <div class="canvas-wrapper" id="canvasWrapper">
                     <img id="imageElement" class="image-element" alt="">
                 </div>
-                <div class="eraser-hint" id="eraserHint"></div>
-                <div class="palm-eraser-hint" id="palmEraserHint"></div>
+            <div class="eraser-hint" id="eraserHint"></div>
             </div>
 
             <div class="document-reader-panel" id="documentReaderPanel">
@@ -196,7 +213,6 @@
                             <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.frameRateMode">帧率模式</span><div class="sp-option-group" id="frameRateModeGroup"><button class="sp-option-btn" data-value="low" data-i18n="settings.frameRateLow">低帧率</button><button class="sp-option-btn" data-value="adaptive" data-i18n="settings.frameRateAdaptive">自适应</button><button class="sp-option-btn" data-value="high" data-i18n="settings.frameRateHigh">高帧率</button></div></div>
                             <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.penEffect">钢笔效果</span><div class="sp-option-group" id="penEffectModeGroup"><button class="sp-option-btn" data-value="off" data-i18n="settings.penEffectOff">关闭</button><button class="sp-option-btn" data-value="limited" data-i18n="settings.penEffectLimited">限制</button><button class="sp-option-btn" data-value="full" data-i18n="settings.penEffectFull">完整</button></div></div>
                             <div class="sp-setting-item sp-flex-start"><span class="sp-setting-label" data-i18n="settings.dynamicResolution">动态分辨率</span><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><label class="sp-toggle-switch"><input type="checkbox" id="dynamicDprToggle"><span class="sp-toggle-slider"></span></label><span class="sp-setting-hint" data-i18n="settings.dynamicResolutionHint">放大时自动提高画布分辨率以获得更清晰的显示</span></div></div>
-                            <div class="sp-setting-item sp-flex-start" id="palmEraserItem"><span class="sp-setting-label" data-i18n="settings.palmEraser">手掌擦除</span><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><label class="sp-toggle-switch"><input type="checkbox" id="palmEraserToggle"><span class="sp-toggle-slider"></span></label><span class="sp-setting-hint" data-i18n="settings.palmEraserHint">手掌/多指触摸时自动切换为方块擦除</span></div></div>
                             <div class="sp-setting-item" id="dprRangeItem"><span class="sp-setting-label">DPR <span data-i18n="settings.range">范围</span></span><div class="sp-range-group"><div class="sp-custom-select sp-mini-select" id="dprMinSelect"><div class="sp-select-selected" id="dprMinSelected">1x</div><div class="sp-select-options" id="dprMinOptions"><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x</div></div></div><span class="sp-range-sep">~</span><div class="sp-custom-select sp-mini-select" id="dprMaxSelect"><div class="sp-select-selected" id="dprMaxSelected">4x</div><div class="sp-select-options" id="dprMaxOptions"><div class="sp-select-option" data-value="2">2x</div><div class="sp-select-option" data-value="3">3x</div><div class="sp-select-option" data-value="4">4x</div><div class="sp-select-option" data-value="6">6x</div></div></div></div></div>
                             <div class="sp-setting-item" id="dprLimitItem"><span class="sp-setting-label" data-i18n="settings.dprLimit">画面精度</span><div class="sp-custom-select" id="dprLimitSelect"><div class="sp-select-selected" id="dprLimitSelected">2x</div><div class="sp-select-options" id="dprLimitOptions"><div class="sp-select-option" data-value="0"><span data-i18n="settings.dprAuto">自动</span></div><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x (<span data-i18n="settings.resolutionStandard">标准</span>)</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x (<span data-i18n="settings.resolutionStandard">标准</span>)</div><div class="sp-select-option" data-value="3">3x (<span data-i18n="settings.resolutionVeryHigh">超高</span>)</div><div class="sp-select-option" data-value="4">4x (<span data-i18n="settings.resolutionMax">最高</span>)</div></div></div></div>
                             <div class="sp-setting-item" id="overlayDprItem"><span class="sp-setting-label" data-i18n="settings.overlayDpr">叠加层 DPR</span><div class="sp-custom-select" id="overlayDprSelect"><div class="sp-select-selected" id="overlayDprSelected">2x</div><div class="sp-select-options" id="overlayDprOptions"><div class="sp-select-option" data-value="0"><span data-i18n="settings.overlayDprAuto">自动</span></div><div class="sp-select-option" data-value="0.5">0.5x</div><div class="sp-select-option" data-value="1">1x</div><div class="sp-select-option" data-value="1.5">1.5x</div><div class="sp-select-option" data-value="2">2x</div></div></div></div>

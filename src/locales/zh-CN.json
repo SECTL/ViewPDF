@@ -92,8 +92,6 @@
     "resolution": "分辨率",
     "dynamicResolution": "动态分辨率",
     "dynamicResolutionHint": "放大时自动提高画布分辨率以获得更清晰的显示效果",
-    "palmEraser": "手掌擦除",
-    "palmEraserHint": "手掌/多指触摸时自动切换为方块擦除",
     "momentum": "惯性移动",
     "momentumHint": "拖拽/缩放释放后画布继续滑行",
     "settingsManagement": "设置管理",

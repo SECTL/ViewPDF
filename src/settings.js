@@ -175,14 +175,6 @@ async function initSettings() {
                     dprToggle.checked = dynamicDprEnabled;
                 }
 
-                const palmEraserEnabled = settings.palmEraserEnabled !== undefined ? settings.palmEraserEnabled : (window.DRAW_CONFIG?.palmEraserEnabled ?? false);
-                const palmEraserToggle = document.getElementById('palmEraserToggle');
-                if (palmEraserToggle) {
-                    palmEraserToggle.checked = palmEraserEnabled;
-                }
-                if (window.DRAW_CONFIG) {
-                    window.DRAW_CONFIG.palmEraserEnabled = palmEraserEnabled;
-                }
                 const dprRangeItem = document.getElementById('dprRangeItem');
                 if (dprRangeItem) {
                     dprRangeItem.style.display = dynamicDprEnabled ? '' : 'none';
@@ -745,19 +737,6 @@ async function initSettings() {
         });
     }
 
-    const palmEraserToggle = document.getElementById('palmEraserToggle');
-    if (palmEraserToggle) {
-        palmEraserToggle.addEventListener('change', async () => {
-            await settings_save_all_local({ palmEraserEnabled: palmEraserToggle.checked });
-            const restartModal = document.getElementById('restartModal');
-            const modalMessage = restartModal?.querySelector('.sp-modal-message');
-            if (modalMessage) {
-                modalMessage.textContent = window.i18n?.format_translate('settings.languageChanged') || '需要重启应用才能生效。';
-            }
-            if (restartModal) restartModal.classList.add('sp-active');
-        });
-    }
-    
     // 自定义颜色选择器
     const colorPickerPopup = document.getElementById('colorPickerPopup');
     const colorPickerSV = document.getElementById('colorPickerSV');

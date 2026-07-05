@@ -92,8 +92,6 @@
     "resolution": "解析度",
     "dynamicResolution": "動態解析度",
     "dynamicResolutionHint": "放大時自動提高畫布解析度以獲得更清晰的顯示效果",
-    "palmEraser": "手掌擦除",
-    "palmEraserHint": "手掌/多指觸摸時自動切換為方塊擦除",
     "momentum": "慣性移動",
     "momentumHint": "拖拽/縮放釋放後畫布繼續滑行",
     "settingsManagement": "設定管理",

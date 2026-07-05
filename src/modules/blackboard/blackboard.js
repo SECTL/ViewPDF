@@ -8,7 +8,6 @@ import { InputSource, PinchZoomSource, PinchZoomSourceV2, VirtualDeviceType } fr
 import { BlackboardPageManager } from './blackboard-page.js';
 import { DrawingEngine } from './drawing-engine.js';
 import { history_state, history_validate_undo, history_reset_executing } from '../history.js';
-import { is_palm_by_touch_count, get_palm_center } from '../palm-eraser/palm-eraser.js';
 
 class BlackboardManager {
     constructor() {
@@ -58,10 +57,7 @@ class BlackboardManager {
             is_scaling: false,
             is_zooming: false,
             start_distance_sq: 0,
-            cached_inv_scale: 1,
-            isPalmErasing: false,
-            savedDrawMode: null,
-            palmEraserSize: 60
+            cached_inv_scale: 1
         };
         this._cached_move_bound_scale = null;
         this._cached_visible_rect = null;
@@ -775,7 +771,6 @@ class BlackboardManager {
             await this.drawing_engine._submit_stroke();
         }
         this.drawing_engine._hide_eraser_hint();
-        this.drawing_engine._hide_palm_eraser_hint();
 
         // 关闭前保存当前页的 undo/redo 和 tile 快照
         const cur_page = this.page_manager.get_current_page();
@@ -842,47 +837,8 @@ class BlackboardManager {
             this._cancel_momentum();
             this.bb_state.cached_inv_scale = 1 / this._fetch_safe_scale();
 
-            if (this.drawing_engine.isPalmErasing) return;
-
             // 缩放中不处理任何状态切换，直到手势结束重置
             if (this.bb_state.is_zooming) return;
-
-            // 4+ 触点手掌检测（所有设备路径统一处理）
-            if ((window.DRAW_CONFIG?.palmEraserEnabled !== false) && input.activeCount >= 4) {
-                const palmEraser = window.__palmEraser;
-                if (palmEraser) {
-                    let isPalm = false;
-                    let centerX = 0, centerY = 0;
-
-                    if (ev.originEvent?.touches) {
-                        // TouchEvent 路径
-                        isPalm = palmEraser.is_palm_by_touch_count(ev.originEvent.touches);
-                        if (isPalm) {
-                            const c = palmEraser.get_palm_center(ev.originEvent.touches);
-                            centerX = c.x;
-                            centerY = c.y;
-                        }
-                    } else {
-                        // PointerEvent 路径
-                        const positions = input.getActivePositions();
-                        isPalm = palmEraser.is_palm_by_positions(positions);
-                        if (isPalm) {
-                            const c = palmEraser.get_palm_center_from_positions(positions);
-                            centerX = c.x;
-                            centerY = c.y;
-                        }
-                    }
-
-                    if (isPalm) {
-                        if (this.drawing_engine.is_drawing || this.drawing_engine.current_stroke) {
-                            this.drawing_engine.is_drawing = false;
-                            await this.drawing_engine._submit_stroke();
-                        }
-                        this.drawing_engine._start_palm_erase(centerX, centerY, window.DRAW_CONFIG?.palmEraserSize || 60);
-                        return;
-                    }
-                }
-            }
 
             // 多指触摸时跳过首指以外的输入（留给 PinchZoomSource 处理）
             if (input.activeCount > 1) return;
@@ -922,14 +878,6 @@ class BlackboardManager {
         input.on('inputMove', (ev) => {
             if (!this.is_open) return;
 
-            if (this.drawing_engine.isPalmErasing) {
-                const center = ev.originEvent?.touches
-                    ? get_palm_center(ev.originEvent.touches)
-                    : { x: ev.position.x, y: ev.position.y };
-                this.drawing_engine._update_palm_erase(center.x, center.y);
-                return;
-            }
-
             const s = this.bb_state;
 
             // 拖拽平移
@@ -965,13 +913,6 @@ class BlackboardManager {
 
         input.on('inputUp', async (ev) => {
             if (!this.is_open) return;
-
-            if (this.drawing_engine.isPalmErasing) {
-                if (input.activeCount < 4) {
-                    await this.drawing_engine._end_palm_erase();
-                }
-                return;
-            }
 
             const s = this.bb_state;
 

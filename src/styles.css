@@ -672,10 +672,11 @@ body {
     content: '';
     position: absolute;
     right: -1px;
-    top: 6px;
-    bottom: 6px;
+    top: 8px;
+    bottom: 8px;
     width: 1px;
-    background: #000;
+    background: var(--color-hairline);
+    opacity: 0.6;
 }
 
 .titlebar-tab .tab-icon {
@@ -714,8 +715,26 @@ body {
 }
 
 .titlebar-tab .tab-close:hover {
-    opacity: 1;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(128, 128, 128, 0.15);
+}
+
+.titlebar-tab.drag-over-left {
+    box-shadow: inset 2px 0 0 0 var(--color-primary, #3b82f6);
+}
+
+.titlebar-tab.drag-over-right {
+    box-shadow: inset -2px 0 0 0 var(--color-primary, #3b82f6);
+}
+
+.titlebar-tab.dragging {
+    opacity: 0.5;
+}
+
+.titlebar-tab.tab-drag-clone {
+    opacity: 0.85;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    background: var(--color-canvas);
+    border-bottom-color: transparent;
 }
 
 .titlebar-btn {
@@ -1166,37 +1185,6 @@ body {
 .eraser-hint.active {
     display: block;
     will-change: transform, left, top;
-}
-
-.palm-eraser-hint {
-    position: absolute;
-    z-index: 9;
-    border: 3px dashed #3b82f6;
-    border-radius: 0;
-    background-color: rgba(59, 130, 246, 0.15);
-    pointer-events: none;
-    display: none;
-    transform-origin: center center;
-    contain: layout style;
-    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5), inset 0 0 0 1px rgba(59, 130, 246, 0.3);
-}
-
-.palm-eraser-hint.active {
-    display: block;
-    will-change: transform, left, top;
-}
-
-.palm-eraser-hint::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 8px;
-    height: 8px;
-    background: #3b82f6;
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    opacity: 0.8;
 }
 
 /* ===== 橡皮清空滑块 ===== */

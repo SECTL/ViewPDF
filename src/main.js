@@ -46,8 +46,6 @@ const DRAW_CONFIG = {
     penSizePresets: [2, 5, 10, 15, 21],
     eraserSize: 15,
     eraserSizePresets: [5, 15, 25, 38, 50],
-    palmEraserEnabled: false,
-    palmEraserSize: 60,
     momentumEnabled: false,
     minScale: 0.5,
     maxScale: 3,
@@ -474,6 +472,16 @@ let sourceIdCounters = {
     doc: 0
 };
 
+const _MD5_SINE_TABLE = Array.from({ length: 64 }, (_, i) =>
+    Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0
+);
+const _MD5_SHIFTS = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+];
+
 function main_calculate_md5(bytes) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const original_len = data.length;
@@ -487,15 +495,8 @@ function main_calculate_md5(bytes) {
         buffer[padded_len - 8 + i] = Math.floor(bit_len / Math.pow(256, i)) & 0xff;
     }
 
-    const shifts = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
-    ];
-    const table = Array.from({ length: 64 }, (_, i) =>
-        Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0
-    );
+    const shifts = _MD5_SHIFTS;
+    const table = _MD5_SINE_TABLE;
 
     let a0 = 0x67452301;
     let b0 = 0xefcdab89;
@@ -1231,14 +1232,16 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
 let resizeTimeout = null;
 
 function main_handle_resize() {
+    if (_windowTransitioning) return;
     main_delete_cached_rect();
     if (resizeTimeout) clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(() => {
+        if (_windowTransitioning) return;
         resizeTimeout = null;
         const container = dom.canvasContainer;
-    const newScreenW = Math.max(1, container.clientWidth);
-    const newScreenH = Math.max(1, container.clientHeight);
-        
+        const newScreenW = Math.max(1, container.clientWidth);
+        const newScreenH = Math.max(1, container.clientHeight);
+
         if (newScreenW !== DRAW_CONFIG.screenW || newScreenH !== DRAW_CONFIG.screenH) {
             main_update_canvas_size(newScreenW, newScreenH);
         }
@@ -1573,6 +1576,7 @@ function main_update_tabs() {
     const settingsPanel = document.getElementById('settingsPanel');
     const settingsVisible = settingsPanel && settingsPanel.style.display === 'flex';
 
+    // 主页标签（固定第一位，不可拖拽）
     const homeTab = document.createElement('button');
     homeTab.className = 'titlebar-tab';
     if (!isReaderOpen && !settingsVisible && !window.documentReaderManager?._switching) homeTab.classList.add('active');
@@ -1583,10 +1587,11 @@ function main_update_tabs() {
     homeTab.addEventListener('click', () => main_switch_home());
     tabsContainer.appendChild(homeTab);
 
-    // 设置标签
+    // 设置标签（可拖拽）
     if (state.settingsOpen) {
         const settingsTab = document.createElement('button');
         settingsTab.className = settingsVisible ? 'titlebar-tab active' : 'titlebar-tab';
+        settingsTab.dataset.tabType = 'settings';
         const settingsLabel = document.createElement('span');
         settingsLabel.className = 'tab-label';
         settingsLabel.textContent = '设置';
@@ -1600,6 +1605,7 @@ function main_update_tabs() {
         });
         settingsTab.appendChild(close);
         settingsTab.addEventListener('click', () => {
+            if (settingsTab._dragJustHappened) { settingsTab._dragJustHappened = false; return; }
             const panel = document.getElementById('settingsPanel');
             if (!state.settingsOpen) {
                 main_show_settings_window();
@@ -1610,13 +1616,16 @@ function main_update_tabs() {
                 main_update_tabs();
             }
         });
+        _enable_tab_drag(settingsTab, tabsContainer);
         tabsContainer.appendChild(settingsTab);
     }
 
+    // 文档标签（可拖拽）
     fileList.forEach((folder, index) => {
         const tab = document.createElement('button');
         tab.className = 'titlebar-tab';
         tab.dataset.index = index;
+        tab.dataset.tabType = 'doc';
         if (window.documentReaderManager?.folder_index === index && !settingsVisible) {
             tab.classList.add('active');
         }
@@ -1635,9 +1644,139 @@ function main_update_tabs() {
         });
         tab.appendChild(close);
 
-        tab.addEventListener('click', () => main_switch_to_tab(index));
+        tab.addEventListener('click', () => {
+            if (tab._dragJustHappened) { tab._dragJustHappened = false; return; }
+            main_switch_to_tab(index);
+        });
+
+        _enable_tab_drag(tab, tabsContainer);
         tabsContainer.appendChild(tab);
     });
+}
+
+/** 给标签绑定拖拽排序（绕过 Tauri drag-region 拦截） */
+function _enable_tab_drag(tab, tabsContainer) {
+    tab.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.tab-close')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const tabRect = tab.getBoundingClientRect();
+        const offsetX = e.clientX - tabRect.left;
+            let clone = null;
+            let dragging = false;
+            let currentOverPos = -1;
+            let currentHalf = 'right';
+            let cachedTabs = [];
+            let cachedTabRects = [];
+
+        const onMouseMove = (e2) => {
+            const dx = e2.clientX - startX;
+            const dy = e2.clientY - startY;
+            if (!dragging && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+                dragging = true;
+                tab.classList.add('dragging');
+                clone = tab.cloneNode(true);
+                clone.className = 'titlebar-tab tab-drag-clone';
+                clone.style.position = 'fixed';
+                clone.style.zIndex = '9999';
+                clone.style.pointerEvents = 'none';
+                clone.style.width = tabRect.width + 'px';
+                clone.style.height = tabRect.height + 'px';
+                clone.style.left = (e.clientX - offsetX) + 'px';
+                clone.style.top = tabRect.top + 'px';
+                clone.style.transition = 'none';
+                document.body.appendChild(clone);
+                // 缓存标签列表，拖拽期间不会变化
+                cachedTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+                cachedTabRects = cachedTabs.map(t => t.getBoundingClientRect());
+            }
+            if (!dragging) return;
+            if (clone) clone.style.left = (e2.clientX - offsetX) + 'px';
+            // 检测悬停目标
+            const allTabs = cachedTabs;
+            const myPos = allTabs.indexOf(tab);
+            let foundPos = myPos;
+            let foundHalf = 'right';
+            for (let i = 0; i < allTabs.length; i++) {
+                if (allTabs[i] === tab) continue;
+                const r = cachedTabRects[i];
+                if (e2.clientX >= r.left && e2.clientX <= r.right) {
+                    foundPos = i;
+                    foundHalf = e2.clientX < r.left + r.width / 2 ? 'left' : 'right';
+                    break;
+                }
+            }
+            // 超出最后标签右侧
+            if (allTabs.length > 0 && allTabs[allTabs.length - 1] !== tab && e2.clientX > cachedTabRects[allTabs.length - 1].right) {
+                foundPos = allTabs.length - 1;
+                foundHalf = 'right';
+            }
+            if (foundPos !== currentOverPos || foundHalf !== currentHalf) {
+                currentOverPos = foundPos;
+                currentHalf = foundHalf;
+                allTabs.forEach(t => t.classList.remove('drag-over-left', 'drag-over-right'));
+                const target = allTabs[foundPos];
+                if (target && target !== tab) {
+                    target.classList.add(foundHalf === 'left' ? 'drag-over-left' : 'drag-over-right');
+                }
+            }
+        };
+
+        const onMouseUp = () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            tab.classList.remove('dragging');
+            if (clone) { clone.remove(); clone = null; }
+            tabsContainer.querySelectorAll('.titlebar-tab').forEach(t => {
+                t.classList.remove('drag-over-left', 'drag-over-right');
+            });
+            if (!dragging) return;
+            // 计算插入位置
+            const allTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+            const fromPos = allTabs.indexOf(tab);
+            let toPos = currentOverPos;
+            if (currentHalf === 'right') toPos++;
+            if (fromPos === toPos || fromPos === toPos - 1) return;
+            // 在 DOM 中移动标签
+            if (toPos > fromPos) {
+                tabsContainer.insertBefore(tab, allTabs[toPos]?.nextSibling || null);
+            } else {
+                tabsContainer.insertBefore(tab, allTabs[toPos]);
+            }
+            // 根据新的 DOM 顺序重建 fileList
+            _sync_tabs_from_dom(tabsContainer);
+            tab._dragJustHappened = true;
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+}
+
+/** 从 DOM 标签顺序同步 fileList 和 folder_index */
+function _sync_tabs_from_dom(tabsContainer) {
+    const allTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+    const oldFileList = [...state.fileList];
+    const newFileList = [];
+    let oldFolderIndex = window.documentReaderManager?.folder_index ?? -1;
+    let newFolderIndex = -1;
+
+    for (const t of allTabs) {
+        const type = t.dataset.tabType;
+        if (type === 'settings') continue; // 设置标签跳过
+        const oldIdx = parseInt(t.dataset.index);
+        if (type === 'doc' && !isNaN(oldIdx) && oldFileList[oldIdx]) {
+            if (oldIdx === oldFolderIndex) newFolderIndex = newFileList.length;
+            newFileList.push(oldFileList[oldIdx]);
+        }
+    }
+    state.fileList = newFileList;
+    if (newFolderIndex >= 0) {
+        window.documentReaderManager.folder_index = newFolderIndex;
+    }
 }
 
 async function main_switch_home() {
@@ -1699,8 +1838,26 @@ async function main_close_tab(index) {
     main_update_ui_state();
 }
 
+let _windowTransitioning = false;
+let _windowTransitionTimer = null;
+
+function main_set_window_transitioning() {
+    _windowTransitioning = true;
+    if (_windowTransitionTimer) clearTimeout(_windowTransitionTimer);
+    // 400ms 覆盖最大化动画时间（~300ms），确保动画结束后才恢复 resize 处理
+    _windowTransitionTimer = setTimeout(() => {
+        _windowTransitioning = false;
+        _windowTransitionTimer = null;
+    }, 400);
+}
+
+function main_is_window_transitioning() {
+    return _windowTransitioning;
+}
+
 function main_hide_window() {
     if (window.__TAURI__) {
+        main_set_window_transitioning();
         const { getCurrentWindow } = window.__TAURI__.window;
         getCurrentWindow().minimize().catch(() => {});
     }
@@ -1708,6 +1865,7 @@ function main_hide_window() {
 
 function main_toggle_maximize() {
     if (window.__TAURI__) {
+        main_set_window_transitioning();
         const { getCurrentWindow } = window.__TAURI__.window;
         getCurrentWindow().toggleMaximize().catch(() => {});
     }
@@ -2514,6 +2672,7 @@ window.main_init_pdfjs = main_init_pdfjs;
 window.main_hide_window = main_hide_window;
 window.main_toggle_maximize = main_toggle_maximize;
 window.main_submit_close_window = main_submit_close_window;
+window.main_is_window_transitioning = main_is_window_transitioning;
 window.main_add_recent_file = main_add_recent_file;
 window.main_load_recent_files = main_load_recent_files;
 window.main_wait_pdfjs = main_wait_pdfjs;

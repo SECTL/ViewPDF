@@ -93,8 +93,6 @@
     "resolution": "Résolution",
     "dynamicResolution": "Résolution dynamique",
     "dynamicResolutionHint": "Augmente automatiquement la résolution de la toile lors du zoom pour un affichage plus net",
-    "palmEraser": "Gomme paume",
-    "palmEraserHint": "Bascule automatiquement vers la gomme carrée au contact de la paume/du multi-touch",
     "momentum": "Momentum",
     "momentumHint": "Le toile continue de glisser après un drag/zoom",
     "settingsManagement": "Gérer",

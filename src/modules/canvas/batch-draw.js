@@ -629,6 +629,11 @@ class RealtimeBatchDrawManager {
         if (this.is_adaptive) {
             this.batch_draw_calc_adjust_fps(drawTime, count);
         }
+
+        // 缩容：防止长笔画导致 pendingCommands 数组持续膨胀
+        if (this.pendingCommands.length > 256) {
+            this.pendingCommands.length = 0;
+        }
     }
 
     _apply_speed_taper(widths, points, baseWidth) {

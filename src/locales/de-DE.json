@@ -93,8 +93,6 @@
     "resolution": "Auflösung",
     "dynamicResolution": "Dynamische Auflösung",
     "dynamicResolutionHint": "Leinwandauflösung beim Zoomen automatisch erhöhen für klarere Anzeige",
-    "palmEraser": "Handballen-Radierer",
-    "palmEraserHint": "Automatische Umschaltung auf eckigen Radierer bei Handballen-/Multitouch-Kontakt",
     "momentum": "Momentum",
     "momentumHint": "Leinwand gleitet nach Drag/Zoom weiter",
     "settingsManagement": "Verwalten",
