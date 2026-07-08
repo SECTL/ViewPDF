@@ -155,6 +155,7 @@ class DocumentReaderManager {
 
         // 容器矩形缓存（_check_page_visibility 中避免反复 getBoundingClientRect 触发布局）
         this._cached_container_rect = null;
+        this._dr_transform_changed = false;        // 标记 transform 已变化，下次 _check_page_visibility 重新读取 rect
 
         // 离屏 canvas 池（复用双缓冲临时 canvas，避免频繁 GC）
         this._canvas_pool = [];
@@ -934,10 +935,11 @@ class DocumentReaderManager {
     _check_page_visibility() {
         if (!this._scroll_container || !this.page_manager || !this._zoom_wrapper) return;
 
-        if (!this._cached_container_rect) {
+        if (this._dr_transform_changed || !this._cached_container_rect) {
             const cr = this._scroll_container.getBoundingClientRect();
             const wr = this._zoom_wrapper.getBoundingClientRect();
             this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr.top };
+            this._dr_transform_changed = false;
         }
         const container_top = this._cached_container_rect.top;
         const container_bottom = this._cached_container_rect.bottom;
@@ -2688,13 +2690,13 @@ class DocumentReaderManager {
             return;
         }
 
-        // PageUp / ArrowUp → 上一页，PageDown / ArrowDown → 下一页
-        if (e.key === 'PageUp' || e.key === 'ArrowUp') {
+        // PageUp / ArrowUp / ArrowLeft → 上一页，PageDown / ArrowDown / ArrowRight → 下一页
+        if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
             e.preventDefault();
             this.handle_page_nav_prev();
             return;
         }
-        if (e.key === 'PageDown' || e.key === 'ArrowDown') {
+        if (e.key === 'PageDown' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
             e.preventDefault();
             this.handle_page_nav_next();
             return;
@@ -2753,7 +2755,7 @@ class DocumentReaderManager {
 
         this.cached_draw_type = type;
         this.cached_draw_color = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
-        this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth / Math.max(0.001, this.dr_scale || 1) : baseEraserSize / Math.max(0.001, this.dr_scale || 1);
+        this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth : baseEraserSize;
 
         if (this.batch_draw) {
             this.batch_draw.batch_draw_init_start();
@@ -2776,16 +2778,15 @@ class DocumentReaderManager {
 
         let currentWidth = stroke.lineWidth;
         const DRAW_CONFIG = window.DRAW_CONFIG;
-        const currentScale = Math.max(0.001, this.dr_scale || 1);
 
         if (stroke.type === 'draw') {
             this.current_pressure = pressure;
             this.last_line_width = this.current_line_width;
             currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
             this.current_line_width = currentWidth;
-            this.cached_draw_line_width = DRAW_CONFIG.penWidth / currentScale;
+            this.cached_draw_line_width = DRAW_CONFIG.penWidth;
         } else if (stroke.type === 'erase') {
-            this.cached_draw_line_width = DRAW_CONFIG.eraserSize / currentScale;
+            this.cached_draw_line_width = DRAW_CONFIG.eraserSize;
         }
 
         stroke.variableWidths.push(currentWidth);
@@ -3224,8 +3225,7 @@ class DocumentReaderManager {
             const pos = this._eraser_hint_pending_pos;
             this._eraser_hint_pending_pos = null;
 
-            const scale = Math.max(0.001, this.dr_scale || 1);
-            const eraser_size = (this.cached_draw_line_width || window.DRAW_CONFIG?.eraserSize || 15) * scale;
+            const eraser_size = this.cached_draw_line_width || window.DRAW_CONFIG?.eraserSize || 15;
             this._eraser_hint.style.width = eraser_size + 'px';
             this._eraser_hint.style.height = eraser_size + 'px';
 
@@ -3691,6 +3691,7 @@ class DocumentReaderManager {
     _dr_sync_transform() {
         if (!this._zoom_wrapper) return;
         this._zoom_wrapper.style.transform = 'translate3d(' + this.dr_canvas_x + 'px, ' + this.dr_canvas_y + 'px, 0) scale(' + this.dr_scale + ')';
+        this._dr_transform_changed = true;
     }
 
     /** rAF 节流版 sync_transform：合并多帧调用，每帧最多一次 DOM 写入 */
@@ -3706,6 +3707,7 @@ class DocumentReaderManager {
                     this._dr_last_transform.x = pt.x;
                     this._dr_last_transform.y = pt.y;
                     this._dr_last_transform.scale = pt.scale;
+                    this._dr_transform_changed = true;
                 }
             });
         }
@@ -3834,7 +3836,6 @@ class DocumentReaderManager {
         this.dr_canvas_x += vx;
         this.dr_canvas_y += vy;
 
-        this._dr_update_move_bound();
         this._dr_update_canvas_position();
 
         // 边界碰撞处理：速度归零（防止贴边滑行）
@@ -3847,9 +3848,8 @@ class DocumentReaderManager {
             vy = 0;
         }
 
-        this._dr_sync_transform();
-
         if (Math.abs(vx) > 0.5 || Math.abs(vy) > 0.5) {
+            this._dr_sync_transform();
             this._dr_momentum_raf = requestAnimationFrame(() => this._dr_momentum_tick());
         } else {
             this._dr_momentum_raf = null;
@@ -3882,53 +3882,62 @@ class DocumentReaderManager {
         if (!this.is_open) return;
         if (this.is_drawing) return;
 
-        // 阅读器内部无原生滚动条，滚轮直接用于缩放。
-        e.preventDefault();
+        if (e.ctrlKey) {
+            // Ctrl+滚轮 = 缩放
+            e.preventDefault();
 
-        const max_s = this.dr_max_scale;
-        const min_s = this.dr_min_scale;
-        const delta = e.deltaY > 0 ? -0.15 : 0.15;
-        const new_s = Math.max(min_s, Math.min(max_s, this.dr_scale + delta));
+            const max_s = this.dr_max_scale;
+            const min_s = this.dr_min_scale;
+            const delta = e.deltaY > 0 ? -0.15 : 0.15;
+            const new_s = Math.max(min_s, Math.min(max_s, this.dr_scale + delta));
 
-        if (new_s !== this.dr_scale) {
-            const old_s = this.dr_scale;
-            const ratio = new_s / old_s;
+            if (new_s !== this.dr_scale) {
+                const old_s = this.dr_scale;
+                const ratio = new_s / old_s;
 
-            // 以鼠标位置为中心缩放（Blackboard 风格）
-            if (!this._cached_container_rect) {
-                const cr = this._scroll_container.getBoundingClientRect();
-                const wr = this._zoom_wrapper?.getBoundingClientRect();
-                this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
+                if (!this._cached_container_rect) {
+                    const cr = this._scroll_container.getBoundingClientRect();
+                    const wr = this._zoom_wrapper?.getBoundingClientRect();
+                    this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
+                }
+                const container_rect = this._cached_container_rect;
+                const mouse_x = e.clientX - container_rect.left;
+                const mouse_y = e.clientY - container_rect.top;
+
+                this.dr_canvas_x = mouse_x - (mouse_x - this.dr_canvas_x) * ratio;
+                this.dr_canvas_y = mouse_y - (mouse_y - this.dr_canvas_y) * ratio;
+                this.dr_scale = new_s;
+                this.dr_cached_inv_scale = 1 / new_s;
+                if (this.batch_draw) {
+                    this.batch_draw._overlay_cached_rect_left = null;
+                    this.batch_draw._overlay_cached_rect_top = null;
+                }
+
+                this._dr_enable_smooth_transform();
+                this._dr_set_zooming();
+
+                if (this._wheel_raf_id !== null) {
+                    cancelAnimationFrame(this._wheel_raf_id);
+                }
+                this._wheel_raf_id = requestAnimationFrame(() => {
+                    this._wheel_raf_id = null;
+                    this._dr_apply_scale();
+                    this._dr_schedule_disable_smooth_transform();
+                });
             }
-            const container_rect = this._cached_container_rect;
-            const mouse_x = e.clientX - container_rect.left;
-            const mouse_y = e.clientY - container_rect.top;
+        } else {
+            // 普通滚轮 = 上下平移（clamp 由 rAF 中 _dr_apply_scale 处理，避免同步布局）
+            e.preventDefault();
+            const scroll_speed = 2;
+            this.dr_canvas_y -= e.deltaY * scroll_speed;
 
-            this.dr_canvas_x = mouse_x - (mouse_x - this.dr_canvas_x) * ratio;
-            this.dr_canvas_y = mouse_y - (mouse_y - this.dr_canvas_y) * ratio;
-            this.dr_scale = new_s;
-            this.dr_cached_inv_scale = 1 / new_s;
-            if (this.batch_draw) {
-                this.batch_draw._overlay_cached_rect_left = null;
-                this.batch_draw._overlay_cached_rect_top = null;
-            }
-
-            // will-change: 按需启用 GPU 合成层
             this._dr_enable_smooth_transform();
-
-            // 标记缩放进行中，合并多帧事件并延迟批量重绘
-            this._dr_set_zooming();
-
-            // rAF 节流：合并多帧滚轮事件的 _dr_apply_scale 调用
             if (this._wheel_raf_id !== null) {
                 cancelAnimationFrame(this._wheel_raf_id);
             }
             this._wheel_raf_id = requestAnimationFrame(() => {
                 this._wheel_raf_id = null;
-                // 缩放进行中跳过 _dr_apply_scale（它内部也会 early-return，省掉入口处 4 次 layout 读取）
-                if (!this._dr_is_zooming) {
-                    this._dr_apply_scale();
-                }
+                this._dr_apply_scale();
                 this._dr_schedule_disable_smooth_transform();
             });
         }

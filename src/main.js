@@ -69,7 +69,7 @@ const DRAW_CONFIG = {
         '#14b8a6', '#64748b', '#1e293b', '#000000', '#ffffff'
     ],
     penSmoothness: 0.8,
-    penEffectMode: 'limited',
+    penEffectMode: 'full',
     penMinWidthRatio: 0.4,
     gestureFrameDelta: 60
 };
@@ -1896,6 +1896,48 @@ function main_setup_all_events() {
     if (dom.btnTitleMaximize) dom.btnTitleMaximize.addEventListener('click', main_toggle_maximize);
     if (dom.btnTitleClose) dom.btnTitleClose.addEventListener('click', main_submit_close_window);
     main_update_tabs();
+
+    // 主画布滚轮：Ctrl+滚轮=缩放，普通滚轮=上下平移
+    if (dom.canvasContainer) {
+        dom.canvasContainer.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                const max_scale = DRAW_CONFIG.maxScaleImage || 3;
+                const min_scale = DRAW_CONFIG.minScale || 0.5;
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                const new_scale = Math.max(min_scale, Math.min(max_scale, state.scale + delta));
+
+                if (new_scale !== state.scale) {
+                    const rect = dom.canvasContainer.getBoundingClientRect();
+                    const mouse_x = e.clientX - rect.left;
+                    const mouse_y = e.clientY - rect.top;
+
+                    const old_scale = state.scale;
+                    const ratio = new_scale / old_scale;
+                    state.canvasX = mouse_x - (mouse_x - state.canvasX) * ratio;
+                    state.canvasY = mouse_y - (mouse_y - state.canvasY) * ratio;
+                    state.scale = new_scale;
+
+                    main_update_move_bound();
+                    main_update_canvas_transform();
+                }
+            } else {
+                // 普通滚轮 = 上下平移
+                e.preventDefault();
+                const scroll_speed = 2;
+                state.canvasY -= e.deltaY * scroll_speed;
+
+                // 仅在画布超出屏幕时 clamp 边界
+                const screenH = DRAW_CONFIG.screenH || window.innerHeight;
+                const scaledH = DRAW_CONFIG.canvasH * state.scale;
+                if (scaledH > screenH) {
+                    state.canvasY = Math.max(-(scaledH - screenH), Math.min(0, state.canvasY));
+                }
+
+                main_update_canvas_transform();
+            }
+        }, { passive: false });
+    }
 }
 
 // 设置笔触样式

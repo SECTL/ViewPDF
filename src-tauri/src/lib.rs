@@ -3405,69 +3405,6 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
     }
 }
 
-/// 卸载时清理文件关联：删除注册的 ProgID、OpenWithProgids、UserChoice
-#[cfg(target_os = "windows")]
-pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
-    use winreg::RegKey;
-    use winreg::enums::*;
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let classes_path = "Software\\Classes";
-    let classes_key = hkcu.create_subkey(classes_path)
-        .map_err(|e| format!("打开 Classes 失败: {}", e))?.0;
-
-    let app_id = "SECTL.ViewPDF";
-    let exts = [".pdf", ".docx", ".doc"];
-    let prog_ids: Vec<String> = exts.iter().map(|ext| format!("{}{}", app_id, ext)).collect();
-
-    // 删除 UserChoice (FileExts\.{ext}\UserChoice)
-    for ext in &exts {
-        let user_choice_path = format!(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{}\\UserChoice",
-            ext
-        );
-        match hkcu.delete_subkey_all(&user_choice_path) {
-            Ok(_) => log::info!("卸载清理: 已删除 {}\\UserChoice", ext),
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 删除 {}\\UserChoice 失败: {}", ext, e),
-        }
-    }
-
-    // 删除 ProgID 和 OpenWithProgids 条目
-    for (ext, prog_id) in exts.iter().zip(prog_ids.iter()) {
-        // 从 OpenWithProgids 中移除引用
-        let openwith_path = format!("{}{}\\OpenWithProgids", classes_path, ext);
-        match classes_key.open_subkey_with_flags(&openwith_path, KEY_SET_VALUE) {
-            Ok(key) => {
-                let _ = key.delete_value(prog_id);
-                log::info!("卸载清理: 已从 {}\\OpenWithProgids 移除 {}", ext, prog_id);
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 无法访问 {}\\OpenWithProgids: {}", ext, e),
-        }
-
-        // 删除 ProgID 本身
-        match hkcu.delete_subkey_all(format!("{}\\{}", classes_path, prog_id)) {
-            Ok(_) => log::info!("卸载清理: 已删除 ProgID {}", prog_id),
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 删除 ProgID {} 失败: {}", prog_id, e),
-        }
-    }
-
-    // 刷新图标缓存
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", r#"
-            Add-Type -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int,int,System.IntPtr,System.IntPtr);' -Name Shell -Namespace WinAPI
-            [WinAPI.Shell]::SHChangeNotify(0x8000000,0x1000,[IntPtr]::Zero,[IntPtr]::Zero)
-        "#])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-
-    log::info!("卸载清理: 文件关联清理完成");
-    Ok(())
-}
-
-
 
 
 /// 应用入口函数

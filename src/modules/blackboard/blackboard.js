@@ -488,6 +488,14 @@ class BlackboardManager {
     init(container) {
         if (this.bb_wrapper) return; // 防止重复初始化
 
+        // 动态加载 blackboard.css（启动时不阻塞渲染）
+        if (!document.querySelector('link[href*="blackboard.css"]')) {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = 'blackboard.css';
+            document.head.appendChild(link);
+        }
+
         // 创建面板和工具栏 DOM
         this._create_panel();
         this._create_toolbar();
@@ -1135,38 +1143,51 @@ class BlackboardManager {
         if (!this.is_open) return;
         if (this.drawing_engine?.is_drawing) return;
         if (this.tile_renderer) this.tile_renderer.cancel_idle_shrink();
-        e.preventDefault();
 
-        const s = this.bb_state;
-        const max_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3;
-        const min_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.minScale : 0.5;
-        const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        const new_scale = Math.max(min_scale, Math.min(max_scale, s.scale + delta));
+        // Ctrl+滚轮 = 缩放，普通滚轮 = 上下平移
+        if (e.ctrlKey) {
+            e.preventDefault();
+            const s = this.bb_state;
+            const max_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3;
+            const min_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.minScale : 0.5;
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            const new_scale = Math.max(min_scale, Math.min(max_scale, s.scale + delta));
 
-        if (new_scale !== s.scale) {
-            // 缓存 container rect 避免每次滚轮触发 layout 回流
-            if (!this._cached_container_rect) {
-                this._cached_container_rect = (window.dom.mainContent || window.dom.canvasContainer).getBoundingClientRect();
+            if (new_scale !== s.scale) {
+                if (!this._cached_container_rect) {
+                    this._cached_container_rect = (window.dom.mainContent || window.dom.canvasContainer).getBoundingClientRect();
+                }
+                const container_rect = this._cached_container_rect;
+                const mouse_x = e.clientX - container_rect.left;
+                const mouse_y = e.clientY - container_rect.top;
+
+                const old_scale = s.scale;
+                const scale_ratio = new_scale / old_scale;
+                const target_x = mouse_x - (mouse_x - s.canvas_x) * scale_ratio;
+                const target_y = mouse_y - (mouse_y - s.canvas_y) * scale_ratio;
+
+                s.scale = new_scale;
+                s.canvas_x = target_x;
+                s.canvas_y = target_y;
+
+                this._update_move_bound();
+                this._update_canvas_position();
+                this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 200);
             }
-            const container_rect = this._cached_container_rect;
-            const mouse_x = e.clientX - container_rect.left;
-            const mouse_y = e.clientY - container_rect.top;
+        } else {
+            // 普通滚轮 = 上下平移
+            e.preventDefault();
+            const s = this.bb_state;
+            const scroll_speed = 2;
+            s.canvas_y -= e.deltaY * scroll_speed;
 
-            const old_scale = s.scale;
-            const scale_ratio = new_scale / old_scale;
-            const target_x = mouse_x - (mouse_x - s.canvas_x) * scale_ratio;
-            const target_y = mouse_y - (mouse_y - s.canvas_y) * scale_ratio;
+            // 仅在画布超出屏幕时 clamp
+            const scaled_h = this.bb_state.canvas_h * s.scale;
+            if (scaled_h > this.screen_h) {
+                s.canvas_y = Math.max(-(scaled_h - this.screen_h), Math.min(0, s.canvas_y));
+            }
 
-            s.scale = new_scale;
-            s.canvas_x = target_x;
-            s.canvas_y = target_y;
-
-            this._update_move_bound();
-            this._update_canvas_position();
-            this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 200);
-
-            // mark_all 与 update_visible_tile_dpr 在缩放时重复，移除冗余的全标记
-            // _sync_bb_transform_smooth → update_visible_tile_dpr 已处理 DPR 变化
+            this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 0);
         }
     }
 

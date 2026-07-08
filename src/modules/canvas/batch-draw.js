@@ -20,7 +20,7 @@ class RealtimeBatchDrawManager {
         this.commandCounts = [];
         this.commandCountsMax = 5;
 
-        this.frameRateMode = 'adaptive';
+        this.frameRateMode = 'high';
         this.lastAdjustTime = 0;
         this.adjustCooldown = 100;
 

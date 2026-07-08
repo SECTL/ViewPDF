@@ -94,7 +94,7 @@ function dom_init_all() {
     return true;
 }
 
-// 加载设置
+// 加载设置，返回 settings 对象供后续复用
 async function settings_load_config() {
     if (window.__TAURI__) {
         try {
@@ -106,10 +106,10 @@ async function settings_load_config() {
             if (settings.theme) {
                 await ThemeManager.theme_update_active(settings.theme);
             }
-            
+
             // 加载黑板启用状态
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
-            
+
             // 加载捏合缩放算法 V2 配置
             if (settings.pinchZoomV2 === true) {
                 if (window.DRAW_CONFIG) {
@@ -118,12 +118,14 @@ async function settings_load_config() {
                     window.DRAW_CONFIG = { pinchZoomV2: true };
                 }
             }
-            
+
             console.log('[init] 配置加载完成');
+            return settings;
         } catch (error) {
             console.error('加载配置失败:', error);
         }
     }
+    return {};
 }
 
 // 绑定事件
@@ -708,20 +710,23 @@ async function main_init_all() {
         if (window.i18n) {
             await window.i18n.init_start();
         }
-        
-        if (window.__TAURI__) {
-            const isOobeActive = await window.__TAURI__.core.invoke('oobe_check_active');
-            if (isOobeActive) {
-                return;
-            }
+
+        // 并行执行独立的 IPC 调用
+        const oobePromise = window.__TAURI__
+            ? window.__TAURI__.core.invoke('oobe_check_active').catch(() => false)
+            : Promise.resolve(false);
+        const [isOobeActive, settings] = await Promise.all([
+            oobePromise,
+            settings_load_config(),
+            dir_init_cache_path(),
+        ]);
+        if (isOobeActive) {
+            return;
         }
-        
+
         if (!dom_init_all()) {
             throw new Error('DOM 初始化失败');
         }
-        
-        await dir_init_cache_path();
-        await settings_load_config();
 
         // 初始化文档阅读器
         if (window.documentReaderManager) {
@@ -753,18 +758,10 @@ async function main_init_all() {
             }, 0);
         }
 
-        // 恢复上次打开的文档
-        if (window.documentReaderManager) {
-            window.__TAURI__?.core?.invoke('settings_fetch_all').then(result => {
-                const settings = (result && typeof result === 'object' && result.settings)
-                    ? result.settings : {};
-                if (settings.restoreLastDoc !== false) {
-                    window.documentReaderManager.restore_last_document().catch(e => {
-                        console.log('[init] 恢复上次文档失败:', e);
-                    });
-                }
-            }).catch(e => {
-                console.log('[init] 读取设置失败:', e);
+        // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）
+        if (window.documentReaderManager && settings?.restoreLastDoc !== false) {
+            window.documentReaderManager.restore_last_document().catch(e => {
+                console.log('[init] 恢复上次文档失败:', e);
             });
         }
 

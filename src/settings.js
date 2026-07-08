@@ -221,13 +221,6 @@ async function initSettings() {
                     return '#000000';
                 }
                 
-                function settings_calc_rgb_to_hex(r, g, b) {
-                    return '#' + [r, g, b].map(x => {
-                        const hex = x.toString(16);
-                        return hex.length === 1 ? '0' + hex : hex;
-                    }).join('');
-                }
-                
                 for (let i = 1; i <= 15; i++) {
                     const colorBtn = document.querySelector(`.sp-color-edit-item[data-index="${i - 1}"] .sp-color-edit-btn`);
                     if (colorBtn) {
@@ -277,7 +270,7 @@ async function initSettings() {
 
                 const frameRateModeGroup = document.getElementById('frameRateModeGroup');
                 if (frameRateModeGroup) {
-                    const mode = settings.frameRateMode || 'adaptive';
+                    const mode = settings.frameRateMode || 'high';
                     frameRateModeGroup.dataset.active = mode;
                     const buttons = frameRateModeGroup.querySelectorAll('.sp-option-btn');
                     buttons.forEach(btn => {
@@ -290,7 +283,7 @@ async function initSettings() {
                 
                 const penEffectModeGroup = document.getElementById('penEffectModeGroup');
                 if (penEffectModeGroup) {
-                    const mode = settings.penEffectMode || 'limited';
+                    const mode = settings.penEffectMode || 'full';
                     penEffectModeGroup.dataset.active = mode;
                     const buttons = penEffectModeGroup.querySelectorAll('.sp-option-btn');
                     buttons.forEach(btn => {
