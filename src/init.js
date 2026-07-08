@@ -103,11 +103,7 @@ async function settings_load_config() {
             const settings = (result && typeof result === 'object' && result.settings)
                 ? result.settings : {};
 
-            if (settings.theme) {
-                await ThemeManager.theme_update_active(settings.theme);
-            }
-
-            // 加载黑板启用状态
+            // 加载黑板启用状态（主题在 DOM 创建后应用，见 main_init_all）
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
 
             // 加载捏合缩放算法 V2 配置
@@ -726,6 +722,15 @@ async function main_init_all() {
 
         if (!dom_init_all()) {
             throw new Error('DOM 初始化失败');
+        }
+
+        // DOM 就绪后应用主题（theme_update_toolbar_text_visibility 等依赖 DOM 元素）
+        if (settings?.theme) {
+            try {
+                await ThemeManager.theme_update_active(settings.theme);
+            } catch (e) {
+                console.warn('[init] 主题应用失败:', e);
+            }
         }
 
         // 初始化文档阅读器
