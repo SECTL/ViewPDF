@@ -454,6 +454,7 @@ let state = {
     currentFolderIndex: -1,
     currentFolderPageIndex: -1,
     pdfDocuments: new Map(),
+    loadingPdfMd5: new Set(),
     loadedPages: new Set(),
     currentPressure: 0.5,
     currentVelocity: 0,
@@ -861,37 +862,64 @@ function main_setup_pdf_file_open() {
         }
 
         if (settings.penColors && Array.isArray(settings.penColors)) {
-            DRAW_CONFIG.penColors = settings.penColors.map(color => {
-                if (typeof color === 'object' && color.r !== undefined) {
-                    return main_calc_rgb_to_hex(color.r, color.g, color.b);
-                }
-                return color;
-            });
+            DRAW_CONFIG.penColors = settings.penColors
+                .filter(color => {
+                    if (typeof color === 'object' && color !== null) return typeof color.r === 'number';
+                    return typeof color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color);
+                })
+                .map(color => {
+                    if (typeof color === 'object' && color.r !== undefined) {
+                        return main_calc_rgb_to_hex(color.r, color.g, color.b);
+                    }
+                    return color;
+                });
+            if (DRAW_CONFIG.penColors.length === 0) {
+                DRAW_CONFIG.penColors = ['#3498db', '#2ecc71', '#e74c3c', '#f39c12', '#9b59b6'];
+            }
+            if (!DRAW_CONFIG.penColors.includes(DRAW_CONFIG.penColor)) {
+                DRAW_CONFIG.penColor = DRAW_CONFIG.penColors[0] || null;
+            }
+            const colorContainer = document.querySelector('.pen-control-panel .pen-color-buttons');
+            if (colorContainer) colorContainer.replaceChildren();
             main_update_color_buttons();
             console.log('画笔颜色已更改:', DRAW_CONFIG.penColors);
         }
         
         if (settings.penWidth !== undefined) {
             DRAW_CONFIG.penWidth = settings.penWidth;
+            main_update_color_buttons();
         }
         if (settings.eraserSize !== undefined) {
             DRAW_CONFIG.eraserSize = settings.eraserSize;
+            main_update_color_buttons();
             if (window.blackboardManager?.drawing_engine) {
                 window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
             }
         }
         
         if (settings.penSizePresets && Array.isArray(settings.penSizePresets)) {
-            DRAW_CONFIG.penSizePresets = settings.penSizePresets;
-            console.log('画笔预设已更改:', settings.penSizePresets);
+            DRAW_CONFIG.penSizePresets = settings.penSizePresets
+                .filter(n => typeof n === 'number' && n > 0 && n <= 100);
+            if (DRAW_CONFIG.penSizePresets.length === 0) {
+                DRAW_CONFIG.penSizePresets = [2, 5, 10, 15, 21];
+            }
+            const panel = document.querySelector('.pen-control-panel');
+            if (panel?.dataset.mode === 'comment') panel.querySelector('.pen-size-presets')?.replaceChildren();
+            console.log('画笔预设已更改:', DRAW_CONFIG.penSizePresets);
         }
         
         if (settings.eraserSizePresets && Array.isArray(settings.eraserSizePresets)) {
-            DRAW_CONFIG.eraserSizePresets = settings.eraserSizePresets;
+            DRAW_CONFIG.eraserSizePresets = settings.eraserSizePresets
+                .filter(n => typeof n === 'number' && n > 0 && n <= 200);
+            if (DRAW_CONFIG.eraserSizePresets.length === 0) {
+                DRAW_CONFIG.eraserSizePresets = [5, 15, 25, 38, 50];
+            }
+            const panel = document.querySelector('.pen-control-panel');
+            if (panel?.dataset.mode === 'eraser') panel.querySelector('.pen-size-presets')?.replaceChildren();
             if (window.blackboardManager?.drawing_engine) {
                 window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
             }
-            console.log('橡皮擦预设已更改:', settings.eraserSizePresets);
+            console.log('橡皮擦预设已更改:', DRAW_CONFIG.eraserSizePresets);
         }
         
         if (settings.theme !== undefined) {
@@ -1048,6 +1076,7 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         main_update_loading_progress(window.i18n?.format_translate('loading.renderingPage') || '正在渲染页面...');
         
+        let wordPdfDoc = null;
         try {
             const pdfReady = await main_wait_pdfjs();
             if (!pdfReady) {
@@ -1063,7 +1092,7 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             
             let pdfBytes = await fs.readFile(pdfPath);
             let pdfArrayBuffer = pdfBytes.buffer;
-            const pdf = await pdfjsLib.getDocument({
+            let wordPdfDoc = await pdfjsLib.getDocument({
                 data: pdfArrayBuffer,
                 enableXfa: false,
                 useSystemFonts: false,
@@ -1071,9 +1100,9 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             }).promise;
             pdfBytes = null;
             pdfArrayBuffer = null;
-            console.log('PDF加载成功，页数:', pdf.numPages);
+            console.log('PDF加载成功，页数:', wordPdfDoc.numPages);
             
-            const totalPages = pdf.numPages;
+            const totalPages = wordPdfDoc.numPages;
             const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
             const docNumber = sourceIdCounters.doc++;
             
@@ -1081,7 +1110,7 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 name: fileName,
                 pages: [],
                 isPdf: true,
-                pdfDoc: pdf,
+                pdfDoc: wordPdfDoc,
                 totalPages: totalPages,
                 docNumber: docNumber,
                 fileMd5: fileMd5
@@ -1094,12 +1123,13 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 console.log(`[PDF缓存] 缓存已满,移除文档: ${firstKey}`);
             }
             
-            state.pdfDocuments.set(docNumber, pdf);
+            state.pdfDocuments.set(docNumber, wordPdfDoc);
             
-            const processedPages = await main_render_pdf_pages_lazy(pdf, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
+            const processedPages = await main_render_pdf_pages_lazy(wordPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
             folder.pages = processedPages;
             
             state.fileList.push(folder);
+            wordPdfDoc = null;
             
             main_hide_loading_overlay();
             console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
@@ -1115,6 +1145,10 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             
             
         } catch (error) {
+            if (wordPdfDoc) {
+                try { wordPdfDoc.destroy(); } catch (_) {}
+                wordPdfDoc = null;
+            }
             main_hide_loading_overlay();
             console.error('文件导入失败:', error);
             main_show_error_dialog(
@@ -1128,6 +1162,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
     }
     
     main_show_loading_overlay(window.i18n?.format_translate('loading.importingFile') || '正在导入文件...');
+    let loadingPdfMd5 = null;
+    let loadedPdfDoc = null;
     
     try {
         const pdfReady = await main_wait_pdfjs();
@@ -1170,26 +1206,26 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('PDF数据大小:', uint8Array.length);
 
-        // PDF 解析（Worker 线程）与 MD5（主线程）并发执行
-        const pdfPromise = pdfjsLib.getDocument({
-            data: uint8Array,
-            enableXfa: false,
-            useSystemFonts: false,
-            isEvalSupported: false
-        }).promise;
         const fileMd5 = main_calculate_md5(uint8Array);
-        if (main_check_file_open(fileMd5)) {
+        if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
             fileData = null;
             uint8Array = null;
             main_hide_loading_overlay();
             return;
         }
-        const pdf = await pdfPromise;
+        state.loadingPdfMd5.add(fileMd5);
+        loadingPdfMd5 = fileMd5;
+        loadedPdfDoc = await pdfjsLib.getDocument({
+            data: uint8Array,
+            enableXfa: false,
+            useSystemFonts: false,
+            isEvalSupported: false
+        }).promise;
         fileData = null;
         uint8Array = null;
-        console.log('PDF加载成功，页数:', pdf.numPages);
+        console.log('PDF加载成功，页数:', loadedPdfDoc.numPages);
         
-        const totalPages = pdf.numPages;
+        const totalPages = loadedPdfDoc.numPages;
         const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
         const docNumber = sourceIdCounters.doc++;
         
@@ -1197,16 +1233,17 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             name: fileName,
             pages: [],
             isWord: false,
-            pdfDoc: pdf,
+            pdfDoc: loadedPdfDoc,
             totalPages: totalPages,
             docNumber: docNumber,
             fileMd5: fileMd5
         };
         
-        const processedPages = await main_render_pdf_pages_lazy(pdf, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
+        const processedPages = await main_render_pdf_pages_lazy(loadedPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
         folder.pages = processedPages;
         
         state.fileList.push(folder);
+        loadedPdfDoc = null;
         
         main_hide_loading_overlay();
         console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
@@ -1219,12 +1256,18 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             window.documentReaderManager.open(fileIndex);
         }
     } catch (error) {
+        if (loadedPdfDoc) {
+            try { loadedPdfDoc.destroy(); } catch (_) {}
+            loadedPdfDoc = null;
+        }
         main_hide_loading_overlay();
         console.error('文件导入失败:', error);
         main_show_error_dialog(
             window.i18n?.format_translate('errors.importFailed') || '导入失败',
             window.i18n?.format_translate('errors.importFailedDesc') || '文件导入失败，请确保文件格式正确'
         );
+    } finally {
+        if (loadingPdfMd5) state.loadingPdfMd5.delete(loadingPdfMd5);
     }
 }
 
@@ -1627,7 +1670,6 @@ function main_update_tabs() {
                 main_update_tabs();
             }
         });
-        _enable_tab_drag(settingsTab, tabsContainer);
         tabsContainer.appendChild(settingsTab);
     }
 
@@ -1651,13 +1693,13 @@ function main_update_tabs() {
         close.textContent = '×';
         close.addEventListener('click', (e) => {
             e.stopPropagation();
-            main_close_tab(index);
+            main_close_tab(parseInt(tab.dataset.index));
         });
         tab.appendChild(close);
 
         tab.addEventListener('click', () => {
             if (tab._dragJustHappened) { tab._dragJustHappened = false; return; }
-            main_switch_to_tab(index);
+            main_switch_to_tab(parseInt(tab.dataset.index));
         });
 
         _enable_tab_drag(tab, tabsContainer);
@@ -1788,6 +1830,12 @@ function _sync_tabs_from_dom(tabsContainer) {
     if (newFolderIndex >= 0) {
         window.documentReaderManager.folder_index = newFolderIndex;
     }
+    allTabs.forEach(t => {
+        if (t.dataset.tabType === 'doc') {
+            const folder = oldFileList[parseInt(t.dataset.index)];
+            t.dataset.index = state.fileList.indexOf(folder);
+        }
+    });
 }
 
 async function main_switch_home() {
@@ -1801,7 +1849,6 @@ async function main_switch_home() {
 }
 
 function main_hide_settings() {
-    state.settingsOpen = false;
     const panel = document.getElementById('settingsPanel');
     if (panel) panel.style.display = 'none';
     // 如果阅读器还开着，恢复其工具栏
@@ -1822,10 +1869,12 @@ async function main_switch_to_tab(index) {
         return;
     }
     reader._switching = true;
-    reader.folder_index = index;
     main_update_tabs();
-    await reader.open(index);
-    reader._switching = false;
+    try {
+        await reader.open(index);
+    } finally {
+        reader._switching = false;
+    }
     main_update_tabs();
     main_update_ui_state();
 }
@@ -1840,11 +1889,24 @@ async function main_close_tab(index) {
         reader.folder_index = -1;
     }
     const folder = fileList[index];
+    if (state.fileList[index] !== folder) return;
     if (folder?.docNumber !== undefined) {
         main_delete_pdf_blob_urls(folder.docNumber);
         state.pdfDocuments.delete(folder.docNumber);
     }
+    if (folder?.pdfDoc?.destroy && !reader?._switching) {
+        try {
+            await folder.pdfDoc.destroy();
+        } catch (error) {
+            console.error('PDF 资源释放失败:', error);
+        }
+    }
     state.fileList.splice(index, 1);
+    if (isReaderOpen && reader && reader.folder_index > index) {
+        reader.folder_index--;
+    } else if (reader && reader.folder_index >= state.fileList.length) {
+        reader.folder_index = -1;
+    }
     main_update_tabs();
     main_update_ui_state();
 }
@@ -2286,7 +2348,8 @@ function main_save_merged_canvas() {
 }
 
 function main_show_settings_window() {
-    if (state.settingsOpen) {
+    const panel = document.getElementById('settingsPanel');
+    if (state.settingsOpen && panel?.style.display === 'flex') {
         main_close_settings();
         return;
     }
@@ -2298,7 +2361,6 @@ function main_show_settings_window() {
     const drToolbar = document.getElementById('drToolbar');
     if (drToolbar) drToolbar.style.display = 'none';
 
-    const panel = document.getElementById('settingsPanel');
     if (!panel) return;
     panel.style.display = 'flex';
 

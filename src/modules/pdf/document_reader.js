@@ -150,6 +150,9 @@ class DocumentReaderManager {
         // 已初始化 tile 的页面索引集合（_dr_apply_scale 仅遍历此集合，跳过无 tile 页面）
         this._pages_with_tiles = new Set();
 
+        this._open_seq = Promise.resolve();
+        this._preload_idle_id = null;
+
         // 首个页面渲染完成标记（用于隐藏加载指示）
         this._has_rendered_first_page = false;
 
@@ -245,17 +248,21 @@ class DocumentReaderManager {
     // ====== 面板管理 ======
 
     async open(folder_index, page_index = 0) {
-        // 先设置 folder_index，让标签栏能立刻响应切换
-        this.folder_index = folder_index;
-        const folder = window.state.fileList[folder_index];
-        if (!folder || !folder.pages || folder.pages.length === 0) return;
+        const prev = this._open_seq;
+        let resolve_cur;
+        this._open_seq = new Promise(r => { resolve_cur = r; });
+        await prev;
 
-        // 如果已打开其他文档，先关闭再打开新的
-        if (this.is_open) {
-            await this.close();
-        }
+        try {
+            const folder = window.state.fileList[folder_index];
+            if (!folder || !folder.pages || folder.pages.length === 0) return;
 
-        if (window.main_submit_stroke) {
+            if (this.is_open) {
+                await this.close();
+            }
+            this.folder_index = folder_index;
+
+            if (window.main_submit_stroke) {
             await window.main_submit_stroke();
         }
         if (window.batchDrawManager) {
@@ -360,6 +367,9 @@ class DocumentReaderManager {
         if (window.main_update_ui_state) {
             window.main_update_ui_state();
         }
+    } finally {
+        resolve_cur();
+    }
     }
 
     async close() {
@@ -506,6 +516,15 @@ class DocumentReaderManager {
         if (this._doc_cleanup_timer !== null) {
             clearTimeout(this._doc_cleanup_timer);
             this._doc_cleanup_timer = null;
+        }
+
+        if (this._preload_idle_id !== null) {
+            if (window.cancelIdleCallback) {
+                window.cancelIdleCallback(this._preload_idle_id);
+            } else {
+                clearTimeout(this._preload_idle_id);
+            }
+            this._preload_idle_id = null;
         }
 
         if (this._scroll_container) {
@@ -1255,10 +1274,6 @@ class DocumentReaderManager {
             page_data._visible_init_timeout = null;
         }
 
-        // 不再取消正在进行的 PDF 渲染任务（取消会导致 tempCanvas 泄露 + 竞态条件）
-        // 改为由渲染完成后的 is_visible 检查跳过 swap，渲染自然结束并归还 canvas
-        page_data.pdf_render_promise = null;
-
         // 离开视口后延迟释放页面 GPU 资源（防抖动 + requestIdleCallback 降 GPU 峰值）
         if (this._page_visible_timeout_id !== null) {
             clearTimeout(this._page_visible_timeout_id);
@@ -1701,9 +1716,9 @@ class DocumentReaderManager {
         };
 
         if (window.requestIdleCallback) {
-            window.requestIdleCallback(preload_fn, { timeout: 3000 });
+            this._preload_idle_id = window.requestIdleCallback(preload_fn, { timeout: 3000 });
         } else {
-            setTimeout(preload_fn, 500);
+            this._preload_idle_id = setTimeout(preload_fn, 500);
         }
     }
 

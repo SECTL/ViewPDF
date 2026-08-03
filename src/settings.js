@@ -863,7 +863,7 @@ async function initSettings() {
     
     function settings_show_color_picker(index) {
         current_color_index = index;
-        const colorBtn = document.querySelector(`.color-edit-item[data-index="${index}"] .color-edit-btn`);
+        const colorBtn = document.querySelector(`.sp-color-edit-item[data-index="${index}"] .sp-color-edit-btn`);
         if (colorBtn) {
             const hex = colorBtn.dataset.color || '#3498db';
             const rgb = settings_calc_hex_to_rgb(hex);
@@ -983,9 +983,9 @@ async function initSettings() {
         colorPickerCancel.addEventListener('click', settings_hide_color_picker);
     }
     
-    document.querySelectorAll('.color-edit-btn').forEach(btn => {
+    document.querySelectorAll('.sp-color-edit-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            const item = btn.closest('.color-edit-item');
+            const item = btn.closest('.sp-color-edit-item');
             if (item) {
                 const index = parseInt(item.dataset.index);
                 settings_show_color_picker(index);
