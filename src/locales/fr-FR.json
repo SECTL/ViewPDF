@@ -60,6 +60,17 @@
     "home": "Accueil",
     "close": "Fermer"
   },
+  "tabs": {
+    "document": "Document",
+    "close": "Fermer l'onglet",
+    "closeOthers": "Fermer les autres onglets",
+    "closeRight": "Fermer les onglets à droite"
+  },
+  "reader": {
+    "recovering": "Problème de rendu détecté, récupération…",
+    "recovered": "Récupéré",
+    "recoverFailed": "Erreur de rendu. Fermez puis rouvrez le document"
+  },
   "settings": {
     "title": "Paramètres",
     "appSettings": "Application",
