@@ -240,6 +240,16 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
     Ok(format!("已清除 {} 个文档批注缓存文件", deleted))
 }
 
+/// Tauri IPC 命令：前端完成退出前的保存（批注/阅读位置）后调用，
+/// 置位确认标志并关闭主窗口（放行 on_window_event 中的拦截）
+#[tauri::command]
+fn app_confirm_close(app: tauri::AppHandle) {
+    CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.close();
+    }
+}
+
 /// Tauri IPC 命令：检查是否达到自动清理缓存的间隔，若达到则执行清理
 #[tauri::command]
 fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
@@ -893,6 +903,9 @@ static MIRROR_STATE: AtomicBool = AtomicBool::new(false);
 static OOBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MAIN_SCRIPT_LOADED: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+/// 主窗口关闭确认标志：前端保存批注/位置完成后由 app_confirm_close 置位，
+/// on_window_event 据此放行 CloseRequested（否则拦截并通知前端先保存）
+static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 // ==================== 设置窗口 ====================
 
@@ -958,46 +971,6 @@ struct GitHubRelease {
     assets: Vec<GitHubAsset>,
 }
 
-/// SECTL latest-tag API 响应
-#[derive(Debug, Deserialize)]
-struct SectlLatestTagResponse {
-    #[allow(dead_code)]
-    success: bool,
-    #[allow(dead_code)]
-    project: Option<SectlProject>,
-    latest: Option<SectlLatestRelease>,
-    tag: Option<String>,
-    #[allow(dead_code)]
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct SectlProject {
-    id: String,
-    name: String,
-    slug: String,
-    repo: String,
-    cached_latest_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SectlLatestRelease {
-    #[allow(dead_code)]
-    tag: String,
-    name: Option<String>,
-    #[allow(dead_code)]
-    source: Option<String>,
-    html_url: Option<String>,
-    #[allow(dead_code)]
-    published_at: Option<String>,
-    #[allow(dead_code)]
-    prerelease: Option<bool>,
-    #[allow(dead_code)]
-    draft: Option<bool>,
-}
-
 /// 版本检测结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UpdateCheckResult {
@@ -1033,11 +1006,10 @@ fn version_validate_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// 校验 URL 是否为合法的 GitHub 域名，支持 gh-proxy.com / ghproxy.sectl.cn 等镜像前缀
+/// 校验 URL 是否为合法的 GitHub 域名，支持 gh-proxy.com 等通用镜像前缀
 fn url_validate_github(url: &str) -> Result<(), String> {
     let known_mirror_prefixes = [
         "https://gh-proxy.com/",
-        "https://ghproxy.sectl.cn/",
     ];
 
     for prefix in &known_mirror_prefixes {
@@ -1067,75 +1039,42 @@ fn url_validate_github(url: &str) -> Result<(), String> {
 
 /// Tauri IPC 命令：检查是否有新版本
 ///
-/// 通过 SECTL API 获取最新 Tag 并与当前编译版本比较，
-/// 有更新时再从 GitHub 拉取具体 Release 数据（已确认版本，非匿名探测）
+/// 直接通过 GitHub Releases API 获取最新发布（tag/说明/资产），
+/// 与当前编译版本比较决定是否提示更新
 #[tauri::command]
 async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION");
-    
+
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
         .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
-    
-    // 1. 通过 SECTL 获取最新 Tag
+
+    // 1. GitHub 最新 Release（含 tag_name/name/html_url/body/assets）
     let response = client
-        .get("https://appwrite.sectl.cn/api/software/latest-tag?projectSlug=ViewPDF")
+        .get("https://api.github.com/repos/SECTL/ViewPDF/releases/latest")
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
-    
+
     if !response.status().is_success() {
-        return Err(format!("SECTL API error: {}", response.status()));
+        return Err(format!("GitHub API error: {}", response.status()));
     }
-    
-    let sectl: SectlLatestTagResponse = response
+
+    let latest_release: GitHubRelease = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse SECTL response: {}", e))?;
-    
-    if !sectl.success {
-        let desc = sectl.error_description.unwrap_or_default();
-        return Err(format!("SECTL API error: {}", desc));
+        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+
+    let latest_version = latest_release.tag_name.trim_start_matches('v').to_string();
+    if latest_version.is_empty() {
+        return Err("Invalid GitHub response: empty tag_name".to_string());
     }
-    
-    let latest_tag = sectl.tag.ok_or("Missing tag in SECTL response")?;
-    if latest_tag.is_empty() {
-        return Err("Invalid SECTL response: empty tag".to_string());
-    }
-    
-    let latest_version = latest_tag.trim_start_matches('v');
-    let has_update = version_validate_newer(current_version, latest_version);
-    
-    // 2. 有更新时获取该 Release 的详细数据（GitHub，已知版本）
-    let release = if has_update {
-        let github_url = format!(
-            "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
-            latest_tag
-        );
-        match client.get(&github_url).send().await {
-            Ok(resp) if resp.status().is_success() => resp.json::<GitHubRelease>().await.ok(),
-            _ => {
-                // 降级：用 SECTL 数据构建最小 release
-                let sectl_latest = sectl.latest.as_ref();
-                Some(GitHubRelease {
-                    tag_name: latest_tag.clone(),
-                    name: sectl_latest.and_then(|l| l.name.clone()),
-                    html_url: sectl_latest
-                        .and_then(|l| l.html_url.clone())
-                        .unwrap_or_default(),
-                    body: None,
-                    assets: vec![],
-                })
-            }
-        }
-    } else {
-        None
-    };
-    
-    // 3. 尝试获取当前版本的 Release 信息（GitHub，已知版本）
+    let has_update = version_validate_newer(current_version, &latest_version);
+
+    // 2. 当前版本的 Release 信息（"已是最新"时展示对应说明，缺失不影响流程）
     let current_tag = format!("v{}", current_version);
     let current_release = match client
         .get(format!(
@@ -1148,12 +1087,12 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
         Ok(resp) if resp.status().is_success() => resp.json::<GitHubRelease>().await.ok(),
         _ => None,
     };
-    
+
     Ok(UpdateCheckResult {
         has_update,
         current_version: current_version.to_string(),
-        latest_version: latest_version.to_string(),
-        release,
+        latest_version,
+        release: if has_update { Some(latest_release) } else { None },
         current_release,
     })
 }
@@ -1687,126 +1626,6 @@ async fn update_download_cancel() -> Result<(), String> {
     Ok(())
 }
 
-/// 通过 SECTL 分发接口下载文件
-///
-/// 调用 /api/software/download 获取 302 跳转，然后下载目标文件。
-async fn download_from_sectl(
-    app: &tauri::AppHandle,
-    file_path: &std::path::Path,
-    tag: &str,
-    file_name: &str,
-) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .user_agent("ViewPDF")
-        .timeout(std::time::Duration::from_secs(300))
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("Failed to build client: {}", e))?;
-
-    let params = [
-        ("projectSlug", "ViewPDF"),
-        ("tag", tag),
-        ("fileName", file_name),
-        ("source", "server"),
-    ];
-    let sectl_url = url::Url::parse_with_params(
-        "https://appwrite.sectl.cn/api/software/download",
-        &params,
-    )
-    .map_err(|e| format!("Failed to build SECTL URL: {}", e))?
-    .to_string();
-    log::info!("SECTL 下载请求: {}", sectl_url);
-
-    let response = client
-        .get(&sectl_url)
-        .send()
-        .await
-        .map_err(|e| format!("SECTL request failed: {}", e))?;
-
-    let status = response.status();
-
-    if !status.is_success() && status != reqwest::StatusCode::FOUND
-        && status != reqwest::StatusCode::MOVED_PERMANENTLY
-    {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("SECTL download failed (HTTP {}): {}", status, body));
-    }
-
-    let dl_url = if status == reqwest::StatusCode::FOUND
-        || status == reqwest::StatusCode::MOVED_PERMANENTLY
-    {
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| "SECTL 302 missing Location header".to_string())?
-            .to_string();
-        log::info!("SECTL 重定向到: {}", location);
-        location
-    } else {
-        log::info!("SECTL 直接返回文件内容 (HTTP {})", status);
-        sectl_url.clone()
-    };
-
-    let dl_response = if dl_url == sectl_url {
-        response
-    } else {
-        let download_client = reqwest::Client::builder()
-            .user_agent("ViewPDF")
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("Failed to build download client: {}", e))?;
-        download_client
-            .get(&dl_url)
-            .send()
-            .await
-            .map_err(|e| format!("SECTL redirect download failed: {}", e))?
-    };
-
-    if !dl_response.status().is_success() {
-        return Err(format!(
-            "SECTL download HTTP {}",
-            dl_response.status()
-        ));
-    }
-
-    let total_size = dl_response.content_length().unwrap_or(0);
-    let mut file = std::fs::File::create(file_path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-
-    let mut downloaded: u64 = 0;
-    let mut stream = dl_response.bytes_stream();
-    use futures::stream::StreamExt;
-    let mut last_reported: u32 = 0;
-
-    while let Some(chunk) = stream.next().await {
-        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(file_path);
-            return Err("Download cancelled".to_string());
-        }
-        let data = chunk.map_err(|e| format!("Read chunk error: {}", e))?;
-        file.write_all(&data)
-            .map_err(|e| format!("Write file error: {}", e))?;
-        downloaded += data.len() as u64;
-        if total_size > 0 {
-            let pct = (downloaded as f64 / total_size as f64 * 100.0) as u32;
-            if pct != last_reported {
-                last_reported = pct;
-                let _ = app.emit("update-download-progress", pct);
-            }
-        }
-    }
-
-    if total_size == 0 || last_reported < 100 {
-        let _ = app.emit("update-download-progress", 100);
-    }
-
-    file.flush().map_err(|e| format!("Flush file error: {}", e))?;
-    log::info!("SECTL 下载完成: {:?}", file_path);
-    Ok(())
-}
-
 /// Tauri IPC 命令：下载更新文件
 ///
 /// 优先使用 SECTL 分发接口下载，失败时回退到 GitHub 镜像加速。
@@ -1829,18 +1648,10 @@ async fn update_download_file(
     let file_path = updates_dir.join(&file_name);
     log::info!("保存路径: {:?}", file_path);
 
-    // 1. 尝试 SECTL 分发下载
-    if let Some(tag) = &version_tag {
-        match download_from_sectl(&app, &file_path, tag, &file_name).await {
-            Ok(()) => return Ok(file_path.to_string_lossy().to_string()),
-            Err(e) => {
-                log::warn!("SECTL 下载失败，回退到 GitHub: {}", e);
-            }
-        }
-    }
+    // 更新源已切换为 GitHub Releases；version_tag 参数保留以兼容前端调用，不再使用
+    let _ = &version_tag;
 
-    // 2. 回退：GitHub 镜像加速
-    log::info!("使用 GitHub 镜像回退下载: {}", file_name);
+    // GitHub（可选镜像加速）下载
     url_validate_github(&url)?;
 
     let use_mirror = mirror_url.as_ref().is_some_and(|m| !m.is_empty());
@@ -3409,36 +3220,112 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
 
 /// 应用入口函数
 ///
+use simplelog::LevelFilter;
+/// 本地时间戳文件日志器：simplelog 0.12 内部固定使用 UTC 且无本地时区配置，
+/// 用 chrono::Local 自绘时间戳，保证日志行时间与系统时间一致
+struct LocalTimeFileLogger {
+    file: std::sync::Mutex<std::fs::File>,
+    max_level: LevelFilter,
+}
+
+impl log::Log for LocalTimeFileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= self.max_level
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
+        let line = format!(
+            "{} {:<5} [{}] {}\n",
+            timestamp,
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = std::io::Write::write_all(&mut *file, line.as_bytes());
+    }
+
+    fn flush(&self) {
+        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = std::io::Write::flush(&mut *file);
+    }
+}
+
+impl simplelog::SharedLogger for LocalTimeFileLogger {
+    fn level(&self) -> LevelFilter {
+        self.max_level
+    }
+
+    fn config(&self) -> Option<&simplelog::Config> {
+        None
+    }
+
+    fn as_log(self: Box<Self>) -> Box<dyn log::Log> {
+        Box::new(*self)
+    }
+}
+
 /// 初始化日志、注册 Tauri 插件和 IPC 命令，配置 OOBE/主窗口启动流程。
 /// 首次运行打开 OOBE 引导窗口，非首次运行读取配置设置窗口尺寸并全屏显示。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn app_init_run() {
-    use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config};
+    use simplelog::{CombinedLogger, LevelFilter, Config};
     use std::fs::File;
-    
-    let config_dir = dirs::config_dir()
+
+    // 与 AppPaths / dir_fetch_log 使用同一根目录（tauri 标识符 SECTL.viewpdf），
+    // 避免"日志写入 A 目录、设置页打开 B 目录"的分裂
+    let log_root = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("SECTL.ViewPDF");
-    let log_dir = config_dir.join("log");
-    
+        .join("SECTL.viewpdf");
+    let log_dir = log_root.join("log");
+
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         eprintln!("无法创建日志目录: {}", e);
     }
-    
+
     let log_file = log_dir.join(format!("viewstage_{}.log", chrono::Local::now().format("%Y%m%d")));
-    
+
     if let Ok(file) = File::create(&log_file) {
         #[cfg(debug_assertions)]
         let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
-            WriteLogger::new(LevelFilter::Info, Config::default(), file),
-            simplelog::TermLogger::new(LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed, simplelog::ColorChoice::Auto),
+            simplelog::TermLogger::new(LevelFilter::Info, Config::default(), simplelog::TerminalMode::Mixed, simplelog::ColorChoice::Auto),
+            Box::new(LocalTimeFileLogger {
+                file: std::sync::Mutex::new(file),
+                max_level: LevelFilter::Info,
+            }),
         ];
         #[cfg(not(debug_assertions))]
         let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
-            WriteLogger::new(LevelFilter::Info, Config::default(), file),
+            Box::new(LocalTimeFileLogger {
+                file: std::sync::Mutex::new(file),
+                max_level: LevelFilter::Info,
+            }),
         ];
         let _ = CombinedLogger::init(loggers);
         log::info!("日志系统初始化成功");
+    }
+
+    // 【WebView2 虚拟桌面/遮挡黑屏修复】
+    // Chromium 的原生窗口遮挡检测（CalculateNativeWinOcclusion）在切换虚拟桌面、
+    // 多显示器休眠等场景会把窗口误判为"被完全遮挡"而挂起渲染器：
+    // 返回后窗口冻结在最后一帧（仅剩主题底色），前端无响应导致也无法关闭。
+    // 必须在 WebView2 创建前设置；合并而非覆盖用户已有的浏览器参数。
+    #[cfg(windows)]
+    {
+        const OCCLUSION_FLAG: &str = "--disable-features=CalculateNativeWinOcclusion";
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        if !existing.contains("CalculateNativeWinOcclusion") {
+            let merged = if existing.trim().is_empty() {
+                OCCLUSION_FLAG.to_string()
+            } else {
+                format!("{} {}", existing.trim(), OCCLUSION_FLAG)
+            };
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+        }
     }
 
     tauri::Builder::default()
@@ -3531,6 +3418,42 @@ pub fn app_init_run() {
             
             Ok(())
         })
+        // 主窗口关闭拦截：先让前端保存批注/阅读位置，保存完成由 app_confirm_close 放行
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                if CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                    return; // 已确认，放行
+                }
+                api.prevent_close();
+                let _ = window.emit("app-close-requested", ());
+                // 兜底：前端无响应（脚本错误/监听缺失）时 6 秒后强制退出，避免无法关闭。
+                // 高负载下大文档的 JSON 序列化+写盘可能较慢，留足余量避免打断写盘造成缓存损坏
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                        log::warn!("app-close-requested 6 秒未确认，强制关闭主窗口");
+                        CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.close();
+                        }
+                        // 二级兜底：webview 完全冻结（如虚拟桌面渲染挂起）时 close 可能
+                        // 仍无法完成，再等 6 秒直接退出进程。此时前端本就无响应，
+                        // 磁盘状态为最近一次防抖保存的结果，强退不再造成额外损失
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(6));
+                            if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                                log::warn!("app-close 12 秒仍未确认，强制退出进程");
+                                std::process::exit(0);
+                            }
+                        });
+                    }
+                });
+            }
+        })
         // 注册所有 Tauri IPC 命令
         .invoke_handler(tauri::generate_handler![
             dir_fetch_cache, 
@@ -3568,6 +3491,7 @@ pub fn app_init_run() {
             main_signal_loaded,
             main_check_loaded,
             app_submit_exit,
+            app_confirm_close,
             file_fetch_stat,
             office_detect_all,
             office_check_runtime,
