@@ -60,6 +60,17 @@
     "home": "主页",
     "close": "关闭"
   },
+  "tabs": {
+    "document": "文档",
+    "close": "关闭标签",
+    "closeOthers": "关闭其他标签",
+    "closeRight": "关闭右侧标签"
+  },
+  "reader": {
+    "recovering": "检测到渲染异常，正在自动恢复…",
+    "recovered": "已恢复",
+    "recoverFailed": "页面渲染异常，请关闭后重新打开该文档"
+  },
   "settings": {
     "title": "设置",
     "appSettings": "应用设置",
@@ -340,8 +351,6 @@
     "frameDelta": "单帧手势位移上限",
     "tailDuration": "笔迹收尾时长",
     "ellipseStroke": "椭圆笔迹渲染",
-    "pinchZoomV2": "捏合缩放算法 V2",
-    "pinchZoomV2Hint": "增量式缩放 + 中点锚点（需重启）",
     "experimental": "实验性",
     "restartRequired": "需重启应用生效",
     "overlayDpr": "叠加层 DPR（绘制预览）",
