@@ -56,10 +56,30 @@ class RealtimeBatchDrawManager {
         this._overlayDpr = 1;
         this._overlayDprSettleTimerId = null;
         this._overlayDprSettleMs = 300;
+        // 笔画进行中标记：overlay resize 会清空内容（进行中的笔迹闪断），
+        // 期间收到的 DPR 调整请求顺延到笔画结束（batch_draw_handle_end）
+        this._strokeActive = false;
+        this._deferredOverlayDpr = null;
+        // 最近绘制耗时滚动样本与外部性能回调（自适应帧率策略可消费）
+        this._drawTimes = [];
+        this._perfHook = null;
+        this._perfLastEmit = 0;
 
         this._tileRenderer = null;
+        // _tileRenderer 为空时是否回退到主画布渲染器（window.tileRenderer）。
+        // 主画布场景保持 true；文档阅读器/黑板等多页场景必须置为 false，
+        // 否则擦除段会误写入主画布或上一页的 tile，造成笔迹异常消失
+        this.fallbackToMain = true;
         this.eraserShape = 'square';
         this.ellipseMode = false;
+    }
+
+    /**
+     * 获取当前生效的 tile 渲染器（含可配置的主画布回退）
+     * @returns {TileRenderer|null}
+     */
+    _get_active_tile_renderer() {
+        return this._tileRenderer || (this.fallbackToMain ? window.tileRenderer : null);
     }
 
     /**
@@ -77,6 +97,16 @@ class RealtimeBatchDrawManager {
     }
 
     update_overlay_dpr(scale, force) {
+        if (this._strokeActive) {
+            // 笔画进行中：resize overlay 会清空已绘制内容导致笔迹闪断。
+            // 暂存请求，待 batch_draw_handle_end 时补执行
+            this._deferredOverlayDpr = { scale, force };
+            if (this._overlayDprSettleTimerId != null) {
+                clearTimeout(this._overlayDprSettleTimerId);
+                this._overlayDprSettleTimerId = null;
+            }
+            return;
+        }
         if (this._overlayDprSettleTimerId != null) {
             clearTimeout(this._overlayDprSettleTimerId);
             this._overlayDprSettleTimerId = null;
@@ -88,6 +118,11 @@ class RealtimeBatchDrawManager {
                 this._apply_overlay_dpr(targetDpr);
             }
         }, this._overlayDprSettleMs);
+    }
+
+    /** 注册绘制性能采样回调（参数为最近 20 次 flush 的平均耗时 ms），节流 500ms */
+    set_perf_hook(fn) {
+        this._perfHook = typeof fn === 'function' ? fn : null;
     }
 
     _apply_overlay_dpr(newDpr) {
@@ -202,7 +237,7 @@ class RealtimeBatchDrawManager {
     }
 
     _each_visible_tile(fn) {
-        const tr = this._tileRenderer || window.tileRenderer;
+        const tr = this._get_active_tile_renderer();
         if (!tr) return;
         const keys = tr.get_visible_keys();
         for (const info of tr.tileInfos) {
@@ -223,7 +258,7 @@ class RealtimeBatchDrawManager {
     }
 
     _each_tile(x1, y1, x2, y2, fn, padding = 0) {
-        const tr = this._tileRenderer || window.tileRenderer;
+        const tr = this._get_active_tile_renderer();
         if (!tr) return;
         const infos = tr.infos_for_segment(x1, y1, x2, y2, padding);
         for (const info of infos) {
@@ -494,6 +529,15 @@ class RealtimeBatchDrawManager {
 
             lastLineWidth = lineWidth;
 
+            // 记录每段实际渲染宽度：收笔时作为 stroke.storedWidths 精确回放，
+            // 保证烘焙结果与实时预览一致。缺失此记录会让提交时长度不匹配、
+            // 烘焙回退到另一套宽度算法——落笔瞬间宽度轮廓跳变（预览≠成品）
+            if (cmd.type === 'draw') {
+                this._storedWidths.push(lineWidth);
+            } else if (cmd.type === 'erase') {
+                this._storedWidths.push(lineWidth);
+            }
+
             if (cmd.type !== currentType || cmd.color !== currentColor) {
                 currentType = cmd.type;
                 currentColor = cmd.color;
@@ -505,7 +549,7 @@ class RealtimeBatchDrawManager {
                     this._overlayCtx.stroke();
                     batchFirst = true;
                 }
-                const tr = this._tileRenderer || window.tileRenderer;
+                const tr = this._get_active_tile_renderer();
                 if (tr) {
                     if (!eraseByTile) eraseByTile = new Map();
                     const halfWidth = (lineWidth || 20) / 2;
@@ -585,7 +629,7 @@ class RealtimeBatchDrawManager {
         }
 
         if (eraseByTile && eraseByTile.size > 0) {
-            const tr = this._tileRenderer || window.tileRenderer;
+            const tr = this._get_active_tile_renderer();
             if (tr) {
                 for (const info of tr.tileInfos) {
                     const entry = eraseByTile.get(info.key);
@@ -626,6 +670,18 @@ class RealtimeBatchDrawManager {
         this.lastType = currentType;
         this.lastColor = currentColor;
         this.lastLineWidth = lastLineWidth;
+
+        // 滚动记录最近绘制耗时，节流上报给外部自适应策略
+        this._drawTimes.push(drawTime);
+        if (this._drawTimes.length > 20) {
+            this._drawTimes.shift();
+        }
+        if (this._perfHook && drawEnd - this._perfLastEmit >= 500) {
+            this._perfLastEmit = drawEnd;
+            let sum = 0;
+            for (let k = 0; k < this._drawTimes.length; k++) sum += this._drawTimes[k];
+            this._perfHook(sum / this._drawTimes.length);
+        }
 
         if (this.is_adaptive) {
             this.batch_draw_calc_adjust_fps(drawTime, count);
@@ -685,6 +741,8 @@ class RealtimeBatchDrawManager {
         this._segmentTimes = [];
         this._dirtyBoundsCanvas = null;
         this._limitedTailWidth = null;
+        this._strokeActive = false;
+        this._deferredOverlayDpr = null;
         this.clear_overlay();
     }
 
@@ -694,6 +752,8 @@ class RealtimeBatchDrawManager {
         this.lastDrawTime = performance.now();
         this._penEffectMode = 'off';
         this._strokeStart = true;
+        this._strokeActive = true;
+        this._deferredOverlayDpr = null;
         this.ellipseMode = window.DRAW_CONFIG?.ellipseStrokeEnabled === true;
         this._totalSegments = 0;
         this._lastMidX = null;
@@ -787,6 +847,14 @@ class RealtimeBatchDrawManager {
         }
 
         this.clear_overlay();
+
+        // 笔画结束：补执行进行期间被顺延的 overlay DPR 调整
+        this._strokeActive = false;
+        if (this._deferredOverlayDpr) {
+            const d = this._deferredOverlayDpr;
+            this._deferredOverlayDpr = null;
+            this.update_overlay_dpr(d.scale, d.force);
+        }
 
         if (this.is_adaptive) {
             this.drawTimes = [];
