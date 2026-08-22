@@ -1742,7 +1742,8 @@ body {
 .titlebar-tab.active {
     background: var(--color-canvas);
     color: var(--color-ink);
-    border-bottom-color: var(--color-primary);
+    /* 主题品牌色注入激活指示条（基础样式经 --tab-accent 消费） */
+    --tab-accent: var(--color-primary);
 }
 
 /* ===== 设置面板 - 主题覆盖 ===== */
