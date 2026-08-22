@@ -60,6 +60,17 @@
     "home": "Inicio",
     "close": "Cerrar"
   },
+  "tabs": {
+    "document": "Documento",
+    "close": "Cerrar pestaña",
+    "closeOthers": "Cerrar otras pestañas",
+    "closeRight": "Cerrar pestañas a la derecha"
+  },
+  "reader": {
+    "recovering": "Problema de renderizado detectado, recuperando…",
+    "recovered": "Recuperado",
+    "recoverFailed": "Error de renderizado. Cierre y vuelva a abrir el documento"
+  },
   "settings": {
     "title": "Ajustes",
     "appSettings": "App",
