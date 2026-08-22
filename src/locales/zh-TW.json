@@ -60,6 +60,17 @@
     "home": "主頁",
     "close": "關閉"
   },
+  "tabs": {
+    "document": "文件",
+    "close": "關閉標籤",
+    "closeOthers": "關閉其他標籤",
+    "closeRight": "關閉右側標籤"
+  },
+  "reader": {
+    "recovering": "偵測到算繪異常，正在自動復原…",
+    "recovered": "已復原",
+    "recoverFailed": "頁面算繪異常，請關閉後重新開啟該文件"
+  },
   "settings": {
     "title": "設定",
     "appSettings": "應用設定",
@@ -308,8 +319,6 @@
     "frameDelta": "單幀手勢位移上限",
     "tailDuration": "筆跡收尾時長",
     "ellipseStroke": "橢圓筆跡渲染",
-    "pinchZoomV2": "捏合縮放演算法 V2",
-    "pinchZoomV2Hint": "增量式縮放 + 中點錨點（需重啟）",
     "experimental": "實驗性",
     "restartRequired": "需重啟應用生效",
     "overlayDpr": "疊加層 DPR（繪製預覽）",
