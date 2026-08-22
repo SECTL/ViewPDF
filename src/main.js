@@ -34,7 +34,7 @@ function main_init_pdfjs() {
     return DocLoader.init_pdfjs();
 }
 
-async function main_wait_pdfjs(maxWait = 5000) {
+async function main_wait_pdfjs(maxWait = 10000) {
     return DocLoader.wait_pdfjs(maxWait);
 }
 
@@ -453,7 +453,6 @@ let state = {
     fileList: [],
     currentFolderIndex: -1,
     currentFolderPageIndex: -1,
-    pdfDocuments: new Map(),
     loadingPdfMd5: new Set(),
     loadedPages: new Set(),
     currentPressure: 0.5,
@@ -462,8 +461,6 @@ let state = {
     lastLineWidth: 0,
     settingsOpen: false
 };
-
-const MAX_PDF_CACHE = 10;
 
 // === 源ID管理系统 ===
 // 统一管理所有源（摄像头、图片、文档）的缩放和批注数据
@@ -1033,10 +1030,13 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('文件大小:', uint8Array.length, '字节');
         const fileMd5 = main_calculate_md5(uint8Array);
-        if (main_check_file_open(fileMd5)) {
+        // 与 PDF 路径一致：加载中去重，避免同一 Word 文件并发打开产生重复标签
+        if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
             main_hide_loading_overlay();
+            uint8Array = null;
             return;
         }
+        state.loadingPdfMd5.add(fileMd5);
         
         main_update_loading_progress(window.i18n?.format_translate('loading.processingWord') || '正在处理 Word 文档...');
         
@@ -1092,11 +1092,14 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             
             let pdfBytes = await fs.readFile(pdfPath);
             let pdfArrayBuffer = pdfBytes.buffer;
-            let wordPdfDoc = await pdfjsLib.getDocument({
+            wordPdfDoc = await pdfjsLib.getDocument({
                 data: pdfArrayBuffer,
                 enableXfa: false,
                 useSystemFonts: false,
-                isEvalSupported: false
+                isEvalSupported: false,
+                // 仅报告错误级日志（getDocument 只认参数里的 verbosity，全局赋值无效），
+                // 抑制 PDF 内嵌字体触发的 "TT: undefined function" 等噪音警告
+                verbosity: pdfjsLib.VerbosityLevel?.ERRORS ?? 0
             }).promise;
             pdfBytes = null;
             pdfArrayBuffer = null;
@@ -1113,21 +1116,16 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 pdfDoc: wordPdfDoc,
                 totalPages: totalPages,
                 docNumber: docNumber,
-                fileMd5: fileMd5
+                fileMd5: fileMd5,
+                // 来源与重载信息：Word 转换产物可能被缓存清理，不做后台卸载
+                fromWord: true,
+                filePath: filePath,
+                _last_used: Date.now()
             };
-            
-            if (state.pdfDocuments.size >= MAX_PDF_CACHE) {
-                const firstKey = state.pdfDocuments.keys().next().value;
-                main_delete_pdf_blob_urls(firstKey);
-                state.pdfDocuments.delete(firstKey);
-                console.log(`[PDF缓存] 缓存已满,移除文档: ${firstKey}`);
-            }
-            
-            state.pdfDocuments.set(docNumber, wordPdfDoc);
-            
+
             const processedPages = await main_render_pdf_pages_lazy(wordPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
             folder.pages = processedPages;
-            
+
             state.fileList.push(folder);
             wordPdfDoc = null;
             
@@ -1156,8 +1154,10 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 window.i18n?.format_translate('errors.importFailedDesc') || '文件导入失败，请确保文件格式正确'
             );
 
+        } finally {
+            state.loadingPdfMd5.delete(fileMd5);
         }
-        
+
         return;
     }
     
@@ -1236,7 +1236,11 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             pdfDoc: loadedPdfDoc,
             totalPages: totalPages,
             docNumber: docNumber,
-            fileMd5: fileMd5
+            fileMd5: fileMd5,
+            // 后台 LRU 卸载后可按此路径重新加载
+            filePath: filePath,
+            reloadPath: filePath,
+            _last_used: Date.now()
         };
         
         const processedPages = await main_render_pdf_pages_lazy(loadedPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
@@ -1483,6 +1487,8 @@ function main_show_pen_control_panel(triggerBtn, mode) {
                     }
                     clearSlider.value = '0';
                     clearSlider.style.setProperty('--fill', '0%');
+                    // 清空完成后自动收纳面板（此前需手动点图标收回）
+                    panel.classList.remove('visible');
                 }
             });
             clearSlider.addEventListener('pointerup', () => {
@@ -1605,15 +1611,180 @@ function main_show_pen_control_panel(triggerBtn, mode) {
     panel.style.top = top + 'px';
 }
 
+/** 收起笔工具面板（选色/尺寸/清屏滑条）。书写起笔时调用，
+ *  因 InputSource 的 pointerdown 会 preventDefault 抑制兼容 mousedown，
+ *  面板自带的"点击外部关闭"在触屏/手写笔下不生效。 */
+window.main_hide_pen_control_panel = function () {
+    const panel = document.querySelector('.pen-control-panel');
+    if (panel) panel.classList.remove('visible');
+};
+
 function main_update_ui_state() {
     const startupScreen = document.getElementById('startupScreen');
     if (startupScreen) {
         const reader = window.documentReaderManager;
         const hasOpenDoc = window.state?.fileList?.length > 0 &&
-            (reader?.is_open === true || reader?._switching === true);
+            (reader?.is_open === true || !!reader?._switching);
         startupScreen.style.display = hasOpenDoc ? 'none' : 'flex';
     }
     main_update_tabs();
+}
+
+// ====== 标签栏交互增强（快捷键 / 中键 / 右键菜单 / 横向滚轮） ======
+
+/** 关闭标签右键菜单 */
+function main_hide_tab_context_menu() {
+    const existing = document.getElementById('titlebarTabContextMenu');
+    if (!existing) return;
+    if (existing._dismiss_handler) {
+        document.removeEventListener('mousedown', existing._dismiss_handler, true);
+        existing._dismiss_handler = null;
+    }
+    existing.remove();
+}
+
+/**
+ * 标签右键菜单：关闭 / 关闭其他 / 关闭右侧。
+ * 批量关闭从末尾向前逐个执行，避免 splice 导致索引位移。
+ */
+function main_show_tab_context_menu(event, tabIndex) {
+    main_hide_tab_context_menu();
+    const file_list = state.fileList || [];
+    const translate = (key, fallback) => window.i18n?.format_translate(key) || fallback;
+
+    const items = [
+        { label: translate('tabs.close', '关闭标签'), action: () => main_close_tab(tabIndex) }
+    ];
+    if (file_list.length > 1) {
+        items.push({
+            label: translate('tabs.closeOthers', '关闭其他标签'),
+            action: async () => {
+                for (let i = file_list.length - 1; i >= 0; i--) {
+                    if (i !== tabIndex) await main_close_tab(i);
+                }
+            }
+        });
+    }
+    if (tabIndex >= 0 && tabIndex < file_list.length - 1) {
+        items.push({
+            label: translate('tabs.closeRight', '关闭右侧标签'),
+            action: async () => {
+                for (let i = file_list.length - 1; i > tabIndex; i--) {
+                    await main_close_tab(i);
+                }
+            }
+        });
+    }
+
+    const menu = document.createElement('div');
+    menu.id = 'titlebarTabContextMenu';
+    menu.className = 'tab-context-menu';
+    for (const item of items) {
+        const btn = document.createElement('button');
+        btn.className = 'tab-context-menu-item';
+        btn.textContent = item.label;
+        btn.addEventListener('click', () => {
+            main_hide_tab_context_menu();
+            item.action();
+        });
+        menu.appendChild(btn);
+    }
+    document.body.appendChild(menu);
+
+    // 视口内钳制，避免菜单溢出屏幕
+    const rect = menu.getBoundingClientRect();
+    const x = Math.max(4, Math.min(event.clientX, window.innerWidth - rect.width - 8));
+    const y = Math.max(4, Math.min(event.clientY, window.innerHeight - rect.height - 8));
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+
+    // 点击菜单外任意位置即关闭
+    const dismiss = (e) => {
+        if (!menu.contains(e.target)) main_hide_tab_context_menu();
+    };
+    menu._dismiss_handler = dismiss;
+    setTimeout(() => document.addEventListener('mousedown', dismiss, true), 0);
+}
+
+/** 全局标签快捷键：Esc 关右键菜单/设置、Ctrl+W 关当前文档标签、Ctrl+Tab 循环切换 */
+function main_setup_tab_hotkeys() {
+    if (window.__tabHotkeysBound) return;
+    window.__tabHotkeysBound = true;
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+
+        if (e.key === 'Escape') {
+            // 右键菜单打开时：仅关闭菜单并阻断阅读器的 Esc（避免误关底层文档）
+            if (document.getElementById('titlebarTabContextMenu')) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                main_hide_tab_context_menu();
+                return;
+            }
+            const panel = document.getElementById('settingsPanel');
+            if (state.settingsOpen && panel && panel.style.display === 'flex') {
+                e.preventDefault();
+                // 阻断传播：否则关闭设置后阅读器 keydown 里的面板守卫已失效，
+                // 同一次 Esc 会继续把底层文档也关掉
+                e.stopImmediatePropagation();
+                main_close_settings();
+            }
+            return;
+        }
+
+        if (!(e.ctrlKey || e.metaKey)) return;
+
+        // Ctrl+W：关闭当前激活的文档标签
+        if (e.key === 'w' || e.key === 'W') {
+            e.preventDefault();
+            const reader = window.documentReaderManager;
+            if (reader?.is_open === true && reader.folder_index >= 0) {
+                main_close_tab(reader.folder_index);
+            }
+            return;
+        }
+
+        // Ctrl+Tab / Ctrl+Shift+Tab：在文档标签间循环切换
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const reader = window.documentReaderManager;
+            if (!reader || reader.is_open !== true) return;
+            const len = state.fileList.length;
+            if (len < 2) return;
+            const next = e.shiftKey
+                ? (reader.folder_index - 1 + len) % len
+                : (reader.folder_index + 1) % len;
+            main_switch_to_tab(next);
+        }
+    });
+}
+
+/** 标签栏纵向滚轮映射为横向滚动（标签过多溢出时可用滚轮浏览） */
+function main_setup_tabs_wheel() {
+    const el = document.getElementById('titlebarTabs');
+    if (!el || el._wheel_mapped) return;
+    el._wheel_mapped = true;
+    el.addEventListener('wheel', (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            el.scrollLeft += e.deltaY;
+            e.preventDefault();
+        }
+    }, { passive: false });
+    // 滚动/尺寸变化时同步两侧渐隐提示
+    el.addEventListener('scroll', main_update_tabs_scroll_fade, { passive: true });
+    window.addEventListener('resize', main_update_tabs_scroll_fade);
+    main_update_tabs_scroll_fade();
+}
+
+/** 依据滚动位置切换标签栏两侧渐隐（fade-left / fade-right 类） */
+function main_update_tabs_scroll_fade() {
+    const el = document.getElementById('titlebarTabs');
+    if (!el) return;
+    const max_scroll = el.scrollWidth - el.clientWidth;
+    const scrollable = max_scroll > 4;
+    el.classList.toggle('fade-left', scrollable && el.scrollLeft > 2);
+    el.classList.toggle('fade-right', scrollable && el.scrollLeft < max_scroll - 2);
 }
 
 function main_update_tabs() {
@@ -1648,7 +1819,7 @@ function main_update_tabs() {
         settingsTab.dataset.tabType = 'settings';
         const settingsLabel = document.createElement('span');
         settingsLabel.className = 'tab-label';
-        settingsLabel.textContent = '设置';
+        settingsLabel.textContent = window.i18n?.format_translate('settings.title') || '设置';
         settingsTab.appendChild(settingsLabel);
         const close = document.createElement('span');
         close.className = 'tab-close';
@@ -1658,6 +1829,14 @@ function main_update_tabs() {
             main_close_settings();
         });
         settingsTab.appendChild(close);
+        // 中键点击关闭设置伪标签
+        settingsTab.addEventListener('auxclick', (e) => {
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                main_close_settings();
+            }
+        });
         settingsTab.addEventListener('click', () => {
             if (settingsTab._dragJustHappened) { settingsTab._dragJustHappened = false; return; }
             const panel = document.getElementById('settingsPanel');
@@ -1679,14 +1858,20 @@ function main_update_tabs() {
         tab.className = 'titlebar-tab';
         tab.dataset.index = index;
         tab.dataset.tabType = 'doc';
-        if (window.documentReaderManager?.folder_index === index && !settingsVisible) {
+        // 防御性判断：仅在阅读器打开或正在切往该标签时高亮，
+        // 否则 folder_index 残留时会出现主页与文档标签同时高亮；
+        // 切换进行中也高亮目标标签，保证大文档加载期间有明确的视觉反馈
+        const reader_mgr = window.documentReaderManager;
+        if (reader_mgr && (reader_mgr.is_open === true || !!reader_mgr._switching) &&
+            reader_mgr.folder_index === index && !settingsVisible) {
             tab.classList.add('active');
         }
 
         const label = document.createElement('span');
         label.className = 'tab-label';
-        label.textContent = folder.name || '文档';
+        label.textContent = folder.name || window.i18n?.format_translate('tabs.document') || '文档';
         tab.appendChild(label);
+        tab.title = folder.name || '';
 
         const close = document.createElement('span');
         close.className = 'tab-close';
@@ -1702,9 +1887,42 @@ function main_update_tabs() {
             main_switch_to_tab(parseInt(tab.dataset.index));
         });
 
+        // 中键点击直接关闭该标签
+        tab.addEventListener('auxclick', (e) => {
+            if (e.button !== 1) return;
+            e.preventDefault();
+            e.stopPropagation();
+            main_close_tab(parseInt(tab.dataset.index));
+        });
+
+        // 右键菜单：关闭 / 关闭其他 / 关闭右侧
+        tab.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            main_show_tab_context_menu(e, parseInt(tab.dataset.index));
+        });
+
         _enable_tab_drag(tab, tabsContainer);
         tabsContainer.appendChild(tab);
     });
+
+    // 任务栏窗口标题跟随当前文档（缓存上次值，变化才发 IPC）
+    let win_title = 'ViewPDF';
+    const active_reader = window.documentReaderManager;
+    if (active_reader?.is_open === true && active_reader.folder_index >= 0 &&
+        state.fileList[active_reader.folder_index]) {
+        win_title = `${state.fileList[active_reader.folder_index].name} - ViewPDF`;
+    }
+    if (win_title !== window.__lastWinTitle) {
+        window.__lastWinTitle = win_title;
+        try {
+            const p = window.__TAURI__?.window?.getCurrentWindow()?.setTitle(win_title);
+            p?.catch?.(() => {});
+        } catch (_) {}
+    }
+
+    // 标签重建后同步滚动渐隐状态（布局在下一帧才稳定）
+    requestAnimationFrame(main_update_tabs_scroll_fade);
 }
 
 /** 给标签绑定拖拽排序（绕过 Tauri drag-region 拦截） */
@@ -1792,6 +2010,8 @@ function _enable_tab_drag(tab, tabsContainer) {
             const fromPos = allTabs.indexOf(tab);
             let toPos = currentOverPos;
             if (currentHalf === 'right') toPos++;
+            // 主页标签固定第一位，不允许把文档/设置标签插到它左侧
+            if (toPos < 1) toPos = 1;
             if (fromPos === toPos || fromPos === toPos - 1) return;
             // 在 DOM 中移动标签
             if (toPos > fromPos) {
@@ -1868,12 +2088,14 @@ async function main_switch_to_tab(index) {
         main_update_tabs();
         return;
     }
-    reader._switching = true;
+    // 计数器而非布尔值：并发切换（快速连点标签）时，
+    // 先完成的切换不会提前解除保护（pdfDoc.destroy 守卫依赖它）
+    reader._switching = (reader._switching || 0) + 1;
     main_update_tabs();
     try {
         await reader.open(index);
     } finally {
-        reader._switching = false;
+        reader._switching = Math.max(0, (reader._switching || 0) - 1);
     }
     main_update_tabs();
     main_update_ui_state();
@@ -1883,6 +2105,12 @@ async function main_close_tab(index) {
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
     const reader = window.documentReaderManager;
+    // 正在打开的目标标签不允许此时关闭：open() 尚未完成，
+    // 提前移除会 revoke 其页面 blob URL 并使索引错位、批注缓存串写
+    if (reader?._switching && fileList[index] === reader?._active_folder) {
+        console.log('[tabs] 切换进行中，跳过对目标标签的关闭');
+        return;
+    }
     const isReaderOpen = reader?.is_open === true;
     if (isReaderOpen && reader?.folder_index === index) {
         await reader.close();
@@ -1892,7 +2120,6 @@ async function main_close_tab(index) {
     if (state.fileList[index] !== folder) return;
     if (folder?.docNumber !== undefined) {
         main_delete_pdf_blob_urls(folder.docNumber);
-        state.pdfDocuments.delete(folder.docNumber);
     }
     if (folder?.pdfDoc?.destroy && !reader?._switching) {
         try {
@@ -1958,6 +2185,10 @@ function main_setup_all_events() {
     if (dom.btnTitleMaximize) dom.btnTitleMaximize.addEventListener('click', main_toggle_maximize);
     if (dom.btnTitleClose) dom.btnTitleClose.addEventListener('click', main_submit_close_window);
     main_update_tabs();
+
+    // 标签栏交互增强：快捷键 + 横向滚轮（一次性注册）
+    main_setup_tab_hotkeys();
+    main_setup_tabs_wheel();
 
     // 主画布滚轮：Ctrl+滚轮=缩放，普通滚轮=上下平移
     if (dom.canvasContainer) {
@@ -2364,22 +2595,10 @@ function main_show_settings_window() {
     if (!panel) return;
     panel.style.display = 'flex';
 
-    // 动态加载 settings.css
-    if (!document.querySelector('link[href="settings.css"]')) {
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = 'settings.css';
-        document.head.appendChild(link);
-    }
-
-    // 加载 settings.js（仅首次）
-    if (!window._settingsJsLoaded) {
-        window._settingsJsLoaded = true;
-        const s = document.createElement('script');
-        s.type = 'module';
-        s.src = 'settings.js';
-        document.body.appendChild(s);
-    }
+    // 动态加载设置模块（样式已内联于 index.html；ES Module 缓存保证仅初始化一次）
+    import('./modules/settings/settings.js')
+        .then(m => m.init_settings_panel())
+        .catch(err => console.error('设置模块加载失败:', err));
 
     main_update_tabs();
 }
@@ -2389,9 +2608,6 @@ function main_close_settings() {
     state.settingsOpen = false;
     const panel = document.getElementById('settingsPanel');
     if (panel) panel.style.display = 'none';
-    // 移除 settings.css 避免影响主页面
-    const link = document.querySelector('link[href="settings.css"]');
-    if (link) link.remove();
     // 如果阅读器还开着，恢复其工具栏
     if (window.documentReaderManager?.is_open) {
         const drToolbar = document.getElementById('drToolbar');
@@ -2713,6 +2929,68 @@ function main_delete_all_pdf_blob_urls() {
     DocLoader.revoke_all_document_blob_urls();
 }
 
+// ====== 后台文档内存管理（LRU 卸载 + 懒重载） ======
+
+// 同时保持解析态（pdfDoc）的最大文档数；超出时卸载最久未使用的后台文档。
+// 卸载仅销毁 pdfDoc（内存大头），pages 元数据与批注保留，切回时按 reloadPath 懒重载。
+const MAX_LOADED_DOCS = 6;
+
+/**
+ * 确保文件夹的 pdfDoc 处于已加载状态；后台被卸载的文档在此处重新加载。
+ * @returns {Promise<boolean>} 是否可用（加载失败返回 false，调用方放弃打开）
+ */
+async function main_ensure_folder_doc(folder) {
+    if (!folder) return false;
+    if (folder.pdfDoc) return true;
+    if (!folder.reloadPath) {
+        console.warn('[tabs] 文档缺少重载路径，无法恢复:', folder.name);
+        return false;
+    }
+    try {
+        const ready = await main_wait_pdfjs();
+        if (!ready) return false;
+        const { fs } = window.__TAURI__;
+        let data = await fs.readFile(folder.reloadPath);
+        if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+        const doc = await pdfjsLib.getDocument({
+            data: data,
+            enableXfa: false,
+            useSystemFonts: false,
+            isEvalSupported: false
+        }).promise;
+        folder.pdfDoc = doc;
+        folder.totalPages = doc.numPages;
+        console.log('[tabs] 已重新加载后台文档:', folder.name);
+        return true;
+    } catch (e) {
+        console.error('[tabs] 后台文档重载失败:', folder?.name, e);
+        return false;
+    }
+}
+
+/**
+ * 卸载最久未使用的后台文档 pdfDoc，控制多标签场景的常驻内存。
+ * 仅处理 PDF 来源标签（Word 转换产物可能被缓存清理，标记 fromWord 的跳过）。
+ */
+function main_evict_background_docs(activeFolder = window.documentReaderManager?._active_folder) {
+    const loaded = state.fileList.filter(f => f?.pdfDoc);
+    if (loaded.length <= MAX_LOADED_DOCS) return;
+    const candidates = loaded
+        .filter(f => f !== activeFolder && !f.fromWord)
+        .sort((a, b) => (a._last_used || 0) - (b._last_used || 0));
+    let excess = loaded.length - MAX_LOADED_DOCS;
+    for (const f of candidates) {
+        if (excess <= 0) break;
+        excess--;
+        const doc = f.pdfDoc;
+        f.pdfDoc = null;
+        try { doc.destroy(); } catch (e) {
+            console.error('[tabs] 卸载后台文档失败:', f.name, e);
+        }
+        console.log('[tabs] 内存优化：已卸载后台文档', f.name);
+    }
+}
+
 // ===== 最近打开文件 =====
 const RECENT_FILES_KEY = 'viewstage_recent_files';
 const MAX_RECENT_FILES = 20;
@@ -2798,6 +3076,8 @@ window.main_update_tabs = main_update_tabs;
 window.main_switch_home = main_switch_home;
 window.main_switch_to_tab = main_switch_to_tab;
 window.main_close_tab = main_close_tab;
+window.main_ensure_folder_doc = main_ensure_folder_doc;
+window.main_evict_background_docs = main_evict_background_docs;
 window.StrokeQuadTree = StrokeQuadTree;
 
 if (document.readyState === 'loading') {
