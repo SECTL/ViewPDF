@@ -106,15 +106,6 @@ async function settings_load_config() {
             // 加载黑板启用状态（主题在 DOM 创建后应用，见 main_init_all）
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
 
-            // 加载捏合缩放算法 V2 配置
-            if (settings.pinchZoomV2 === true) {
-                if (window.DRAW_CONFIG) {
-                    window.DRAW_CONFIG.pinchZoomV2 = true;
-                } else {
-                    window.DRAW_CONFIG = { pinchZoomV2: true };
-                }
-            }
-
             console.log('[init] 配置加载完成');
             return settings;
         } catch (error) {
@@ -741,6 +732,9 @@ async function main_init_all() {
         // 绑定事件
         main_setup_events();
 
+        // 注册退出保存流程（Rust 拦截关闭 → 保存批注/位置 → 确认退出）
+        init_app_close_flow();
+
         // 初始化标签管理器和UI状态
         if (window.main_update_tabs) {
             window.main_update_tabs();
@@ -764,7 +758,10 @@ async function main_init_all() {
         }
 
         // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）
-        if (window.documentReaderManager && settings?.restoreLastDoc !== false) {
+        // 同步初始化退出保存分支使用的标志（此前只在设置面板切换时赋值，
+        // 导致每次启动后直接关窗会误入"删除批注缓存"分支）
+        window.__restoreLastDocEnabled = settings?.restoreLastDoc !== false;
+        if (window.documentReaderManager && window.__restoreLastDocEnabled) {
             window.documentReaderManager.restore_last_document().catch(e => {
                 console.log('[init] 恢复上次文档失败:', e);
             });
@@ -786,15 +783,70 @@ if (document.readyState === 'loading') {
     main_init_all();
 }
 
-// 清理
-document.addEventListener('beforeunload', () => {
-    if (window.documentReaderManager) {
-        if (window.__restoreLastDocEnabled) {
-            window.documentReaderManager._save_annotations_to_cache?.();
-            window.documentReaderManager._save_last_doc_state?.();
-        } else {
-            window.documentReaderManager.destroy?.();
-            window.documentReaderManager.delete_annotation_cache_files?.();
+// 【虚拟桌面/最小化返回黑屏保险层】
+// WebView2 渲染器被系统挂起后（虚拟桌面切换、遮挡误判），恢复时可能残留
+// 冻结帧。Rust 侧已禁用遮挡判定根治；此处再在重新可见时强制合成器重绘一次。
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    try {
+        document.body.style.transform = 'translateZ(0)';
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.body.style.removeProperty('transform');
+            });
+        });
+    } catch (_) {}
+});
+
+/**
+ * 应用退出保存流程：
+ * Rust 侧拦截主窗口 CloseRequested 并发出 app-close-requested，
+ * 前端完成批注/阅读位置保存后调用 app_confirm_close 放行关闭。
+ * Rust 侧另有 3 秒超时兜底，前端异常时也能退出。
+ */
+function init_app_close_flow() {
+    if (!window.__TAURI__) return;
+    const { listen } = window.__TAURI__.event;
+    const { invoke } = window.__TAURI__.core;
+    let _closing = false;
+    window.__appCloseSaveDone = false;
+
+    listen('app-close-requested', async () => {
+        if (_closing) return;
+        _closing = true;
+        try {
+            const reader = window.documentReaderManager;
+            if (reader) {
+                // 退出路径跳过空闲调度立即写盘（高负载下 idle 回调可能被长期饥饿）
+                await reader._save_annotations_to_cache?.({ awaitIdle: false });
+                await reader._save_last_doc_state?.();
+            }
+            // 标记已完成，beforeunload 兜底保存可跳过（避免大文档退出时双倍序列化+写盘）
+            window.__appCloseSaveDone = true;
+        } catch (e) {
+            console.error('[close-flow] 退出保存失败:', e);
+        } finally {
+            try {
+                await invoke('app_confirm_close');
+            } catch (e) {
+                console.error('[close-flow] 确认关闭失败:', e);
+            }
         }
+    }).catch(e => console.error('[close-flow] 注册关闭监听失败:', e));
+}
+
+// 清理：仅做 best-effort 兜底快照保存。
+// 注意：退出路径绝不删除批注缓存（delete_annotation_cache_files 只能由显式用户操作触发），
+// 正常关闭由 init_app_close_flow 的拦截流程保证保存完成，此处覆盖极端情况；
+// close-flow 已成功保存时跳过，避免大文档退出时双倍序列化+写盘
+document.addEventListener('beforeunload', () => {
+    if (window.__appCloseSaveDone) return;
+    const reader = window.documentReaderManager;
+    if (!reader) return;
+    try {
+        reader._save_annotations_to_cache?.({ awaitIdle: false });
+        reader._save_last_doc_state?.();
+    } catch (e) {
+        console.error('[beforeunload] 保存失败:', e);
     }
 });
