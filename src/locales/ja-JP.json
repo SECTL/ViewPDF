@@ -60,6 +60,17 @@
     "home": "ホーム",
     "close": "閉じる"
   },
+  "tabs": {
+    "document": "文書",
+    "close": "タブを閉じる",
+    "closeOthers": "ほかのタブを閉じる",
+    "closeRight": "右側のタブを閉じる"
+  },
+  "reader": {
+    "recovering": "描画異常を検出、復元中…",
+    "recovered": "復元しました",
+    "recoverFailed": "ページの描画に問題があります。文書を開き直してください"
+  },
   "settings": {
     "title": "設定",
     "appSettings": "アプリ",
