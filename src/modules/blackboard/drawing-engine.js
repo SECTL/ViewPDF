@@ -76,6 +76,8 @@ export class DrawingEngine {
 
     init_batch_draw(overlay_canvas, overlay_ctx) {
         this.batch_draw = new window.RealtimeBatchDrawManager();
+        // 黑板为多页架构：禁止回退到主画布渲染器，防止擦除误伤主画布笔迹
+        this.batch_draw.fallbackToMain = false;
         this.batch_draw._overlayCanvas = overlay_canvas;
         this.batch_draw._overlayCtx = overlay_ctx;
         this.batch_draw._overlayDpr = this.batch_draw._calc_overlay_dpr(this.coord.get_scale() || 1);
