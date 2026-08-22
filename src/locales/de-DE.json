@@ -60,6 +60,17 @@
     "home": "Start",
     "close": "Schließen"
   },
+  "tabs": {
+    "document": "Dokument",
+    "close": "Tab schließen",
+    "closeOthers": "Andere Tabs schließen",
+    "closeRight": "Rechte Tabs schließen"
+  },
+  "reader": {
+    "recovering": "Renderproblem erkannt, Wiederherstellung läuft…",
+    "recovered": "Wiederhergestellt",
+    "recoverFailed": "Seitenrender-Fehler. Bitte Dokument schließen und neu öffnen"
+  },
   "settings": {
     "title": "Einstellungen",
     "appSettings": "App",
