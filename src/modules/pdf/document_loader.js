@@ -23,7 +23,7 @@ export function init_pdfjs() {
  * @param {number} max_wait - 最大等待毫秒数
  * @returns {Promise<boolean>} 是否加载成功
  */
-export async function wait_pdfjs(max_wait = 5000) {
+export async function wait_pdfjs(max_wait = 10000) {
     const start_time = Date.now();
     while (!window.pdfjsLib && (Date.now() - start_time) < max_wait) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -92,11 +92,16 @@ export async function render_pdf_pages_lazy(pdf, total_pages, initial_pages = 3,
 
 // ====== 加载/错误 UI ======
 
+// 并发加载计数：多个文件同时加载时共享一个遮罩，
+// 只有全部完成后才隐藏，避免先完成的一方提前撤掉遮罩（高负载下加载窗口拉长时尤其明显）
+let _loading_ref_count = 0;
+
 /**
  * 显示加载遮罩
  * @param {string} message - 显示的加载消息
  */
 export function show_loading_overlay(message) {
+    _loading_ref_count++;
     const existing = document.getElementById('loadingOverlay');
     if (existing) existing.remove();
 
@@ -122,9 +127,11 @@ export function update_loading_progress(message) {
 }
 
 /**
- * 隐藏加载遮罩
+ * 隐藏加载遮罩（引用计数，归零才真正隐藏）
  */
 export function hide_loading_overlay() {
+    if (_loading_ref_count > 0) _loading_ref_count--;
+    if (_loading_ref_count > 0) return;
     const overlay = document.getElementById('loadingOverlay');
     if (overlay) overlay.remove();
 }
