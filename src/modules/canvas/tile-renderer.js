@@ -1,5 +1,7 @@
 const TILE_COLS = 4;
 const TILE_ROWS = 4;
+/** 每帧最多预升级的不可见瓦片数量（分帧降低缩放结束后的单帧卡顿） */
+const TILE_UPGRADE_BATCH = 3;
 
 class TileRenderer {
     constructor(options) {
@@ -8,6 +10,10 @@ class TileRenderer {
         this._lastDprUpdateScale = 0;
         this._pendingDpr = null;
         this._rebuildRafId = null;
+        this._upgradeQueue = null;
+        this._upgradeTargetDpr = null;
+        this._upgradeRafId = null;
+        this._queuedUpgradeKeys = new Set();
         this._quadtree = null;
         this._baseCaches = new Map();
         this._baseCacheLoadId = 0;
@@ -19,6 +25,11 @@ class TileRenderer {
         this._builtStrokeVersion = -1;
         this._strokeIndex = null;
         this._strokeIndexVersion = -1;
+        this._dirtyDrainIdleId = null;
+        this._destroyed = false;
+
+        // 诊断钩子：由宿主（阅读器）注入，(event, data) => void；受 drDiag 开关门控
+        this.diag_hook = null;
 
         // 离屏 canvas 池：复用 add_stroke 多 tile 预渲染 canvas，减少 GC 压力
         this._offscreen_pool = [];
@@ -99,7 +110,7 @@ class TileRenderer {
                     visibleChanged = true;
                     break;
                 }
-            } else if (info.dpr > 1 || info.dpr < targetDpr) {
+            } else if (info.dpr > 1 || (info.dpr < targetDpr && !this._queuedUpgradeKeys.has(info.key))) {
                 changed = true; break;
             }
         }
@@ -111,7 +122,7 @@ class TileRenderer {
         if (!force && !visibleChanged) {
             let needsUpgrade = false;
             for (const info of this.tileInfos) {
-                if (!keys.has(info.key) && info.dpr < targetDpr) {
+                if (!keys.has(info.key) && info.dpr < targetDpr && !this._queuedUpgradeKeys.has(info.key)) {
                     needsUpgrade = true;
                     break;
                 }
@@ -230,6 +241,37 @@ class TileRenderer {
         return Math.max(minDpr, Math.min(maxDpr, dpr));
     }
 
+    /**
+     * 诊断探针：统计含非空像素（笔迹）的 tile 数量。
+     * 阅读器 tiles 为透明底（skipBaseCache），alpha>0 即有笔迹。
+     * 通过 48×48 缩略采样读取，开销可忽略。
+     */
+    diag_content_ratio() {
+        if (!this._diag_probe) {
+            this._diag_probe = document.createElement('canvas');
+            this._diag_probe.width = 48;
+            this._diag_probe.height = 48;
+        }
+        const pc = this._diag_probe.getContext('2d', { willReadFrequently: true });
+        let tilesWithContent = 0;
+        let tilesAlive = 0;
+        for (const info of this.tileInfos) {
+            const cv = info.canvas;
+            if (!cv || !cv.width || !cv.height) continue;
+            tilesAlive++;
+            try {
+                pc.setTransform(1, 0, 0, 1, 0, 0);
+                pc.clearRect(0, 0, 48, 48);
+                pc.drawImage(cv, 0, 0, 48, 48);
+                const d = pc.getImageData(0, 0, 48, 48).data;
+                for (let i = 3; i < d.length; i += 4) {
+                    if (d[i] !== 0) { tilesWithContent++; break; }
+                }
+            } catch (_) {}
+        }
+        return { tilesWithContent, tilesAlive };
+    }
+
     _create_tile_canvas(info, dpr) {
         const rect = info.rect;
         const canvas = document.createElement('canvas');
@@ -254,9 +296,11 @@ class TileRenderer {
         const ctx = info.ctx;
         if (!canvas || !ctx) return;
 
-        // 仅在 DPR 提升时保存 snapshot（缩小后必然被 rebuild 覆盖，无需占位）
+        // 始终保留快照作占位（升/降级皆然）。此前降级不存快照、依赖
+        // "rebuild 必然紧随覆盖"——一旦可见键计算偏差，tile 会以已清空状态滞留，
+        // 表现为批注不可见且难以稳定复现。占位图会被 rebuild_tile 精确覆盖，无副作用。
         let snapshot = null;
-        if (newDpr > info.dpr && canvas.width > 0 && canvas.height > 0) {
+        if (canvas.width > 0 && canvas.height > 0) {
             snapshot = document.createElement('canvas');
             snapshot.width = canvas.width;
             snapshot.height = canvas.height;
@@ -280,6 +324,7 @@ class TileRenderer {
 
         info.dpr = newDpr;
         this.dirty.add(info.key);
+        this.diag_hook?.('recreate', { key: info.key, dpr: newDpr });
     }
 
     update_visible_tile_dpr(scale, force, skipSettle) {
@@ -301,6 +346,8 @@ class TileRenderer {
 
     _cancel_pending_rebuild() {
         this._cancel_dpr_settle();
+        this._cancel_dirty_drain();
+        this._cancel_upgrade_queue();
         if (this._rebuildRafId !== null) {
             cancelAnimationFrame(this._rebuildRafId);
             this._rebuildRafId = null;
@@ -339,19 +386,118 @@ class TileRenderer {
         this._pendingDpr = null;
         if (targetDpr == null) return;
 
+        // 中断上一轮未完成的预升级队列（目标 DPR 可能已变化）
+        this._cancel_upgrade_queue();
+
         const keys = this.get_visible_keys();
+        this.diag_hook?.('dpr-update', { dpr: targetDpr, keys: keys.size });
+        const deferredUpgrades = [];
         for (const info of this.tileInfos) {
             if (keys.has(info.key)) {
                 if (info.dpr !== targetDpr) {
                     this._recreate_tile(info, targetDpr);
                 }
             } else if (info.dpr < targetDpr) {
-                // 预升级非可见瓦片，使其在进入视野时已有正确分辨率
-                this._recreate_tile(info, targetDpr);
+                // 预升级非可见瓦片，使其在进入视野时已有正确分辨率。
+                // 不可见块延后分帧处理：一次 realloc 大量画布会造成缩放收尾掉帧
+                deferredUpgrades.push(info);
             }
         }
         this.rebuild_visible(keys);
+        // 兜底：预升级/重建后仍为 dirty 的不可见 tile，分片惰性补建，
+        // 防止任何键集合偏差导致的空白 tile 长期滞留
+        this._drain_dirty_tiles(keys);
         this._schedule_idle_shrink();
+
+        if (deferredUpgrades.length > 0) {
+            this._upgradeQueue = deferredUpgrades;
+            this._upgradeTargetDpr = targetDpr;
+            for (const info of deferredUpgrades) {
+                this._queuedUpgradeKeys.add(info.key);
+            }
+            this._upgradeRafId = requestAnimationFrame(() => this._pump_upgrade_queue());
+        }
+    }
+
+    _cancel_upgrade_queue() {
+        if (this._upgradeRafId !== null) {
+            cancelAnimationFrame(this._upgradeRafId);
+            this._upgradeRafId = null;
+        }
+        this._upgradeQueue = null;
+        this._upgradeTargetDpr = null;
+        this._queuedUpgradeKeys.clear();
+    }
+
+    /** 分帧消费预升级队列，每帧至多 TILE_UPGRADE_BATCH 块 */
+    _pump_upgrade_queue() {
+        this._upgradeRafId = null;
+        const targetDpr = this._upgradeTargetDpr;
+        if (!this._upgradeQueue || this._upgradeQueue.length === 0 || targetDpr == null || this._destroyed) {
+            this._cancel_upgrade_queue();
+            return;
+        }
+        let budget = TILE_UPGRADE_BATCH;
+        while (budget-- > 0 && this._upgradeQueue.length > 0) {
+            const info = this._upgradeQueue.shift();
+            this._queuedUpgradeKeys.delete(info.key);
+            // 目标期间可能被 idle-shrink 降低过；仅升级仍低于目标的瓦片
+            if (info.dpr < targetDpr && info.ctx && info.canvas) {
+                this._recreate_tile(info, targetDpr);
+                this.rebuild_tile(info);
+            }
+        }
+        if (this._upgradeQueue.length > 0 && !this._destroyed) {
+            this._upgradeRafId = requestAnimationFrame(() => this._pump_upgrade_queue());
+        } else {
+            this._cancel_upgrade_queue();
+        }
+    }
+
+    /**
+     * 分片重建残留 dirty 的不可见 tile（idle 回调，每片至多 4 块）
+     * @param {Set<string>} justHandledKeys - 本轮已处理的键，避免重复
+     */
+    _drain_dirty_tiles(justHandledKeys) {
+        const remaining = [];
+        for (const info of this.tileInfos) {
+            if (this.dirty.has(info.key) && !justHandledKeys.has(info.key)) {
+                remaining.push(info);
+            }
+        }
+        if (remaining.length === 0) return;
+
+        this._cancel_dirty_drain();
+        const slice = () => {
+            this._dirtyDrainIdleId = null;
+            if (this._destroyed) return;
+            this._build_quadtree();
+            let budget = 4;
+            while (budget-- > 0 && remaining.length) {
+                const info = remaining.shift();
+                if (this.dirty.has(info.key) && info.ctx && info.canvas) this.rebuild_tile(info);
+            }
+            if (remaining.length > 0 && !this._destroyed) {
+                if (window.requestIdleCallback) {
+                    this._dirtyDrainIdleId = window.requestIdleCallback(slice, { timeout: 800 });
+                } else {
+                    this._dirtyDrainIdleId = setTimeout(slice, 30);
+                }
+            }
+        };
+        if (window.requestIdleCallback) {
+            this._dirtyDrainIdleId = window.requestIdleCallback(slice, { timeout: 800 });
+        } else {
+            this._dirtyDrainIdleId = setTimeout(slice, 30);
+        }
+    }
+
+    _cancel_dirty_drain() {
+        if (this._dirtyDrainIdleId !== null && this._dirtyDrainIdleId !== undefined) {
+            if (window.cancelIdleCallback) window.cancelIdleCallback(this._dirtyDrainIdleId);
+            else clearTimeout(this._dirtyDrainIdleId);
+            this._dirtyDrainIdleId = null;
+        }
     }
 
     init_tiles(wrapper, initialScale) {
@@ -448,8 +594,8 @@ class TileRenderer {
         }
 
         const strokes = this._get_stroke_history();
+        let relevant = null;
         if (strokes.length > 0) {
-            let relevant;
             if (this._quadtree) {
                 relevant = Array.from(this._quadtree.query({
                     x: rect.x, y: rect.y,
@@ -487,6 +633,9 @@ class TileRenderer {
 
         ctx.restore();
         this.dirty.delete(info.key);
+        if (this.diag_hook) {
+            this.diag_hook('rebuild', { key: info.key, n: relevant ? relevant.length : 0, hist: strokes.length });
+        }
     }
 
     rebuild_visible(keys) {
@@ -526,6 +675,7 @@ class TileRenderer {
     }
 
     destroy() {
+        this._destroyed = true;
         this._cancel_pending_rebuild();
         this._cancel_dpr_settle();
         this._cancel_idle_shrink();
@@ -549,7 +699,13 @@ class TileRenderer {
     }
 
     add_stroke(stroke) {
-        if (!stroke || !stroke.points || stroke.points.length < 2) return;
+        // 允许单点笔画（点击产生的圆点）：stroke-renderer 以零长线段+圆头绘制，
+        // 此前 points.length<2 直接返回会导致点在实时预览可见、翻页后消失
+        if (!stroke || !stroke.points || stroke.points.length < 1) return;
+        // 关键：递增版本号。否则 _get_or_build_stroke_index 的缓存不会感知新笔画，
+        // tile 重建排序时新笔画索引为 undefined（NaN 比较），重放顺序错乱——
+        // 多次绘制/擦除后早前的批注会在重建时被错误覆盖而"消失"
+        this._strokeVersion++;
         if (this._quadtree) {
             this._quadtree.insert(stroke);
         }
