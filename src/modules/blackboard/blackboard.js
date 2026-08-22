@@ -4,7 +4,7 @@
  * 使用 DrawingEngine 管理绘制管线
  */
 
-import { InputSource, PinchZoomSource, PinchZoomSourceV2, VirtualDeviceType } from '../gesture/index.js';
+import { InputSource, PinchZoomSourceV2, VirtualDeviceType, ZoomWallDamper } from '../gesture/index.js';
 import { BlackboardPageManager } from './blackboard-page.js';
 import { DrawingEngine } from './drawing-engine.js';
 import { history_state, history_validate_undo, history_reset_executing } from '../history.js';
@@ -757,7 +757,7 @@ class BlackboardManager {
             this.bb_wrapper.classList.remove('smooth-transform');
             this.bb_wrapper.style.willChange = '';
         }
-        // 清理 gesture 模块 — 仅重置状态，不销毁 InputSource/PinchZoomSource。
+        // 清理 gesture 模块 — 仅重置状态，不销毁 InputSource/PinchZoomSourceV2。
         // 两者保持附着但不会收到事件（面板关闭时 transform 移出屏幕）。
         // 防止下次 open() 时手势事件丢失导致无法批注/缩放。
         if (this._input_source) {
@@ -767,7 +767,7 @@ class BlackboardManager {
             this._input_source.detach();
             this._input_source.attach();
         }
-        // 重置 PinchZoomSource 内部状态（不移除监听）
+        // 重置捏合缩放内部状态（不移除监听）
         if (this._pinch_source) {
             this._pinch_source._isPinching = false;
         }
@@ -845,10 +845,13 @@ class BlackboardManager {
             this._cancel_momentum();
             this.bb_state.cached_inv_scale = 1 / this._fetch_safe_scale();
 
+            // 起笔即收纳笔工具面板（与阅读器一致；触屏/手写笔无兼容 mousedown）
+            window.main_hide_pen_control_panel?.();
+
             // 缩放中不处理任何状态切换，直到手势结束重置
             if (this.bb_state.is_zooming) return;
 
-            // 多指触摸时跳过首指以外的输入（留给 PinchZoomSource 处理）
+            // 多指触摸时跳过首指以外的输入（留给 PinchZoomSourceV2 处理）
             if (input.activeCount > 1) return;
 
             // 拖拽平移（move 模式）
@@ -954,9 +957,8 @@ class BlackboardManager {
             }
         });
 
-        // ====== 两指捏合缩放 ======
-        const bbUseV2 = window.DRAW_CONFIG?.pinchZoomV2 === true;
-        const pinch = bbUseV2 ? new PinchZoomSourceV2(input) : new PinchZoomSource(input);
+        // ====== 两指捏合缩放（V2 增量式算法，中点锚点） ======
+        const pinch = new PinchZoomSourceV2(input);
         this._pinch_source = pinch;
 
         pinch.onPinchStarted = (ev) => {
@@ -990,6 +992,14 @@ class BlackboardManager {
             s.is_scaling = true;
             s.start_scale = s.scale;
 
+            // 缩放边界阻尼器：消除贴墙时的触控噪声"呼吸"抖动
+            this._bb_zoom_damper ??= new ZoomWallDamper();
+            this._bb_zoom_damper.reset(
+                s.scale,
+                window.DRAW_CONFIG?.minScale || 0.5,
+                window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3
+            );
+
             if (ev.finger0) {
                 s.start_finger0_cx = (ev.finger0.x - s.canvas_x) / s.scale;
                 s.start_finger0_cy = (ev.finger0.y - s.canvas_y) / s.scale;
@@ -1011,31 +1021,10 @@ class BlackboardManager {
             const s = this.bb_state;
             if (!s.is_scaling) return;
 
-            const max_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3;
-            const min_scale = window.DRAW_CONFIG?.minScale || 0.5;
-
-            if (bbUseV2) {
-                // V2: 增量式缩放 + 中点锚点
-                const newScale = s.scale * ev.scale;
-                s.scale = Math.max(min_scale, Math.min(max_scale, newScale));
-                s.canvas_x = ev.centerX - s.start_mid_cx * s.scale;
-                s.canvas_y = ev.centerY - s.start_mid_cy * s.scale;
-            } else {
-                const unclamped_s = s.start_scale * ev.scale;
-                s.scale = Math.max(min_scale, Math.min(max_scale, unclamped_s));
-
-                if (s.scale !== unclamped_s) {
-                    const fdx = ev.finger0.x - ev.finger1.x;
-                    const fdy = ev.finger0.y - ev.finger1.y;
-                    this._pinch_source.resetScaleReference(Math.sqrt(fdx * fdx + fdy * fdy));
-                    s.start_finger0_cx = (ev.finger0.x - s.canvas_x) / s.scale;
-                    s.start_finger0_cy = (ev.finger0.y - s.canvas_y) / s.scale;
-                    s.start_scale = s.scale;
-                }
-
-                s.canvas_x = ev.finger0.x - s.start_finger0_cx * s.scale;
-                s.canvas_y = ev.finger0.y - s.start_finger0_cy * s.scale;
-            }
+            // V2: 增量式缩放 + 中点锚点 + 边界阻尼（贴墙吸收噪声，累计越界 2% 才脱离）
+            s.scale = this._bb_zoom_damper.update(ev.scale);
+            s.canvas_x = ev.centerX - s.start_mid_cx * s.scale;
+            s.canvas_y = ev.centerY - s.start_mid_cy * s.scale;
 
             this._update_move_bound();
             this._update_canvas_position();
