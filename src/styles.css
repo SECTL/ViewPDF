@@ -627,56 +627,99 @@ body {
 .titlebar-tabs {
     display: flex;
     align-items: center;
-    gap: 2px;
-    margin-left: 16px;
+    gap: 6px;
+    margin-left: 12px;
     height: 100%;
+    min-width: 0;
+    padding: 0 8px;
     -webkit-app-region: no-drag;
-    overflow: hidden;
+    /* 标签过多时允许横向滚动（配合滚轮映射），不再直接裁剪 */
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* 滚动条默认隐形，悬停标签栏时显现（Firefox 同理） */
+    scrollbar-width: none;
+}
+
+.titlebar-tabs:hover {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+
+.titlebar-tabs::-webkit-scrollbar {
+    height: 4px;
+}
+
+.titlebar-tabs::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.titlebar-tabs::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 2px;
+    transition: background 0.15s ease;
+}
+
+.titlebar-tabs:hover::-webkit-scrollbar-thumb {
+    background: rgba(128, 128, 128, 0.35);
+}
+
+/* 溢出时的两侧渐隐提示（由 JS 按滚动位置切换 fade-left / fade-right） */
+.titlebar-tabs.fade-right {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 18px), transparent);
+}
+
+.titlebar-tabs.fade-left {
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 18px);
+    mask-image: linear-gradient(90deg, transparent, #000 18px);
+}
+
+.titlebar-tabs.fade-left.fade-right {
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 18px, #000 calc(100% - 18px), transparent);
 }
 
 .titlebar-tab {
-    display: flex;
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 12px;
+    gap: 7px;
+    padding: 0 9px 0 12px;
     height: 28px;
-    border-radius: 6px 6px 0 0;
-    border: none;
-    border-bottom: 2px solid transparent;
+    border: 1px solid transparent;
+    border-radius: var(--rounded-md);
     background: transparent;
     color: var(--color-muted);
     font-size: 12px;
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
     flex-shrink: 1;
-    min-width: 0;
-    max-width: 160px;
+    /* 保底可读宽度：避免标签被压缩到不可见 */
+    min-width: 90px;
+    max-width: 180px;
     -webkit-app-region: no-drag;
-    position: relative;
 }
 
 .titlebar-tab:hover {
-    background: rgba(128, 128, 128, 0.08);
+    background: rgba(128, 128, 128, 0.10);
     color: var(--color-ink);
+}
+
+.titlebar-tab:active {
+    transform: translateY(0.5px) scale(0.995);
+}
+
+.titlebar-tab:focus-visible {
+    outline: 2px solid var(--tab-accent, var(--color-brand-accent));
+    outline-offset: -2px;
 }
 
 .titlebar-tab.active {
-    background: var(--color-canvas);
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
     color: var(--color-ink);
     font-weight: 600;
-    border-bottom-color: var(--color-primary, #3b82f6);
-}
-
-.titlebar-tab:not(:last-child)::after {
-    content: '';
-    position: absolute;
-    right: -1px;
-    top: 8px;
-    bottom: 8px;
-    width: 1px;
-    background: var(--color-hairline);
-    opacity: 0.6;
 }
 
 .titlebar-tab .tab-icon {
@@ -689,6 +732,7 @@ body {
 .titlebar-tab .tab-label {
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .titlebar-tab .tab-close {
@@ -697,44 +741,123 @@ body {
     justify-content: center;
     width: 18px;
     height: 18px;
-    border-radius: 4px;
+    /* 始终贴标签右缘：短文本标签（如"设置"）被 min-width 撑开时，
+       关闭按钮不再悬停在标签中部，与长文件名标签保持一致 */
+    margin-left: auto;
+    margin-right: -3px;
+    border-radius: var(--rounded-xs);
     border: none;
     background: transparent;
     color: var(--color-muted);
     cursor: pointer;
     padding: 0;
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1;
     flex-shrink: 0;
     opacity: 0;
-    transition: opacity 0.15s ease, background 0.15s ease;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.1s ease;
 }
 
-.titlebar-tab:hover .tab-close {
-    opacity: 0.6;
+/* 悬停/激活/键盘聚焦时显示关闭按钮 */
+.titlebar-tab:hover .tab-close,
+.titlebar-tab.active .tab-close,
+.titlebar-tab:focus-within .tab-close {
+    opacity: 0.75;
 }
 
 .titlebar-tab .tab-close:hover {
-    background: rgba(128, 128, 128, 0.15);
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--color-ink);
+    opacity: 1;
 }
 
+.titlebar-tab .tab-close:active {
+    transform: scale(0.88);
+}
+
+/* 拖拽排序指示：贴边品牌色竖线 */
 .titlebar-tab.drag-over-left {
-    box-shadow: inset 2px 0 0 0 var(--color-primary, #3b82f6);
+    box-shadow: inset 2px 0 0 0 var(--tab-accent, var(--color-brand-accent));
 }
 
 .titlebar-tab.drag-over-right {
-    box-shadow: inset -2px 0 0 0 var(--color-primary, #3b82f6);
+    box-shadow: inset -2px 0 0 0 var(--tab-accent, var(--color-brand-accent));
 }
 
 .titlebar-tab.dragging {
-    opacity: 0.5;
+    opacity: 0.45;
 }
 
 .titlebar-tab.tab-drag-clone {
-    opacity: 0.85;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    background: var(--color-canvas);
-    border-bottom-color: transparent;
+    opacity: 0.95;
+    box-shadow: var(--shadow-md), 0 0 0 1px var(--color-hairline);
+    background: var(--color-surface-elevated, var(--color-canvas));
+    border-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .titlebar-tab,
+    .titlebar-tab .tab-close,
+    .titlebar-tabs::-webkit-scrollbar-thumb {
+        transition: none;
+    }
+}
+
+/* ===== 标签右键菜单 ===== */
+.tab-context-menu {
+    position: fixed;
+    z-index: 10000;
+    min-width: 160px;
+    padding: 4px;
+    background: var(--color-canvas, #fff);
+    border: 1px solid var(--color-hairline, rgba(0, 0, 0, 0.12));
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    display: flex;
+    flex-direction: column;
+}
+
+.tab-context-menu-item {
+    border: none;
+    background: transparent;
+    text-align: left;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--color-ink, #222);
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.tab-context-menu-item:hover {
+    background: rgba(128, 128, 128, 0.14);
+}
+
+/* ===== 阅读器内轻量提示（渲染自愈等） ===== */
+.dr-reader-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 56px;
+    transform: translateX(-50%) translateY(8px);
+    z-index: 9000;
+    max-width: 70vw;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: rgba(30, 30, 32, 0.88);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.dr-reader-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
 }
 
 .titlebar-btn {
