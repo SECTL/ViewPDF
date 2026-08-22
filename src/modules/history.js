@@ -173,15 +173,23 @@ const _history_pending_queue = [];
 /**
  * 执行命令并压入 undo 栈，清空 redo 栈
  * 当 undo 栈超过硬性上限（MAX_HISTORY_STEPS * 2）时强制裁剪
+ * 若正在执行其他命令，命令会进入待执行队列；此时返回的 Promise
+ * 会在该命令真正执行完成后才 resolve，保证调用方可以依赖
+ * "命令已生效"这一事实再进行后续操作（如将笔画烘焙进 tile）
  * @param {Command} command - 待执行命令
  * @param {boolean} [needRedraw=true] - 是否需要重绘
+ * @returns {Promise<void>}
  */
-export async function history_execute_command(command, needRedraw = true) {
+export function history_execute_command(command, needRedraw = true) {
     if (history_state.is_executing) {
-        _history_pending_queue.push({ command, needRedraw });
-        return;
+        return new Promise((resolve, reject) => {
+            _history_pending_queue.push({ command, needRedraw, resolve, reject });
+        });
     }
+    return _history_run_command(command, needRedraw);
+}
 
+async function _history_run_command(command, needRedraw) {
     history_state.is_executing = true;
     try {
         await command.execute(needRedraw);
@@ -202,7 +210,12 @@ export async function history_execute_command(command, needRedraw = true) {
 
     if (_history_pending_queue.length > 0) {
         const next = _history_pending_queue.shift();
-        await history_execute_command(next.command, next.needRedraw);
+        try {
+            await _history_run_command(next.command, next.needRedraw);
+            next.resolve();
+        } catch (err) {
+            next.reject(err);
+        }
     }
 }
 
