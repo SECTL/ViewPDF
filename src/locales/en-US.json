@@ -60,6 +60,17 @@
     "home": "Home",
     "close": "Close"
   },
+  "tabs": {
+    "document": "Document",
+    "close": "Close tab",
+    "closeOthers": "Close other tabs",
+    "closeRight": "Close tabs to the right"
+  },
+  "reader": {
+    "recovering": "Rendering issue detected, recovering…",
+    "recovered": "Recovered",
+    "recoverFailed": "Page rendering error. Please close and reopen this document."
+  },
   "settings": {
     "title": "Settings",
     "appSettings": "App",
@@ -340,8 +351,6 @@
     "frameDelta": "Max Gesture Delta Per Frame",
     "tailDuration": "Pen Tail Duration",
     "ellipseStroke": "Ellipse Stroke Rendering",
-    "pinchZoomV2": "Pinch Zoom Algorithm V2",
-    "pinchZoomV2Hint": "Incremental scaling + midpoint anchor (restart required)",
     "experimental": "Experimental",
     "restartRequired": "Restart required",
     "overlayDpr": "Overlay DPR (Draw Preview)",
