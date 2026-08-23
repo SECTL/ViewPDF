@@ -1287,7 +1287,10 @@ fn config_validate_and_merge(
         
         for (key, value) in existing_obj {
             if let Some(default_val) = defaults_obj.get(key) {
-                if json_type_name(value) == json_type_name(default_val) {
+                // 默认值为 null 的字段（如 lastOpenDoc）是可空字段，运行期可为任意类型
+                if default_val.is_null()
+                    || json_type_name(value) == json_type_name(default_val)
+                {
                     if !config_sanitize_value(key, value) {
                         log::warn!(
                             "配置项 '{}' 数值异常 ({}), 已恢复默认值",
@@ -1462,7 +1465,10 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
                         if let Some(new_obj) = settings.as_object() {
                             for (key, value) in new_obj {
                                 if let Some(default_val) = default_config.get(key) {
-                                    if json_type_name(value) == json_type_name(default_val) {
+                                    // 默认值为 null 的字段（如 lastOpenDoc）是可空字段，运行期可为任意类型
+                                    if default_val.is_null()
+                                        || json_type_name(value) == json_type_name(default_val)
+                                    {
                                         obj.insert(key.clone(), value.clone());
                                     } else {
                                         log::warn!(
