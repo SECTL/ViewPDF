@@ -233,7 +233,7 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, filter 0.12s ease;
     text-align: left;
     font-family: inherit;
 }
@@ -286,7 +286,7 @@ body {
     border: 1px solid var(--color-hairline);
     border-radius: var(--rounded-pill);
     background: var(--color-surface-strong);
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .search-field:focus-within {
@@ -368,7 +368,7 @@ body {
     color: var(--color-muted);
     font: 500 12px/1 var(--font-body);
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, filter 0.12s ease;
     white-space: nowrap;
     font-family: inherit;
 }
@@ -403,7 +403,7 @@ body {
     opacity: 0;
     visibility: hidden;
     transform: translateY(-4px) scale(0.98);
-    transition: all 0.12s ease;
+    transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
 }
 
 .dropdown-menu.open {
@@ -464,7 +464,7 @@ body {
     background: transparent; border: none;
     color: var(--color-muted);
     font-size: 14px; cursor: pointer;
-    transition: all 0.12s;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, filter 0.12s ease;
     font-family: inherit;
 }
 
@@ -546,7 +546,7 @@ body {
     border: 1px solid var(--color-hairline);
     font: 500 13px/1 var(--font-body);
     cursor: pointer;
-    transition: all 0.15s;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-secondary:hover { background: var(--color-hairline); }
@@ -636,12 +636,12 @@ body {
     /* 标签过多时允许横向滚动（配合滚轮映射），不再直接裁剪 */
     overflow-x: auto;
     overflow-y: hidden;
-    /* 滚动条默认隐形，悬停标签栏时显现（Firefox 同理） */
-    scrollbar-width: none;
+    /* 滚动条常驻占位、默认透明，悬停仅变色（避免 none↔thin 切换引起布局抖动） */
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
 }
 
 .titlebar-tabs:hover {
-    scrollbar-width: thin;
     scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
 }
 
@@ -1125,7 +1125,7 @@ body {
     color: var(--color-muted);
     cursor: pointer;
     font-size: 12px;
-    transition: all 0.1s;
+    transition: background-color 0.1s ease, border-color 0.1s ease, color 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease, transform 0.1s ease, filter 0.1s ease;
     opacity: 0.4;
 }
 
@@ -1548,7 +1548,7 @@ body {
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .error-btn-close {
@@ -1617,7 +1617,7 @@ body {
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-decoration: none;
     white-space: nowrap;
 }
@@ -1649,7 +1649,7 @@ body {
     border: 1px solid var(--color-hairline);
     border-radius: 50%;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-icon:hover {
@@ -1746,7 +1746,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     white-space: nowrap;
 }
 
@@ -1775,7 +1775,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     white-space: nowrap;
 }
 
@@ -1797,7 +1797,7 @@ body {
     border-radius: var(--rounded-md);
     font-size: 18px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-back:hover {
@@ -1839,7 +1839,7 @@ body {
     border-radius: var(--rounded-sm);
     font-size: 20px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-close:hover {
@@ -1862,7 +1862,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-align: left;
 }
 
@@ -1912,7 +1912,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-clear-cache:hover {
@@ -1933,7 +1933,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-decoration: none;
 }
 
@@ -1958,7 +1958,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     border: none;
 }
 
@@ -2003,7 +2003,7 @@ body {
     right: 0;
     bottom: 0;
     background-color: var(--color-surface-strong);
-    transition: 0.15s ease;
+    transition: background-color 0.15s ease;
     border-radius: var(--rounded-pill);
 }
 
@@ -2015,7 +2015,7 @@ body {
     left: 3px;
     bottom: 3px;
     background-color: var(--color-ink);
-    transition: 0.15s ease;
+    transition: transform 0.15s ease;
     border-radius: 50%;
     box-shadow: var(--shadow-sm);
 }
@@ -2319,7 +2319,7 @@ body {
     border: 2px solid transparent;
     flex-shrink: 0;
     width: 100%;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .dr-page-sidebar-item:hover {
