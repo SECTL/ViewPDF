@@ -83,6 +83,17 @@ class RealtimeBatchDrawManager {
     }
 
     /**
+     * 注入视口变换提供器。
+     * 返回内容原点 (0,0) 在屏幕上的位置与缩放：{ scale, originX, originY }。
+     * overlay 的 setTransform 用 originX/originY 作平移量，
+     * 自动包含工具栏高度、容器 padding 等全部基础偏移。
+     * 未提供时回退到 window.state 的 canvasX/canvasY（旧约定）。
+     */
+    set_transform_provider(fn) {
+        this._transform_provider = fn;
+    }
+
+    /**
      * 计算覆盖层 DPR。
      * 覆盖层是屏幕空间画布（position: fixed 覆盖视口），DPR 超过 devicePixelRatio
      * 对显示无增益，仅浪费显存。因此以 display_dpr 作为硬上限。
@@ -188,21 +199,38 @@ class RealtimeBatchDrawManager {
         if (this._overlayCanvas) this._overlayCanvas.style.visibility = '';
     }
 
+    _fetch_view_transform() {
+        if (this._transform_provider) {
+            const t = this._transform_provider();
+            return {
+                scale: t?.scale || 1,
+                originX: t?.originX || 0,
+                originY: t?.originY || 0
+            };
+        }
+        return {
+            scale: window.state.scale || 1,
+            originX: window.state.canvasX || 0,
+            originY: window.state.canvasY || 0
+        };
+    }
+
     _sync_overlay_transform() {
         if (!this._overlayCtx) return;
         const dpr = this._overlayDpr;
-        const scale = window.state.scale || 1;
-        const canvasX = window.state.canvasX || 0;
-        const canvasY = window.state.canvasY || 0;
+        const { scale, originX, originY } = this._fetch_view_transform();
         if (this._overlayTransformScale === scale &&
-            this._overlayTransformX === canvasX &&
-            this._overlayTransformY === canvasY) {
+            this._overlayTransformX === originX &&
+            this._overlayTransformY === originY) {
             return;
         }
         this._overlayTransformScale = scale;
-        this._overlayTransformX = canvasX;
-        this._overlayTransformY = canvasY;
-        this._overlayCtx.setTransform(scale * dpr, 0, 0, scale * dpr, canvasX * dpr, canvasY * dpr);
+        this._overlayTransformX = originX;
+        this._overlayTransformY = originY;
+        this._overlayCtx.setTransform(
+            scale * dpr, 0, 0, scale * dpr,
+            originX * dpr, originY * dpr
+        );
     }
 
     clear_overlay() {
@@ -210,10 +238,10 @@ class RealtimeBatchDrawManager {
         this._overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
 
         if (this._dirtyBoundsCanvas) {
-            const s = window.state.scale || 1;
+            const { scale: s, originX, originY } = this._fetch_view_transform();
             const dpr = this._overlayDpr;
-            const ox = (window.state.canvasX || 0) * dpr;
-            const oy = (window.state.canvasY || 0) * dpr;
+            const ox = originX * dpr;
+            const oy = originY * dpr;
             const x = Math.floor(this._dirtyBoundsCanvas.x * s * dpr + ox - 1);
             const y = Math.floor(this._dirtyBoundsCanvas.y * s * dpr + oy - 1);
             const w = Math.ceil((this._dirtyBoundsCanvas.x2 - this._dirtyBoundsCanvas.x) * s * dpr + 2);

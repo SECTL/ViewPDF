@@ -91,22 +91,30 @@ export class DrawingEngine {
         }
     }
 
+    /**
+     * 预览层变换同步（黑板）。
+     * 锚定 bb_wrapper 的实时 gBCR——自动包含工具栏、padding、平移、缩放。
+     * 禁止用 coord.get_origin() 等状态值推算：它们可能与实际视觉位置脱节
+     * （曾导致预览笔迹整体偏移 ~112px，抬笔后提交内容又正确，表现为
+     * "绘制中位置错误、完成后正常"）。
+     */
     _sync_overlay_transform() {
-        if (!this.batch_draw?._overlayCtx) return;
-        const ctx = this.batch_draw._overlayCtx;
-        const s = this.coord.get_scale();
-        const origin = this.coord.get_origin();
-        const dpr = this.batch_draw._overlayDpr || 1;
-        const scale = s || 1;
-        const ox = origin?.x || 0;
-        const oy = origin?.y || 0;
-        if (this.batch_draw._overlayTransformScale === scale &&
-            this.batch_draw._overlayTransformX === ox &&
-            this.batch_draw._overlayTransformY === oy) return;
-        this.batch_draw._overlayTransformScale = scale;
-        this.batch_draw._overlayTransformX = ox;
-        this.batch_draw._overlayTransformY = oy;
-        ctx.setTransform(scale * dpr, 0, 0, scale * dpr, ox * dpr, oy * dpr);
+        const bd = this.batch_draw;
+        if (!bd?._overlayCtx) return;
+        const r = this.coord?.get_rect?.();
+        if (!r) return;
+        const s = this._fetch_safe_scale() || 1;
+        const dpr = bd._overlayDpr || 1;
+        if (bd._overlayTransformScale === s &&
+            bd._overlayTransformX === r.left &&
+            bd._overlayTransformY === r.top) return;
+        bd._overlayTransformScale = s;
+        bd._overlayTransformX = r.left;
+        bd._overlayTransformY = r.top;
+        bd._overlayCtx.setTransform(
+            s * dpr, 0, 0, s * dpr,
+            r.left * dpr, r.top * dpr
+        );
     }
 
     init_history(on_state_change) {

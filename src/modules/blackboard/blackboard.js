@@ -80,6 +80,7 @@ class BlackboardManager {
 
         // 惯性（动量）
         this._momentum_raf = null;
+        this._bb_resize_timer = null;
         this._gesture_vx = 0;
         this._gesture_vy = 0;
         this._last_canvas_x = 0;
@@ -574,8 +575,23 @@ class BlackboardManager {
         this._cached_dr_toolbar = document.getElementById('drToolbar');
         this._cached_dr_toolbar_display = null;
 
-        // resize 时失效 container rect 缓存，避免下一次 _handle_wheel 读到过期 rect
-        this._resize_handler = () => this._invalidate_cached_container_rect();
+        // resize 时失效 container rect 缓存，避免下一次 _handle_wheel 读到过期 rect；
+        // 同时同步 overlay/画布尺寸——否则窗口变化后 overlay 仍用初始尺寸，
+        // 越出旧尺寸区域的实时笔迹会被裁剪不可见（跨块/靠边绘制丢失）
+        this._resize_handler = () => {
+            this._invalidate_cached_container_rect();
+            if (this._bb_resize_timer !== null) clearTimeout(this._bb_resize_timer);
+            this._bb_resize_timer = setTimeout(() => {
+                this._bb_resize_timer = null;
+                if (!this.is_open) return;
+                const p = this._el?.panel;
+                const w = Math.max(1, p?.clientWidth || window.innerWidth);
+                const h = Math.max(1, p?.clientHeight || window.innerHeight);
+                if (w !== this.screen_w || h !== this.screen_h) {
+                    this.resize(w, h);
+                }
+            }, 150);
+        };
         window.addEventListener('resize', this._resize_handler, { passive: true });
 
         this._setup_events();
@@ -612,6 +628,18 @@ class BlackboardManager {
         // batch_draw 使用覆盖层
         this.drawing_engine.init_batch_draw(this.overlay_canvas, this.overlay_ctx);
         this.drawing_engine.batch_draw._tileRenderer = this.tile_renderer;
+        // 预览层变换以"内容原点的实时屏幕位置"为锚（bb_wrapper 的 rect），
+        // 自动包含工具栏高度、容器 padding、平移与缩放——
+        // 任何基于状态值的推算都会因基础偏移/状态滞后产生笔迹偏移
+        this.drawing_engine.batch_draw.set_transform_provider(() => {
+            const r = this.bb_wrapper?.getBoundingClientRect();
+            const lt = this.bb_state.last_transform;
+            return {
+                scale: lt.scale || 1,
+                originX: r ? r.left : (lt.x || 0),
+                originY: r ? r.top : (lt.y || 0)
+            };
+        });
         // 按 DPR 调整 overlay canvas 实际像素尺寸
         const init_dpr = this.drawing_engine.batch_draw._overlayDpr || 1;
         this.overlay_canvas.width = Math.ceil(this.screen_w * init_dpr);
@@ -675,6 +703,23 @@ class BlackboardManager {
 
     async open() {
         if (this.is_open) return;
+
+        // 尺寸自检（必须在懒加载创建画布/瓦片之前）：init 时面板可能尚未完成布局，
+        // 或窗口在 init 后已调整——以面板当前实际尺寸为准校正基础字段
+        {
+            const p = this._el?.panel;
+            const w = Math.max(1, p?.clientWidth || window.innerWidth);
+            const h = Math.max(1, p?.clientHeight || window.innerHeight);
+            if (w !== this.screen_w || h !== this.screen_h) {
+                this.screen_w = w;
+                this.screen_h = h;
+                this.bb_state.canvas_w = Math.floor(w * 2);
+                this.bb_state.canvas_h = Math.floor(h * 2);
+                this.bb_state.canvas_x = -(this.bb_state.canvas_w - w) / 2;
+                this.bb_state.canvas_y = -(this.bb_state.canvas_h - h) / 2;
+                this._cached_move_bound_scale = null;
+            }
+        }
 
         // 首次打开时延迟初始化 tile_renderer / overlay / DrawingEngine 子模块
         this._lazy_init_canvas();
@@ -1440,12 +1485,49 @@ class BlackboardManager {
     }
 
     resize(screen_w, screen_h) {
+        const s = this.bb_state;
+        const old_sw = this.screen_w;
+        const old_sh = this.screen_h;
+        const old_cx = s.canvas_x;
+        const old_cy = s.canvas_y;
+        const scale = s.scale || 1;
+
         this.screen_w = screen_w;
         this.screen_h = screen_h;
 
         // 重新计算画布大小
-        this.bb_state.canvas_w = Math.floor(screen_w * 2);
-        this.bb_state.canvas_h = Math.floor(screen_h * 2);
+        s.canvas_w = Math.floor(screen_w * 2);
+        s.canvas_h = Math.floor(screen_h * 2);
+
+        // 保持视口中心对应的内容点不变：否则既有批注会因重新居中产生"位移"
+        const center_cx = (old_sw / 2 - old_cx) / scale;
+        const center_cy = (old_sh / 2 - old_cy) / scale;
+        s.canvas_x = screen_w / 2 - center_cx * scale;
+        s.canvas_y = screen_h / 2 - center_cy * scale;
+
+        // 同步包装器盒尺寸（瓦片网格已按新画布尺寸重建，盒子必须一致）
+        if (this.bb_wrapper) {
+            this.bb_wrapper.style.width = s.canvas_w + 'px';
+            this.bb_wrapper.style.height = s.canvas_h + 'px';
+        }
+
+        // 瓦片网格尺寸在构造时固定，画布尺寸变化后必须重建，
+        // 否则新区域的笔画落在网格之外（提交后不可见）
+        if (this.tile_renderer && this.bb_wrapper) {
+            const cur = this.page_manager.get_current_page();
+            this.tile_renderer.destroy();
+            this.tile_renderer = new window.TileRenderer({
+                strokeHistoryRef: cur?.stroke_history || null,
+                getVisibleRect: () => this._fetch_visible_rect(),
+                canvasW: s.canvas_w,
+                canvasH: s.canvas_h,
+                skipBaseCache: true
+            });
+            if (this.drawing_engine?.batch_draw) {
+                this.drawing_engine.batch_draw._tileRenderer = this.tile_renderer;
+            }
+            this.tile_renderer.init_tiles(this.bb_wrapper, scale);
+        }
 
         // overlay 在首次 open() 前为 null，首次 open 时才会创建
         if (this.overlay_canvas) {
@@ -1457,11 +1539,6 @@ class BlackboardManager {
             this.overlay_ctx.imageSmoothingEnabled = false;
         }
 
-        // 重新居中画布
-        const init_x = -(this.bb_state.canvas_w - screen_w) / 2;
-        const init_y = -(this.bb_state.canvas_h - screen_h) / 2;
-        this.bb_state.canvas_x = init_x;
-        this.bb_state.canvas_y = init_y;
         this._cached_move_bound_scale = null;
         this._cached_visible_rect = null;
         this._cached_visible_rect_scale = null;
@@ -1474,7 +1551,7 @@ class BlackboardManager {
         if (this.tile_renderer) {
             const page = this.page_manager.get_current_page();
             const orig_scale = window.state.scale;
-            window.state.scale = this.bb_state.scale;
+            window.state.scale = scale;
 
             window.main_reset_context_state();
             if (page) this.tile_renderer._strokeHistoryRef = page.stroke_history;
@@ -1492,6 +1569,10 @@ class BlackboardManager {
         if (this._resize_handler) {
             window.removeEventListener('resize', this._resize_handler);
             this._resize_handler = null;
+        }
+        if (this._bb_resize_timer !== null) {
+            clearTimeout(this._bb_resize_timer);
+            this._bb_resize_timer = null;
         }
         this._cached_container_rect = null;
         this._cached_titlebar = null;
