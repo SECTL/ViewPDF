@@ -1,7 +1,8 @@
 /**
  * ViewPDF 设置面板模块
  *
- * 面板标记位于 index.html 的 #settingsPanel（样式已内联于同一文件），
+ * 面板标记由 modules/settings/settings-panel.js 导出（模板字符串）、样式位于同目录 settings.css，
+ * 均由 main.js 的 settings_ensure_dom 在首次打开时懒加载注入（#settingsPanel）。
  * 本模块由 main.js 在首次打开设置面板时动态 import 并初始化。
  *
  * 功能分区：

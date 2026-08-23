@@ -40,7 +40,7 @@ Frontend lives in `src/` and is served directly (no bundler). No `package.json`.
 ## Windows
 
 - `oobe.html` — first-run setup window (960×540, no decorations).
-- Settings — in-app panel `#settingsPanel` inside `index.html` (markup + inline `<style id="settingsInlineStyle">`; global CSS selectors scoped to the panel). Logic lives in `src/modules/settings/settings.js`, dynamically imported once by `main_show_settings_window()`; cross-window sync via `settings-changed` event.
+- Settings — lazy-loaded in-app panel `#settingsPanel` (markup exported as a template string from `src/modules/settings/settings-panel.js` + styles `src/modules/settings/settings.css`; injected on first open by `settings_ensure_dom()` in `main.js`). Logic lives in `src/modules/settings/settings.js`, dynamically imported once by `main_show_settings_window()`; cross-window sync via `settings-changed` event.
 - `doc-scan/index.html` — document scanning sub-app (fullscreen, undecorated).
 
 ## i18n

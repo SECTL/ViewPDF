@@ -2578,7 +2578,45 @@ function main_save_merged_canvas() {
     main_release_offscreen_canvas(offscreen);
 }
 
-function main_show_settings_window() {
+// ===== 设置面板懒加载 =====
+// 面板标记与样式不再随 index.html 启动加载（减小初始 DOM/CSSOM 开销），
+// 首次打开时注入：<link> 样式一次 + 面板标记一次，此后常驻隐藏复用。
+let _settings_ensure_promise = null;
+
+function settings_ensure_dom() {
+    if (document.getElementById('settingsPanel')) return Promise.resolve();
+    if (_settings_ensure_promise) return _settings_ensure_promise;
+    _settings_ensure_promise = (async () => {
+        // 懒加载样式表（仅首次）
+        if (!document.getElementById('settingsLazyStyle')) {
+            const link = document.createElement('link');
+            link.id = 'settingsLazyStyle';
+            link.rel = 'stylesheet';
+            link.href = 'modules/settings/settings.css';
+            document.head.appendChild(link);
+        }
+        // 懒加载面板标记（仅首次，走 ES Module 缓存）
+        const { SETTINGS_PANEL_HTML } = await import('./modules/settings/settings-panel.js');
+        const tpl = document.createElement('template');
+        tpl.innerHTML = SETTINGS_PANEL_HTML;
+        const injected = tpl.content.firstElementChild;
+        if (!injected || injected.id !== 'settingsPanel') throw new Error('设置面板标记格式异常');
+        // 与原静态位置同级：挂在 .main-function 下（canvas / 阅读器面板的兄弟节点）
+        const host = document.querySelector('.main-function')
+            || document.querySelector('.container')
+            || document.body;
+        host.appendChild(injected);
+        // 注入前 i18n 扫描与主题图标扫描都覆盖不到该子树，这里补一次
+        window.i18n?.render_page_texts?.();
+        window.ThemeManager?.theme_load_icons?.();
+    })().catch(err => {
+        _settings_ensure_promise = null; // 失败允许下次重试
+        throw err;
+    });
+    return _settings_ensure_promise;
+}
+
+async function main_show_settings_window() {
     const panel = document.getElementById('settingsPanel');
     if (state.settingsOpen && panel?.style.display === 'flex') {
         main_close_settings();
@@ -2592,10 +2630,26 @@ function main_show_settings_window() {
     const drToolbar = document.getElementById('drToolbar');
     if (drToolbar) drToolbar.style.display = 'none';
 
-    if (!panel) return;
-    panel.style.display = 'flex';
+    main_update_tabs();
 
-    // 动态加载设置模块（样式已内联于 index.html；ES Module 缓存保证仅初始化一次）
+    try {
+        await settings_ensure_dom();
+    } catch (err) {
+        console.error('设置面板 DOM 加载失败:', err);
+        state.settingsOpen = false;
+        const st = document.getElementById('startupScreen');
+        if (st && !window.documentReaderManager?.is_open) st.style.removeProperty('display');
+        main_update_tabs();
+        return;
+    }
+
+    // 加载期间可能已被切走（切主页/打开文档）
+    if (!state.settingsOpen) return;
+    const loaded = document.getElementById('settingsPanel');
+    if (!loaded) return;
+    loaded.style.display = 'flex';
+
+    // 动态加载设置模块（ES Module 缓存保证仅初始化一次）
     import('./modules/settings/settings.js')
         .then(m => m.init_settings_panel())
         .catch(err => console.error('设置模块加载失败:', err));
