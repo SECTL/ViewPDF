@@ -630,6 +630,7 @@ class BlackboardManager {
 
         this._setup_events();
         this._setup_keyboard_events();
+        this.setup_toolbar_events();
         this._sync_page_buttons();
         this._update_page_indicator();
     }
@@ -869,6 +870,10 @@ class BlackboardManager {
         this._tiles_changed_since_snapshot = false;
 
         const panel = this._el.panel;
+        // 强制回流，提交面板的初始 translateY(-100%) 状态，
+        // 否则首次打开时 init() 创建面板与 open() 添加 active 在同一任务内，
+        // 浏览器从未绘制初始态而直接跳到 translateY(0)，无滑入动画。
+        void panel.offsetHeight;
         panel.classList.add('active');
 
         // 让出一帧：浏览器先绘制面板滑入起点，再同步建瓦片/overlay，
