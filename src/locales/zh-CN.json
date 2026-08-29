@@ -28,13 +28,13 @@
     "detectingOffice": "正在检测 Office 软件...",
     "readingFile": "正在读取文件...",
     "processingWord": "正在处理 Word 文档...",
-    "renderingPage": "正在渲染页面...",
+    "renderingPage": "正在加载页面...",
     "importingFile": "正在导入文件...",
     "processingPage": "正在处理 {current}/{total} 页",
     "readingImage": "正在读取图片 {current}/{total}...",
     "readingImages": "正在读取图片...",
     "generatingThumbnails": "正在并行生成缩略图...",
-    "rendering": "正在渲染..."
+    "rendering": "正在加载..."
   },
   "sidebar": {
     "imageList": "图片列表",

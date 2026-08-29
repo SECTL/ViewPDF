@@ -20,7 +20,12 @@ import {
     history_format_compact,
     MAX_HISTORY_STEPS
 } from './modules/history.js';
-import { DocLoader } from './modules/pdf/document_loader.js';
+import { DocLoader, get_pdf_page_info, get_pdfjs_assets_base } from './modules/pdf/document_loader.js';
+
+// PDF.js 附属资源基址（标准字体 / CMaps），随应用打包在 modules/pdf 下。
+// 不提供则 useSystemFonts:false 时标准字体（Helvetica/Times/Courier 等）页无法正确渲染，
+// 并刷出 "Ensure that the standardFontDataUrl API parameter is provided" 警告。
+const PDFJS_ASSETS_BASE = get_pdfjs_assets_base();
 import { resetContextState, updateContextState } from './modules/canvas/context-state.js';
 import { renderStrokesToContext, getPenEffectMode } from './modules/canvas/stroke-renderer.js';
 import { createHistoryCompactor } from './modules/canvas/history-compactor.js';
@@ -962,6 +967,43 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
     const fileName_lower = filePath.toLowerCase();
     const isWord = fileName_lower.endsWith('.docx') || fileName_lower.endsWith('.doc');
     
+    // 占位标签索引：autoOpen 时立即建标签并进入阅读器视图，
+    // 加载动画显示在标签（阅读器区域）内，而非盖在首页的全屏遮罩上
+    let _importIdx = -1;
+    if (autoOpen) {
+        state._loadingPaths = state._loadingPaths || new Set();
+        // 同一路径正在导入则跳过，避免重复占位标签
+        if (state._loadingPaths.has(filePath)) return;
+        const fileName = filePath.split(/[\\/]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
+        const placeholder = {
+            name: fileName,
+            pages: [],
+            is_loading: true,
+            isPdf: !isWord,
+            totalPages: 0,
+            docNumber: -1,
+            fileMd5: null,
+            filePath: filePath,
+            reloadPath: filePath,
+            _last_used: Date.now()
+        };
+        state.fileList.push(placeholder);
+        _importIdx = state.fileList.length - 1;
+        state._loadingPaths.add(filePath);
+        main_reveal_reader_view(_importIdx);
+        main_update_tabs();
+        main_update_ui_state();
+    }
+
+    // 导入期的加载指示：autoOpen 直接切入阅读器（不再显示加载层），否则退回原全屏遮罩（行为不变）
+    function main_show_loading_overlay(msg) {
+        if (_importIdx < 0) DocLoader.show_loading_overlay(msg);
+    }
+    function main_hide_loading_overlay() {
+        if (_importIdx >= 0) main_cancel_import_view(_importIdx);
+        else DocLoader.hide_loading_overlay();
+    }
+
     // 检查是否已打开
     function main_check_file_open(md5) {
         const found = state.fileList.findIndex(f => f && f.fileMd5 === md5);
@@ -1074,7 +1116,7 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             return;
         }
         
-        main_update_loading_progress(window.i18n?.format_translate('loading.renderingPage') || '正在渲染页面...');
+        main_update_loading_progress(window.i18n?.format_translate('loading.renderingPage') || '正在加载页面...');
         
         let wordPdfDoc = null;
         try {
@@ -1097,6 +1139,9 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 enableXfa: false,
                 useSystemFonts: false,
                 isEvalSupported: false,
+                standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+                cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+                cMapPacked: true,
                 // 仅报告错误级日志（getDocument 只认参数里的 verbosity，全局赋值无效），
                 // 抑制 PDF 内嵌字体触发的 "TT: undefined function" 等噪音警告
                 verbosity: pdfjsLib.VerbosityLevel?.ERRORS ?? 0
@@ -1109,9 +1154,26 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
             const docNumber = sourceIdCounters.doc++;
             
+            // 并行优化：仅读取首页真实尺寸，其余按首页估算；首屏即时渲染，剩余尺寸后台并行回填
+            const firstInfo = await get_pdf_page_info(wordPdfDoc, 1, docNumber);
+            const pages = new Array(totalPages);
+            pages[0] = firstInfo;
+            for (let i = 1; i < totalPages; i++) {
+                pages[i] = {
+                    full: null,
+                    thumbnail: null,
+                    pageNum: i + 1,
+                    sourceId: docNumber !== null ? `doc-${docNumber}-${i + 1}` : null,
+                    loaded: false,
+                    width: firstInfo.width,
+                    height: firstInfo.height,
+                    renderMode: 'pdfjs'
+                };
+            }
+
             const folder = {
                 name: fileName,
-                pages: [],
+                pages: pages,
                 isPdf: true,
                 pdfDoc: wordPdfDoc,
                 totalPages: totalPages,
@@ -1120,25 +1182,17 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 // 来源与重载信息：Word 转换产物可能被缓存清理，不做后台卸载
                 fromWord: true,
                 filePath: filePath,
+                _pages_estimated: true,
                 _last_used: Date.now()
             };
 
-            const processedPages = await main_render_pdf_pages_lazy(wordPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
-            folder.pages = processedPages;
-
-            state.fileList.push(folder);
             wordPdfDoc = null;
             
-            main_hide_loading_overlay();
-            console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
-
             // 保存到最近打开文件列表
             window.main_add_recent_file?.(filePath);
             
-            if (autoOpen && window.documentReaderManager) {
-                const fileIndex = state.fileList.length - 1;
-                window.documentReaderManager.open(fileIndex);
-            }
+            // 导入完成：填充占位标签并打开（首屏立即渲染；剩余页尺寸后台并行回填）
+            main_finish_import_view(_importIdx, folder, autoOpen);
             
             
             
@@ -1219,7 +1273,10 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             data: uint8Array,
             enableXfa: false,
             useSystemFonts: false,
-            isEvalSupported: false
+            isEvalSupported: false,
+            standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+            cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+            cMapPacked: true
         }).promise;
         fileData = null;
         uint8Array = null;
@@ -1229,9 +1286,27 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
         const docNumber = sourceIdCounters.doc++;
         
+        // 并行优化：仅读取首页真实尺寸（1 次 getPage，极快），其余页按首页尺寸估算；
+        // reader.open 立即用真实首页尺寸渲染首屏，剩余真实尺寸由 reader 在后台并行回填。
+        const firstInfo = await get_pdf_page_info(loadedPdfDoc, 1, docNumber);
+        const pages = new Array(totalPages);
+        pages[0] = firstInfo;
+        for (let i = 1; i < totalPages; i++) {
+            pages[i] = {
+                full: null,
+                thumbnail: null,
+                pageNum: i + 1,
+                sourceId: docNumber !== null ? `doc-${docNumber}-${i + 1}` : null,
+                loaded: false,
+                width: firstInfo.width,
+                height: firstInfo.height,
+                renderMode: 'pdfjs'
+            };
+        }
+
         const folder = {
             name: fileName,
-            pages: [],
+            pages: pages,
             isWord: false,
             pdfDoc: loadedPdfDoc,
             totalPages: totalPages,
@@ -1240,25 +1315,17 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             // 后台 LRU 卸载后可按此路径重新加载
             filePath: filePath,
             reloadPath: filePath,
+            _pages_estimated: true,
             _last_used: Date.now()
         };
         
-        const processedPages = await main_render_pdf_pages_lazy(loadedPdfDoc, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
-        folder.pages = processedPages;
-        
-        state.fileList.push(folder);
         loadedPdfDoc = null;
         
-        main_hide_loading_overlay();
-        console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
-
         // 保存到最近打开文件列表
         window.main_add_recent_file?.(filePath);
         
-        if (autoOpen && window.documentReaderManager) {
-            const fileIndex = state.fileList.length - 1;
-            window.documentReaderManager.open(fileIndex);
-        }
+        // 导入完成：填充占位标签并打开（首屏立即渲染；剩余页尺寸后台并行回填）
+        main_finish_import_view(_importIdx, folder, autoOpen);
     } catch (error) {
         if (loadedPdfDoc) {
             try { loadedPdfDoc.destroy(); } catch (_) {}
@@ -1624,10 +1691,69 @@ function main_update_ui_state() {
     if (startupScreen) {
         const reader = window.documentReaderManager;
         const hasOpenDoc = window.state?.fileList?.length > 0 &&
-            (reader?.is_open === true || !!reader?._switching);
+            (reader?.is_open === true || !!reader?._switching ||
+             window.state.fileList.some(f => f && f.is_loading));
         startupScreen.style.display = hasOpenDoc ? 'none' : 'flex';
     }
     main_update_tabs();
+}
+
+// ====== 导入期直接切入阅读器（替代覆盖首页的全屏遮罩）======
+// 点击打开文档时立即创建占位标签并滑入阅读器面板，直接进入阅读器视图，
+// PDF 在原位渲染（不再在阅读器内显示加载层）。导入完成后再填充占位标签并 open()。
+
+function main_reveal_reader_view(idx) {
+    const reader = window.documentReaderManager;
+    const panel = document.getElementById('documentReaderPanel');
+    if (panel && !panel.classList.contains('active')) panel.classList.add('active');
+    const startup = document.getElementById('startupScreen');
+    if (startup) startup.style.display = 'none';
+    if (reader && idx >= 0) reader._loading_index = idx;
+    // 导入期即显示阅读器内加载层（覆盖首页/解析/首屏渲染，直至首屏 DOM 渲染完成）
+    if (reader && !document.getElementById('loadingOverlay')) reader._show_reader_loading();
+}
+
+function main_cancel_import_view(idx) {
+    const reader = window.documentReaderManager;
+    const folder = (idx >= 0) ? state.fileList[idx] : null;
+    if (folder && folder.is_loading) {
+        const p = folder.filePath;
+        state.fileList.splice(idx, 1);
+        if (reader && reader.folder_index > idx) reader.folder_index--;
+        if (state._loadingPaths && p) state._loadingPaths.delete(p);
+    }
+    if (reader) {
+        reader._loading_index = null;
+        reader._hide_reader_loading();
+        // 没有其他已打开文档时才收起阅读器面板、回到首页
+        if (!reader.is_open) {
+            const panel = document.getElementById('documentReaderPanel');
+            if (panel) panel.classList.remove('active');
+        }
+    }
+    main_update_tabs();
+    main_update_ui_state();
+}
+
+function main_finish_import_view(idx, folder, autoOpen) {
+    const reader = window.documentReaderManager;
+    if (idx >= 0 && state.fileList[idx]) {
+        // 导入完成：用真实数据填充占位标签，再打开（避免重复标签）
+        const ph = state.fileList[idx];
+        Object.assign(ph, folder);
+        ph.is_loading = false;
+        if (state._loadingPaths && ph.filePath) state._loadingPaths.delete(ph.filePath);
+        if (reader) {
+            reader._loading_index = null;
+            reader.open(idx);
+        }
+    } else {
+        // 非 autoOpen：沿用原行为（仅入列，autoOpen 才打开）；
+        // 退回全屏遮罩时必须在此收起，否则遮罩残留
+        DocLoader.hide_loading_overlay();
+        state.fileList.push(folder);
+        if (autoOpen && reader) reader.open(state.fileList.length - 1);
+    }
 }
 
 // ====== 标签栏交互增强（快捷键 / 中键 / 右键菜单 / 横向滚轮） ======
@@ -1860,10 +1986,15 @@ function main_update_tabs() {
         tab.dataset.tabType = 'doc';
         // 防御性判断：仅在阅读器打开或正在切往该标签时高亮，
         // 否则 folder_index 残留时会出现主页与文档标签同时高亮；
-        // 切换进行中也高亮目标标签，保证大文档加载期间有明确的视觉反馈
+        // 切换进行中也高亮目标标签，保证大文档加载期间有明确的视觉反馈；
+        // 导入占位标签（is_loading）同样高亮，加载动画期间标签即处于激活态
         const reader_mgr = window.documentReaderManager;
-        if (reader_mgr && (reader_mgr.is_open === true || !!reader_mgr._switching) &&
-            reader_mgr.folder_index === index && !settingsVisible) {
+        const isActiveDoc = reader_mgr && !settingsVisible &&
+            (reader_mgr.is_open === true || !!reader_mgr._switching ||
+             reader_mgr._loading_index === index) &&
+            reader_mgr.folder_index === index;
+        const isLoadingThis = reader_mgr && reader_mgr._loading_index === index && !settingsVisible;
+        if (isActiveDoc || isLoadingThis) {
             tab.classList.add('active');
         }
 
@@ -2082,6 +2213,8 @@ async function main_switch_to_tab(index) {
     if (state.settingsOpen) main_hide_settings();
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
+    // 导入占位标签尚未就绪，忽略切换/点击（避免打开空页）
+    if (fileList[index]?.is_loading) return;
     const reader = window.documentReaderManager;
     if (!reader) return;
     if (reader.is_open && reader.folder_index === index) {
@@ -2093,7 +2226,7 @@ async function main_switch_to_tab(index) {
     reader._switching = (reader._switching || 0) + 1;
     main_update_tabs();
     try {
-        await reader.open(index);
+        await reader.switch_to(index);
     } finally {
         reader._switching = Math.max(0, (reader._switching || 0) - 1);
     }
@@ -2104,6 +2237,8 @@ async function main_switch_to_tab(index) {
 async function main_close_tab(index) {
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
+    // 导入中的占位标签不允许关闭（后台导入仍在写入该标签，关闭会导致索引错位/数据串写）
+    if (fileList[index]?.is_loading) return;
     const reader = window.documentReaderManager;
     // 正在打开的目标标签不允许此时关闭：open() 尚未完成，
     // 提前移除会 revoke 其页面 blob URL 并使索引错位、批注缓存串写
@@ -2118,6 +2253,9 @@ async function main_close_tab(index) {
     }
     const folder = fileList[index];
     if (state.fileList[index] !== folder) return;
+    // 视图常驻：若关闭的是非活动（已 detach 保活）标签，显式丢弃其 detached DOM，
+    // 释放 GPU 内存，避免 _tab_views 按 folder 对象持有引用导致泄漏
+    if (reader?.discard_tab_view) reader.discard_tab_view(folder);
     if (folder?.docNumber !== undefined) {
         main_delete_pdf_blob_urls(folder.docNumber);
     }
@@ -3010,7 +3148,10 @@ async function main_ensure_folder_doc(folder) {
             data: data,
             enableXfa: false,
             useSystemFonts: false,
-            isEvalSupported: false
+            isEvalSupported: false,
+            standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+            cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+            cMapPacked: true
         }).promise;
         folder.pdfDoc = doc;
         folder.totalPages = doc.numPages;

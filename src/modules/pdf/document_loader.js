@@ -19,6 +19,21 @@ export function init_pdfjs() {
 }
 
 /**
+ * 计算 PDF.js 附属资源（标准字体 / CMaps）的基 URL。
+ * 基于本模块自身路径推导，与 workerSrc 的加载基准一致，且对文档子路径鲁棒。
+ * @returns {string} 以 "/" 结尾的基 URL
+ */
+export function get_pdfjs_assets_base() {
+    try {
+        const base = new URL('./', import.meta.url).href;
+        return base.endsWith('/') ? base : base + '/';
+    } catch (_) {
+        // import.meta.url 不可用时回退到与 workerSrc 相同的相对目录
+        return 'modules/pdf/';
+    }
+}
+
+/**
  * 等待 PDF.js 库加载完成
  * @param {number} max_wait - 最大等待毫秒数
  * @returns {Promise<boolean>} 是否加载成功
