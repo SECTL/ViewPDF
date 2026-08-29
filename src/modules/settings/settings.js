@@ -1837,9 +1837,23 @@ async function initSettings() {
             _updateResult = null;
             _upd.status.innerHTML = '';
             _upd.banner.className = 'update-banner banner-error';
-            _upd.banner.textContent = window.i18n?.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试';
+            _upd.banner.textContent = err
+                ? String(err)
+                : (window.i18n?.format_translate('settings.updateCheckFailedDetail') || '检查更新失败，请稍后重试');
             _upd.banner.style.display = '';
         }
+    }
+
+    // 安全地渲染更新日志：优先用全局 renderMarkdownSimple（index.html 已引入），
+    // 若脚本未加载则退化为纯文本转义，避免 ReferenceError 导致整次检查失败。
+    function _render_changelog(md) {
+        try {
+            if (typeof renderMarkdownSimple === 'function') {
+                return renderMarkdownSimple(md);
+            }
+        } catch (_) { /* 落到下面的纯文本兜底 */ }
+        const esc = (md || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return esc ? '<p>' + esc + '</p>' : '<p class="changelog-empty">暂无更新说明</p>';
     }
 
     function _showUpdateResult(result) {
@@ -1857,7 +1871,7 @@ async function initSettings() {
         if (result.has_update) {
             _upd.banner.style.display = 'none';
             if (result.release?.body) {
-                _upd.notes.innerHTML = renderMarkdownSimple(result.release.body);
+                _upd.notes.innerHTML = _render_changelog(result.release.body);
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';
@@ -1869,7 +1883,7 @@ async function initSettings() {
             _upd.banner.textContent = window.i18n?.format_translate('settings.alreadyLatest') || '当前已是最新版本';
             _upd.banner.style.display = '';
             if (result.current_release?.body) {
-                _upd.notes.innerHTML = renderMarkdownSimple(result.current_release.body);
+                _upd.notes.innerHTML = _render_changelog(result.current_release.body);
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';

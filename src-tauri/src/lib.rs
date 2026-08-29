@@ -1052,21 +1052,41 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 1. GitHub 最新 Release（含 tag_name/name/html_url/body/assets）
-    let response = client
-        .get("https://api.github.com/repos/SECTL/ViewPDF/releases/latest")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
+    // 候选地址：直连优先，失败回退公共镜像（国内网络常无法直连 GitHub）
+    let latest_candidates = [
+        "https://api.github.com/repos/SECTL/ViewPDF/releases/latest".to_string(),
+        "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/latest"
+            .to_string(),
+    ];
 
-    if !response.status().is_success() {
-        return Err(format!("GitHub API error: {}", response.status()));
+    let mut latest_release: Option<GitHubRelease> = None;
+    let mut last_err = String::from("未知错误");
+    for url in &latest_candidates {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    last_err = format!("GitHub API error: {}", resp.status());
+                    continue;
     }
-
-    let latest_release: GitHubRelease = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse GitHub response: {}", e))?;
+                match resp.json::<GitHubRelease>().await {
+                    Ok(r) => {
+                        latest_release = Some(r);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("解析 GitHub 响应失败: {}", e);
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("网络错误: {}", e);
+                continue;
+            }
+        }
+    }
+    let latest_release =
+        latest_release.ok_or_else(|| format!("无法获取最新版本（已尝试直连与镜像）: {}", last_err))?;
 
     let latest_version = latest_release.tag_name.trim_start_matches('v').to_string();
     if latest_version.is_empty() {
@@ -1076,17 +1096,27 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
 
     // 2. 当前版本的 Release 信息（"已是最新"时展示对应说明，缺失不影响流程）
     let current_tag = format!("v{}", current_version);
-    let current_release = match client
-        .get(format!(
+    let current_candidates = [
+        format!(
             "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
             current_tag
-        ))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => resp.json::<GitHubRelease>().await.ok(),
-        _ => None,
-    };
+        ),
+        format!(
+            "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
+            current_tag
+        ),
+    ];
+    let mut current_release: Option<GitHubRelease> = None;
+    for url in &current_candidates {
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().is_success() {
+                if let Ok(r) = resp.json::<GitHubRelease>().await {
+                    current_release = Some(r);
+                    break;
+                }
+            }
+        }
+    }
 
     Ok(UpdateCheckResult {
         has_update,
