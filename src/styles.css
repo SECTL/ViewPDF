@@ -182,6 +182,44 @@ body {
     color: #fff;
 }
 
+/* ===== macOS 红绿灯窗口控件 ===== */
+.titlebar-controls.mac {
+    gap: 8px;
+    align-items: center;
+    margin-left: 0;
+    margin-right: 0;
+    padding: 0 8px 0 16px;
+}
+.titlebar-controls.mac .titlebar-btn {
+    width: 12px;
+    height: 12px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--tb-color, #c7c7c7);
+    color: rgba(0, 0, 0, 0.55);
+    border: 0.5px solid rgba(0, 0, 0, 0.13);
+    transition: filter 0.1s ease, background 0.1s ease;
+}
+.titlebar-controls.mac .titlebar-btn:hover {
+    background: var(--tb-color, #c7c7c7);
+    filter: brightness(0.94);
+}
+.titlebar-controls.mac .titlebar-btn:active {
+    filter: brightness(0.8);
+}
+.titlebar-controls.mac .tb-glyph {
+    width: 12px;
+    height: 12px;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+}
+.titlebar-controls.mac .titlebar-btn:hover .tb-glyph {
+    opacity: 1;
+}
+.titlebar-controls.mac .titlebar-btn-close { --tb-color: #ff5f57; }
+.titlebar-controls.mac .titlebar-btn-min   { --tb-color: #febc2e; }
+.titlebar-controls.mac .titlebar-btn-max   { --tb-color: #28c840; }
+
 /* ===== App Body ===== */
 .app-body {
     flex: 1;
@@ -1418,6 +1456,14 @@ body {
     animation: fadeIn 0.3s ease;
 }
 
+/* 阅读器内加载层：复用 .loading-overlay 的视觉（深色遮罩 + 居中 spinner），
+   但定位限定在阅读器面板内（面板 transform 形成包含块，absolute 解析到面板而非视口），
+   不再盖住首页/工具栏。覆盖"打开文档"与"切标签"的 DOM 重建期。 */
+.reader-loading-overlay {
+    position: absolute;
+    z-index: 60;
+}
+
 @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
@@ -2160,17 +2206,6 @@ body {
 /* 缩放/拖拽进行中时启用 GPU 合成层，结束后移除以释放显存 */
 .dr-zoom-wrapper.smooth-transform {
     will-change: transform;
-}
-
-.doc-reader-loading {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: #888;
-    font-size: 14px;
-    z-index: 10;
-    pointer-events: none;
 }
 
 .doc-reader-page-tiles {
