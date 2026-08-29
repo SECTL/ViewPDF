@@ -81,6 +81,8 @@ class BlackboardManager {
         // 惯性（动量）
         this._momentum_raf = null;
         this._bb_resize_timer = null;
+        // 变换停止后确定性补绘当前可视区脏块的 debounce 定时器
+        this._bb_dirty_refresh_timer = null;
         this._gesture_vx = 0;
         this._gesture_vy = 0;
         this._last_canvas_x = 0;
@@ -104,6 +106,16 @@ class BlackboardManager {
 
         /** @type {DrawingEngine|null} */
         this.drawing_engine = null;
+
+        // 小黑板按文档（PDF 标签）隔离：md5 -> 板状态快照。
+        // 默认即隔离，无开关/按钮（用户明确"不要按钮，默认隔离"）。
+        // 会话内每个 PDF 文档拥有独立小黑板，随文档切换；跨重启不保留（现状亦不落盘）。
+        this._per_doc_bb = new Map();
+        this._bb_current_md5 = null;
+        this._bb_per_doc = () => true;
+        // 按文档快照 LRU 上限：超出后丢弃最旧文档的板（不落盘，无副作用），
+        // 避免多文档会话后内存无界增长 + 每次切换都深拷贝全部笔画
+        this._per_doc_bb_cap = 8;
     }
 
     /** 创建黑板面板 DOM（panel + canvasWrap + canvas） */
@@ -263,6 +275,9 @@ class BlackboardManager {
         if (this.tile_renderer) {
             this.tile_renderer.update_visible_tile_dpr(s.scale, false, true);
         }
+        // 变换停止后确定性补绘当前可视区的脏块（首开未画的块进入视野时立即补全，
+        // 不再纯依赖 idle 兜底，消除缩放/平移后的边角空白延迟）
+        this._bb_schedule_dirty_refresh();
     }
 
     /** rAF 节流版 sync_transform：合并多帧调用，每帧最多一次 DOM 写入 */
@@ -314,8 +329,27 @@ class BlackboardManager {
             s.is_zooming = false;
             if (this.tile_renderer) {
                 this.tile_renderer.update_visible_tile_dpr(s.scale, false, true);
+                // 缩放结束：补绘当前可视区的脏块（首开未画块进入视野时立即补全）
+                this._bb_refresh_dirty_visible();
             }
         }, 300);
+    }
+
+    /** 缩放/平移停止后确定性补绘当前可视区的脏块（不纯靠 idle 兜底） */
+    _bb_refresh_dirty_visible() {
+        if (!this.tile_renderer || !this.is_open) return;
+        const keys = this.tile_renderer.get_visible_keys();
+        this.tile_renderer.rebuild_visible(keys);
+        this.tile_renderer._drain_dirty_tiles(keys);
+    }
+
+    /** 变换停止（140ms 无新 transform）后触发一次脏块补绘 */
+    _bb_schedule_dirty_refresh() {
+        if (this._bb_dirty_refresh_timer !== null) clearTimeout(this._bb_dirty_refresh_timer);
+        this._bb_dirty_refresh_timer = setTimeout(() => {
+            this._bb_dirty_refresh_timer = null;
+            this._bb_refresh_dirty_visible();
+        }, 140);
     }
 
     /** 取消缩放延迟更新（缩放结束时立即更新） */
@@ -701,8 +735,95 @@ class BlackboardManager {
         tb.classList.toggle('hide-text', !show);
     }
 
+    // ===== 小黑板按文档（PDF 标签）隔离：快照/恢复/切换 =====
+    _bb_current_pdf_md5() {
+        return window.documentReaderManager?._active_folder?.fileMd5 || null;
+    }
+
+    _bb_snapshot_state() {
+        return {
+            pageCount: this.page_manager.get_page_count(),
+            // 引用共享：stroke_history 为 append-only 不可变数组，切换时直接共享引用，
+            // 不再深拷贝每个笔画（多页多笔时深拷贝是切换卡顿 + 内存膨胀主因）
+            histories: this.page_manager.pages_list.map(p => p.stroke_history || []),
+            bb_state: {
+                canvas_x: this.bb_state.canvas_x,
+                canvas_y: this.bb_state.canvas_y,
+                scale: this.bb_state.scale,
+                last_transform: { ...this.bb_state.last_transform }
+            },
+            current_index: this.page_manager.current_index
+        };
+    }
+
+    /** 按文档快照 LRU 淘汰：Map 保序，超上限时丢弃最旧（插入最早）的文档板 */
+    _bb_evict_lru() {
+        const cap = this._per_doc_bb_cap || 8;
+        while (this._per_doc_bb.size > cap) {
+            const oldest = this._per_doc_bb.keys().next().value;
+            this._per_doc_bb.delete(oldest);
+        }
+    }
+
+    _bb_restore_state(snap) {
+        if (!snap) return;
+        const target = snap.pageCount || 1;
+        while (this.page_manager.get_page_count() < target) this.page_manager.add_page();
+        while (this.page_manager.get_page_count() > target) this.page_manager.remove_page(this.page_manager.get_page_count() - 1);
+        for (let i = 0; i < target; i++) {
+            const pd = this.page_manager.pages_list[i];
+            if (pd) pd.stroke_history = snap.histories[i] ? snap.histories[i] : [];
+        }
+        this.bb_state.canvas_x = snap.bb_state.canvas_x;
+        this.bb_state.canvas_y = snap.bb_state.canvas_y;
+        this.bb_state.scale = snap.bb_state.scale;
+        this.bb_state.last_transform = { ...snap.bb_state.last_transform };
+        this.page_manager.current_index = Math.max(0, Math.min(snap.current_index || 0, target - 1));
+    }
+
+    _bb_clear_all() {
+        for (const p of this.page_manager.pages_list) p.stroke_history = [];
+        this.bb_state.canvas_x = 0;
+        this.bb_state.canvas_y = 0;
+        this.bb_state.scale = 1;
+        this.bb_state.last_transform = { x: null, y: null, scale: null };
+    }
+
+    /** 切换当前板到指定 md5（先快照旧 md5，再恢复/清空新 md5） */
+    _bb_switch_md5(md5) {
+        if (this._bb_current_md5 && this._bb_current_md5 !== md5) {
+            this._per_doc_bb.set(this._bb_current_md5, this._bb_snapshot_state());
+            this._bb_evict_lru();
+        }
+        if (md5 && this._per_doc_bb.has(md5)) {
+            this._bb_restore_state(this._per_doc_bb.get(md5));
+        } else if (md5) {
+            this._bb_clear_all();
+        }
+        this._bb_current_md5 = md5;
+        // 板已打开时，切换后重绘当前页以反映新内容
+        if (this.is_open) {
+            this._load_page_strokes(this.page_manager.current_index).catch(() => {});
+        }
+    }
+
+    /** 由 PDF 标签切换钩子调用：板打开则即时切换，关闭则仅记录目标 md5 */
+    _bb_set_active_md5(md5) {
+        if (!this._bb_per_doc()) return;
+        if (this.is_open) {
+            this._bb_switch_md5(md5);
+        } else {
+            this._bb_current_md5 = md5;
+        }
+    }
+
     async open() {
         if (this.is_open) return;
+
+        // 小黑板按文档隔离：打开前切换到当前 PDF 标签对应的板状态
+        if (this._bb_per_doc()) {
+            this._bb_switch_md5(this._bb_current_pdf_md5());
+        }
 
         // 尺寸自检（必须在懒加载创建画布/瓦片之前）：init 时面板可能尚未完成布局，
         // 或窗口在 init 后已调整——以面板当前实际尺寸为准校正基础字段
@@ -721,8 +842,8 @@ class BlackboardManager {
             }
         }
 
-        // 首次打开时延迟初始化 tile_renderer / overlay / DrawingEngine 子模块
-        this._lazy_init_canvas();
+        // 注：tile_renderer / overlay / DrawingEngine 子模块的初始化（_lazy_init_canvas）
+        // 推迟到面板激活并让出一帧之后执行，避免同步建瓦片阻塞滑入动画首帧（见下方）。
 
         if (window.main_submit_stroke) {
             await window.main_submit_stroke();
@@ -749,6 +870,13 @@ class BlackboardManager {
 
         const panel = this._el.panel;
         panel.classList.add('active');
+
+        // 让出一帧：浏览器先绘制面板滑入起点，再同步建瓦片/overlay，
+        // 避免 _lazy_init_canvas 的 16 瓦片构建阻塞动画首帧（首笔延迟↓）
+        await new Promise(r => requestAnimationFrame(r));
+
+        // 面板已激活、几何可信后再建瓦片/overlay（此前尺寸自检已完成 canvas_w/h）
+        this._lazy_init_canvas();
 
         // 监听 CSS transition 实际结束，替代固定 400ms 等待
         const transition_promise = new Promise(resolve => {
@@ -780,12 +908,17 @@ class BlackboardManager {
         }
         this._update_mode_buttons('comment');
 
-        // 等待面板过渡完成后再允许绘制
+        // 笔画加载与面板过渡并发：瓦片重绘不依赖面板可见性，
+        // 仅需在绘制解禁前完成即可（首笔延迟↓）
+        this._last_loaded_index = -1;
+        const load_promise = this._load_page_strokes(this.page_manager.current_index);
+
+        // 等待面板过渡完成
         await transition_promise;
+        // 确保绘制解禁前笔画已就位
+        await load_promise;
         this.drawing_engine.set_painting_allowed(true);
 
-        this._last_loaded_index = -1;
-        await this._load_page_strokes(this.page_manager.current_index);
         this._update_page_indicator();
         this._update_button_status();
     }
@@ -793,6 +926,13 @@ class BlackboardManager {
     async close() {
         if (!this.is_open) return;
         this.is_open = false;
+
+        // 小黑板按文档隔离：关闭前把当前板状态快照到当前 md5，
+        // 否则同一文档重开板会因 _per_doc_bb 无记录而被误清空
+        if (this._bb_per_doc() && this._bb_current_md5) {
+            this._per_doc_bb.set(this._bb_current_md5, this._bb_snapshot_state());
+            this._bb_evict_lru();
+        }
 
         if (this._animate_timer_id !== null) {
             clearTimeout(this._animate_timer_id);
@@ -825,12 +965,11 @@ class BlackboardManager {
         }
         this.drawing_engine._hide_eraser_hint();
 
-        // 关闭前保存当前页的 undo/redo 和 tile 快照
+        // 关闭前保存当前页的 undo/redo 历史（笔画源数据随 stroke_history 保留，无需 tile 像素快照）
         const cur_page = this.page_manager.get_current_page();
         if (cur_page) {
             cur_page.undo_list = [...history_state.undo_list];
             cur_page.redo_list = [...history_state.redo_list];
-            if (this.tile_renderer) this._save_page_tile_snapshots(cur_page);
         }
 
         // DrawingEngine 恢复全局历史
@@ -1292,15 +1431,10 @@ class BlackboardManager {
     // ====== 快照 ======
 
     _save_tile_snapshots() {
-        const tr = this.tile_renderer;
-        if (!tr) return null;
-        if (!this._tiles_changed_since_snapshot) return null;
-        this._tiles_changed_since_snapshot = false;
-        return tr.tileInfos.map(info => {
-            const w = info.canvas.width;
-            const h = info.canvas.height;
-            return info.ctx.getImageData(0, 0, w, h);
-        });
+        // 已停用：关闭/翻页时不再对 16 块做 getImageData 读回（GPU→CPU 同步 stall，关闭卡顿主因）。
+        // 笔画 stroke_history 始终为源数据，下次进入页面走 _rebuild_from_history 即时重建即可，
+        // 像素级快照既无必要、又引入同步卡顿，故此处恒返回 null。
+        return null;
     }
 
     _restore_tile_snapshots(snapshots) {
@@ -1344,11 +1478,13 @@ class BlackboardManager {
             }
 
             try {
-                this.tile_renderer.rebuild_all();
+                // 仅重建可视区瓦片，其余 dirty 块由 idle 兜底补建（避免全量重绘 16 块）
+                const keys = this.tile_renderer.get_visible_keys();
+                this.tile_renderer.rebuild_visible(keys);
+                this.tile_renderer._drain_dirty_tiles(keys);
             } finally {
                 window.state.scale = orig_scale;
             }
-            this._tiles_changed_since_snapshot = true;
         }
         page.snapshot_dirty = true;
     }
@@ -1379,19 +1515,22 @@ class BlackboardManager {
         this.tile_renderer.mark_all();
 
         try {
-            this.tile_renderer.rebuild_all();
+            // 仅重建与可视区相交的瓦片（首开/翻页不必全量重绘 16 块）；
+            // 其余块保持 dirty，由 tile_renderer 的 idle 兜底（_drain_dirty_tiles）分片补建
+            const keys = this.tile_renderer.get_visible_keys();
+            this.tile_renderer.rebuild_visible(keys);
+            this.tile_renderer._drain_dirty_tiles(keys);
         } finally {
             window.state.scale = orig_scale;
         }
     }
 
     async _load_page_strokes(index) {
-        // 保存当前页的 undo/redo 和历史和 tile 快照
+        // 保存当前页的 undo/redo 历史（笔画源数据在 stroke_history，无需 tile 像素快照）
         if (this._last_loaded_index >= 0 && this._last_loaded_index < this.page_manager.pages_list.length) {
             const prev_page = this.page_manager.pages_list[this._last_loaded_index];
             prev_page.undo_list = history_state.undo_list;
             prev_page.redo_list = history_state.redo_list;
-            this._save_page_tile_snapshots(prev_page);
         }
         this._last_loaded_index = index;
 
@@ -1403,14 +1542,8 @@ class BlackboardManager {
         history_state.redo_list = page.redo_list || [];
         history_reset_executing();
 
-        // 优先从 tile 快照恢复（像素级精确，保留 batch draw 的擦除效果）
-        // 没有快照或标记脏时从 stroke_history 重建
-        if (page.snapshot_dirty || !page.tile_snapshots) {
+        // 始终从 stroke_history 重建（引用共享、零深拷贝；空闲兜底补全不可见瓦片）
             await this._rebuild_from_history(page);
-            this._save_page_tile_snapshots(page);
-        } else {
-            this._restore_page_tile_snapshots(page);
-        }
         this._update_button_status();
     }
 
@@ -1558,7 +1691,9 @@ class BlackboardManager {
             this.tile_renderer.mark_all();
 
             try {
-                this.tile_renderer.rebuild_all();
+                // 仅重建可视区瓦片：resize 后非可见块保持 dirty，由 idle/进入视野时补全，
+                // 避免 16 块 canvas 全量重绘（拖拽窗口结束时的卡顿主因）
+                this.tile_renderer.rebuild_visible();
             } finally {
                 window.state.scale = orig_scale;
             }
@@ -1573,6 +1708,10 @@ class BlackboardManager {
         if (this._bb_resize_timer !== null) {
             clearTimeout(this._bb_resize_timer);
             this._bb_resize_timer = null;
+        }
+        if (this._bb_dirty_refresh_timer !== null) {
+            clearTimeout(this._bb_dirty_refresh_timer);
+            this._bb_dirty_refresh_timer = null;
         }
         this._cached_container_rect = null;
         this._cached_titlebar = null;

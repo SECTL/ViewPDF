@@ -709,6 +709,23 @@ class TileRenderer {
         if (this._quadtree) {
             this._quadtree.insert(stroke);
         }
+        // 增量路径：新笔画已 insert 进四叉树，同步版本号使后续 rebuild_tile 命中
+        // _build_quadtree / _get_or_build_stroke_index 的版本缓存，不再 O(n) 全量重建。
+        // 仅当四叉树尚未建立（首次笔画）时置 -1，令下次 rebuild 全量 build（仅此一笔）。
+        // 注意：undo/redo/clear 走 mark_strokes_changed（_strokeVersion++ 但不同步），
+        // 下次 rebuild 仍会全量重建——保持与既有行为完全一致，仅优化"新增笔画"热路径。
+        {
+            const _hist = this._get_stroke_history();
+            if (this._quadtree) {
+                this._builtStrokeVersion = this._strokeVersion;
+                if (!this._strokeIndex) this._strokeIndex = new Map();
+                this._strokeIndex.set(stroke, _hist.length - 1);
+                this._strokeIndexVersion = this._strokeVersion;
+            } else {
+                this._builtStrokeVersion = -1;
+                this._strokeIndexVersion = -1;
+            }
+        }
         const halfWidth = Math.max(stroke.lineWidth || 5, stroke.eraserSize || 5) / 2;
         const infos = this.infos_for_segment(
             stroke.bounds.minX, stroke.bounds.minY,

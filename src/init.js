@@ -743,19 +743,9 @@ async function main_init_all() {
             window.main_update_ui_state();
         }
 
-        // 延迟加载黑板（窗口已显示后再加载，不阻塞启动）
-        if (window.__blackboardEnabled !== false) {
-            setTimeout(async () => {
-                try {
-                    const bb = await window.blackboard_ensure_loaded(document.body);
-                    if (bb) {
-                        bb.setup_toolbar_events();
-                    }
-                } catch (e) {
-                    console.error('[init] blackboard lazy load error:', e);
-                }
-            }, 0);
-        }
+        // 黑板改为按需懒加载：首次点击工具栏黑板按钮（document_reader.js:3893）
+        // 才 ensure_loaded + open，启动期不再构建整套面板/工具栏 DOM 与瓦片，
+        // 缩短冷启动并降低空板内存峰值。
 
         // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）
         // 同步初始化退出保存分支使用的标志（此前只在设置面板切换时赋值，
