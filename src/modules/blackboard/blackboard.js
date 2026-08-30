@@ -80,7 +80,11 @@ class BlackboardManager {
 
         // 惯性（动量）
         this._momentum_raf = null;
-        this._bb_resize_timer = null;
+        // 面板几何响应（ResizeObserver 双通道，见 _setup_panel_resize_observer）
+        this._panel_resize_observer = null;   // 面板几何观测器
+        this._legacy_resize_handler = null;   // 无 ResizeObserver 环境的 window resize 回退
+        this._bb_resize_timer = null;         // 重量通道防抖（resize() 全量对齐）
+        this._bb_resize_retry_timer = null;   // 最大化/最小化过渡期的延后重试定时器
         // 变换停止后确定性补绘当前可视区脏块的 debounce 定时器
         this._bb_dirty_refresh_timer = null;
         this._gesture_vx = 0;
@@ -609,24 +613,12 @@ class BlackboardManager {
         this._cached_dr_toolbar = document.getElementById('drToolbar');
         this._cached_dr_toolbar_display = null;
 
-        // resize 时失效 container rect 缓存，避免下一次 _handle_wheel 读到过期 rect；
-        // 同时同步 overlay/画布尺寸——否则窗口变化后 overlay 仍用初始尺寸，
-        // 越出旧尺寸区域的实时笔迹会被裁剪不可见（跨块/靠边绘制丢失）
-        this._resize_handler = () => {
-            this._invalidate_cached_container_rect();
-            if (this._bb_resize_timer !== null) clearTimeout(this._bb_resize_timer);
-            this._bb_resize_timer = setTimeout(() => {
-                this._bb_resize_timer = null;
-                if (!this.is_open) return;
-                const p = this._el?.panel;
-                const w = Math.max(1, p?.clientWidth || window.innerWidth);
-                const h = Math.max(1, p?.clientHeight || window.innerHeight);
-                if (w !== this.screen_w || h !== this.screen_h) {
-                    this.resize(w, h);
-                }
-            }, 150);
-        };
-        window.addEventListener('resize', this._resize_handler, { passive: true });
+        // 面板几何变化响应：观测黑板面板本身（窗口拖拽/最大化/贴靠等所有几何
+        // 来源统一覆盖）。rect 缓存立即失效，避免下一次 _handle_wheel 读到过期
+        // rect；重量级 resize() 对齐防抖到尺寸稳定后执行。
+        // 板关闭期间发生的窗口 resize 无人处理（重量通道有 is_open 门控），
+        // 由 open() 的尺寸自检走 resize() 完整对齐补上
+        this._setup_panel_resize_observer();
 
         this._setup_events();
         this._setup_keyboard_events();
@@ -753,6 +745,9 @@ class BlackboardManager {
                 scale: this.bb_state.scale,
                 last_transform: { ...this.bb_state.last_transform }
             },
+            // 偏移的坐标基准：窗口尺寸在快照后变化时按视口中心内容点重映射
+            screenW: this.screen_w,
+            screenH: this.screen_h,
             current_index: this.page_manager.current_index
         };
     }
@@ -779,6 +774,15 @@ class BlackboardManager {
         this.bb_state.canvas_y = snap.bb_state.canvas_y;
         this.bb_state.scale = snap.bb_state.scale;
         this.bb_state.last_transform = { ...snap.bb_state.last_transform };
+        // 窗口尺寸与快照基准不一致：绝对偏移是旧几何下的值，直接恢复会错位，
+        // 按视口中心内容点重映射到当前几何（与 resize() 同一映射规则）
+        if (snap.screenW && (snap.screenW !== this.screen_w || snap.screenH !== this.screen_h)) {
+            const scale = snap.bb_state.scale || 1;
+            const center_cx = (snap.screenW / 2 - snap.bb_state.canvas_x) / scale;
+            const center_cy = (snap.screenH / 2 - snap.bb_state.canvas_y) / scale;
+            this.bb_state.canvas_x = this.screen_w / 2 - center_cx * scale;
+            this.bb_state.canvas_y = this.screen_h / 2 - center_cy * scale;
+        }
         this.page_manager.current_index = Math.max(0, Math.min(snap.current_index || 0, target - 1));
     }
 
@@ -827,19 +831,16 @@ class BlackboardManager {
         }
 
         // 尺寸自检（必须在懒加载创建画布/瓦片之前）：init 时面板可能尚未完成布局，
-        // 或窗口在 init 后已调整——以面板当前实际尺寸为准校正基础字段
+        // 或板关闭期间窗口已调整（关闭期无几何响应在跑）——以面板当前实际尺寸
+        // 走 resize() 完整对齐：保持视口中心内容点、重建瓦片网格、同步 overlay。
+        // 首次 open（tile_renderer/overlay 未建）时 resize 仅校正基础字段与
+        // 包装器盒尺寸，随后 _lazy_init_canvas 按新尺寸构建，二者不冲突
         {
             const p = this._el?.panel;
             const w = Math.max(1, p?.clientWidth || window.innerWidth);
             const h = Math.max(1, p?.clientHeight || window.innerHeight);
             if (w !== this.screen_w || h !== this.screen_h) {
-                this.screen_w = w;
-                this.screen_h = h;
-                this.bb_state.canvas_w = Math.floor(w * 2);
-                this.bb_state.canvas_h = Math.floor(h * 2);
-                this.bb_state.canvas_x = -(this.bb_state.canvas_w - w) / 2;
-                this.bb_state.canvas_y = -(this.bb_state.canvas_h - h) / 2;
-                this._cached_move_bound_scale = null;
+                this.resize(w, h);
             }
         }
 
@@ -1317,6 +1318,84 @@ class BlackboardManager {
         this._cached_container_rect = null;
     }
 
+    // ===== 面板几何响应（ResizeObserver，窗口拖拽/最大化/贴靠等统一覆盖） =====
+
+    _setup_panel_resize_observer() {
+        this._teardown_panel_resize_observer();
+        const panel = this._el?.panel;
+        if (!panel) return;
+        if (typeof ResizeObserver !== 'undefined') {
+            this._panel_resize_observer = new ResizeObserver(() => {
+                if (!this.is_open) return;
+                // rect 缓存立即失效（_handle_wheel 缩放锚点依赖它，读到过期值
+                // 会导致缩放跳变）；observe() 首次回调尺寸未变时到此为止
+                this._invalidate_cached_container_rect();
+                if (panel.clientWidth === this.screen_w
+                    && panel.clientHeight === this.screen_h) return;
+                this._on_panel_geometry_changed();
+            });
+            this._panel_resize_observer.observe(panel);
+        } else {
+            // 极旧 WebView 回退：window resize 事件近似覆盖
+            this._legacy_resize_handler = () => {
+                if (!this.is_open) return;
+                this._invalidate_cached_container_rect();
+                this._on_panel_geometry_changed();
+            };
+            window.addEventListener('resize', this._legacy_resize_handler, { passive: true });
+        }
+    }
+
+    _teardown_panel_resize_observer() {
+        if (this._panel_resize_observer) {
+            try { this._panel_resize_observer.disconnect(); } catch (_) {}
+            this._panel_resize_observer = null;
+        }
+        if (this._legacy_resize_handler) {
+            window.removeEventListener('resize', this._legacy_resize_handler);
+            this._legacy_resize_handler = null;
+        }
+        if (this._bb_resize_timer !== null) {
+            clearTimeout(this._bb_resize_timer);
+            this._bb_resize_timer = null;
+        }
+        if (this._bb_resize_retry_timer !== null) {
+            clearTimeout(this._bb_resize_retry_timer);
+            this._bb_resize_retry_timer = null;
+        }
+    }
+
+    _on_panel_geometry_changed() {
+        // 黑板画布是屏幕 2 倍的居中大画布，拖拽中间态下视觉不受影响（无需
+        // 逐帧轻量校正），重量级 resize() 防抖到尺寸稳定后一次执行：
+        // tile 网格重建 + overlay 重分配 + 视口中心保持，一次到位
+        if (this._bb_resize_timer !== null) clearTimeout(this._bb_resize_timer);
+        this._bb_resize_timer = setTimeout(() => {
+            this._bb_resize_timer = null;
+            this._run_heavy_bb_resize();
+        }, 150);
+    }
+
+    _run_heavy_bb_resize() {
+        if (!this.is_open) return;
+        // 最大化/最小化过渡（~300ms 动画）期间尺寸是中间态，跳过并延后重试，
+        // 过渡结束后（_windowTransitioning 复位）必定补一次对齐
+        if (window.main_is_window_transitioning?.()) {
+            if (this._bb_resize_retry_timer !== null) clearTimeout(this._bb_resize_retry_timer);
+            this._bb_resize_retry_timer = setTimeout(() => {
+                this._bb_resize_retry_timer = null;
+                this._run_heavy_bb_resize();
+            }, 250);
+            return;
+        }
+        const p = this._el?.panel;
+        const w = Math.max(1, p?.clientWidth || window.innerWidth);
+        const h = Math.max(1, p?.clientHeight || window.innerHeight);
+        if (w !== this.screen_w || h !== this.screen_h) {
+            this.resize(w, h);
+        }
+    }
+
     _handle_wheel(e) {
         if (!this.is_open) return;
         if (this.drawing_engine?.is_drawing) return;
@@ -1706,14 +1785,8 @@ class BlackboardManager {
     }
 
     async destroy() {
-        if (this._resize_handler) {
-            window.removeEventListener('resize', this._resize_handler);
-            this._resize_handler = null;
-        }
-        if (this._bb_resize_timer !== null) {
-            clearTimeout(this._bb_resize_timer);
-            this._bb_resize_timer = null;
-        }
+        // 清理面板几何响应管线（观测器 + 回退监听 + 防抖/重试定时器）
+        this._teardown_panel_resize_observer();
         if (this._bb_dirty_refresh_timer !== null) {
             clearTimeout(this._bb_dirty_refresh_timer);
             this._bb_dirty_refresh_timer = null;
