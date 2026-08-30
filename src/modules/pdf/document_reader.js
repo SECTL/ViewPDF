@@ -81,7 +81,6 @@ class DocumentReaderManager {
         this._was_camera_open_before = false;
         this._last_loaded_index = -1;
         this._page_visible_timeout_id = null;
-        this._resize_raf_id = null;
         this._wheel_raf_id = null;               // 滚轮缩放 rAF 节流
         this._smooth_transform_timeout_id = null; // will-change 延迟移除
         this._gpu_cleanup_delay_ms = 800;
@@ -116,12 +115,17 @@ class DocumentReaderManager {
         // 分块渲染相关
         this.batch_draw = null;
         this.draw_canvas_rect = null;
-        this._window_resize_handler = null;
-        this._resize_debounce_timer = null;
+        // 窗口/容器尺寸响应管线（ResizeObserver 双通道，见 _setup_container_resize_observer）
+        this._container_resize_observer = null;  // 滚动容器几何观测器
+        this._legacy_resize_handler = null;      // 无 ResizeObserver 环境的 window resize 回退
+        this._resize_light_raf = null;           // 轻量通道 rAF（几何缓存失效 + transform 校正）
+        this._resize_heavy_timer = null;         // 重量通道防抖（全量重布局 + overlay 重分配）
+        this._resize_retry_timer = null;         // 最大化/最小化过渡期的延后重试定时器
         this._panel_settle_timer = null;     // 面板滑入动画结束等待的兜底定时器
         this._panel_settle_finish = null;    // 等待句柄（close 时强制完成，避免悬挂）
         this._open_watchdog_timer = null;    // 开页自愈看门狗定时器
-        this._last_resize_base_w = -1;       // 用于 _handle_reader_resize 跳过宽度未变的重布局
+        this._last_resize_base_w = -1;       // 上次重布局的基准页宽（未变化则跳过重量通道）
+        this._last_resize_container_h = -1;  // 上次重布局的容器高（高度变化仅需轻量校正）
 
         // 缩放状态（Blackboard 风格：CSS transform translate3d + scale）
         this.dr_scale = 1;
@@ -399,34 +403,21 @@ class DocumentReaderManager {
         // 开页自愈看门狗：批注已恢复，立即开始校验渲染结果
         this._start_open_watchdog();
 
-        // 窗口 resize 时同步页面布局、批注坐标与 overlay canvas 尺寸
-        this._window_resize_handler = () => {
-            // 最小化/最大化过渡期间跳过所有 resize 处理，避免在动画中间尺寸上做重量级重算
-            if (window.main_is_window_transitioning?.()) return;
-            // ① overlay canvas：仅在防抖后同步（重分配全屏 GPU 纹理代价高）。
-            //    每帧都重分配会在拖动时（大量 resize 事件）反复分配数百 MB 显存/内存导致卡死，
-            //    拖动期间 overlay 为透明绘制预览层、无绘制发生，延后到稳定后再分配不影响视觉。
-            // ② 400ms 防抖：最大化/恢复动画约 300ms，等待动画稳定后再执行重量级操作
-            if (this._resize_debounce_timer) {
-                clearTimeout(this._resize_debounce_timer);
-            }
-            this._resize_debounce_timer = setTimeout(() => {
-                this._resize_debounce_timer = null;
-                if (window.main_is_window_transitioning?.()) return;
-                this._sync_reader_overlay_size();
-                this._schedule_reader_resize();
-            }, 400);
-        };
-        window.addEventListener('resize', this._window_resize_handler);
+        // 窗口/容器几何变化响应：观测滚动容器本身（窗口拖拽/最大化/贴靠、面板
+        // 显隐、筛选栏换行等所有几何来源统一覆盖）。_last_resize_base_w 重置为
+        // -1，保证 open 后的首次重布局必定执行——阅读器关闭期间（主页）发生的
+        // 窗口 resize 无人处理，且此后不会再有 resize 事件，只能在打开时对齐
+        this._last_resize_base_w = -1;
+        this._last_resize_container_h = -1;
+        this._setup_container_resize_observer();
 
-        // 恢复上次的缩放/位置/页码，或使用传入的 page_index
+        // 恢复上次的缩放/位置/页码，或使用传入的 page_index。
+        // 缓存保存后的窗口尺寸若已变化，绝对偏移失效（_adopt_saved_zoom 内处理）
         let target_page = page_index;
+        let saved_offsets_valid = false;
         if (saved_state && saved_state.active_page_index >= 0) {
             target_page = saved_state.active_page_index;
-            this.dr_scale = saved_state.dr_scale;
-            this.dr_canvas_x = saved_state.dr_canvas_x;
-            this.dr_canvas_y = saved_state.dr_canvas_y;
-            this.dr_cached_inv_scale = 1 / this.dr_scale;
+            saved_offsets_valid = this._adopt_saved_zoom(saved_state, this._get_page_base_width());
         }
         // 同步当前页状态：open() 入口的 active 是调用参数（常为 0），
         // 缓存视图恢复后必须一并对齐，否则 near_active 门控（看门狗补建/
@@ -443,8 +434,9 @@ class DocumentReaderManager {
         // 滚动到初始页面（会触发 _dr_apply_scale → _check_page_visibility → _on_page_visible → 首批页面渲染）
         await this._scroll_to_page(target_page);
 
-        // 恢复缩放 transform（_scroll_to_page 内部会调 _dr_apply_scale，此处需重新设置）
-        if (saved_state && saved_state.active_page_index >= 0) {
+        // 恢复缩放 transform（_scroll_to_page 内部会调 _dr_apply_scale，此处需重新设置）；
+        // 窗口尺寸在缓存保存后已变化时偏移失效，保持 _scroll_to_page 的重新锚定结果
+        if (saved_state && saved_state.active_page_index >= 0 && saved_offsets_valid) {
             this.dr_scale = saved_state.dr_scale;
             this.dr_canvas_x = saved_state.dr_canvas_x;
             this.dr_canvas_y = saved_state.dr_canvas_y;
@@ -530,8 +522,9 @@ class DocumentReaderManager {
         if (this._page_positions) this._page_positions.stale = true;
         this._dr_cancel_zoom_debounce();
 
-        // 重应用保存的视图状态（_scroll_to_page 会重置偏移），随后统一触发首批渲染
-        if (saved_state && saved_state.active_page_index >= 0) {
+        // 重应用保存的视图状态（_scroll_to_page 会重置偏移），随后统一触发首批渲染；
+        // 偏移已随窗口尺寸变化失效时保持锚定结果不回填
+        if (saved_state && saved_state.active_page_index >= 0 && saved_offsets_valid) {
             this.dr_scale = saved_state.dr_scale;
             this.dr_canvas_x = saved_state.dr_canvas_x;
             this.dr_canvas_y = saved_state.dr_canvas_y;
@@ -542,12 +535,16 @@ class DocumentReaderManager {
         await this._wait_panel_settled(panel);
         if (!this.is_open) return;
 
-        // 面板已稳定：几何已可信，再次触发幂等渲染纠正动画期间任何偏差（布局未变则基本为空操作）
+        // 面板已稳定：几何已可信，强制执行一次全量重布局，对齐阅读器关闭期间
+        // （主页）发生的任何窗口尺寸变化——主页调整窗口大小后打开 PDF 即在此处
+        // 得到正确布局；随后 _handle_reader_resize 末尾的 _dr_apply_scale 会以
+        // 确定后的几何再触发一次幂等渲染，纠正滑入动画期间的任何偏差
         this._cached_container_rect = null;
         this._dr_transform_changed = true;
         if (this._page_positions) this._page_positions.stale = true;
         this._dr_cancel_zoom_debounce();
-        this._dr_apply_scale();
+        this._sync_reader_overlay_size();
+        this._handle_reader_resize();
 
         // 并行回填剩余页真实尺寸：首屏已用首页真实尺寸即时渲染，
         // 其余页尺寸在后台流式读取（不阻塞首屏），到位后一次性重排 + 按真实尺寸重渲染活动页
@@ -604,6 +601,7 @@ class DocumentReaderManager {
             drCanvasX: this.dr_canvas_x,
             drCanvasY: this.dr_canvas_y,
             drCachedInvScale: this.dr_cached_inv_scale,
+            viewBaseW: this._get_page_base_width(),
             pagesWithTiles: this._pages_with_tiles,
             pagePositions: this._page_positions,
             savedHistoryState: this.saved_history_state,
@@ -646,6 +644,9 @@ class DocumentReaderManager {
     }
 
     _restore_tab_view(index, view) {
+        // 注意：viewBaseW 与当前基准宽不一致的快照在 switch_to 中已被丢弃并走
+        // 完整 open 重建（快照的页盒/tile/批注坐标全是旧基准宽，局部修补不可靠），
+        // 此处正常情况下尺寸必然一致，直接恢复快照即可
         this.page_manager = view.pageManager;
         this._zoom_wrapper = view.zoomWrapper;
         this._active_folder = view.activeFolder;
@@ -702,7 +703,18 @@ class DocumentReaderManager {
         }
         const view = this._tab_views.get(folder);
         if (view) {
-            this._restore_tab_view(index, view);
+            // 窗口尺寸在该标签后台期间变化：保活快照的页盒/tile/批注坐标全是
+            // 旧基准宽下的产物，局部修补不可靠，丢弃快照走完整 open 重建
+            // （缓存批注恢复按 coord_width 自动补偿缩放，视图按 view_base_w 重新锚定）
+            const cur_base_w = this._get_page_base_width();
+            const base_changed = !view.viewBaseW || Math.abs(view.viewBaseW - cur_base_w) > 1;
+            if (base_changed) {
+                this.discard_tab_view(folder);
+                await this.open(index);
+                this._capture_tab_view(this._active_folder);
+            } else {
+                this._restore_tab_view(index, view);
+            }
         } else {
             await this.open(index);
             this._capture_tab_view(this._active_folder);
@@ -810,6 +822,41 @@ class DocumentReaderManager {
         });
     }
 
+    /**
+     * 采用缓存视图的缩放/偏移。
+     *
+     * dr_canvas_x/y 是保存时刻窗口几何下的绝对像素，窗口尺寸跨会话变化后直接
+     * 恢复会把页面定到错误位置（"主页调整窗口大小后打开 PDF 异常"的根源）。
+     * 基准宽度一致 → 完整恢复；不一致（或旧缓存无基准记录，保守视为不一致）
+     * → 保留等比换算后的缩放、清零偏移，由 _scroll_to_page 按当前几何重新锚定。
+     * @param {object} saved_state 缓存视图状态
+     * @param {number} cur_base_w 当前基准页宽（_get_page_base_width()）
+     * @returns {boolean} 偏移是否有效（调用方据此决定是否在 _scroll_to_page 后重应用）
+     */
+    _adopt_saved_zoom(saved_state, cur_base_w) {
+        const saved_base_w = saved_state.view_base_w || 0;
+        const width_changed = saved_base_w > 0
+            ? Math.abs(saved_base_w - cur_base_w) > 1
+            : true;
+        if (width_changed && saved_base_w > 0) {
+            // 等比换算缩放，保持页面的观感大小不变
+            const ratio = saved_base_w / cur_base_w;
+            this.dr_scale = Math.min(this.dr_max_scale,
+                Math.max(this.dr_min_scale, saved_state.dr_scale * ratio));
+        } else {
+            this.dr_scale = saved_state.dr_scale;
+        }
+        this.dr_cached_inv_scale = 1 / this.dr_scale;
+        if (width_changed) {
+            this.dr_canvas_x = 0;
+            this.dr_canvas_y = 0;
+            return false;
+        }
+        this.dr_canvas_x = saved_state.dr_canvas_x;
+        this.dr_canvas_y = saved_state.dr_canvas_y;
+        return true;
+    }
+
     async close(force = false) {
         if (!this.is_open && !force) return;
 
@@ -826,11 +873,8 @@ class DocumentReaderManager {
             this._tab_views.delete(this._active_folder);
         }
 
-        // 清理 resize handler
-        if (this._resize_debounce_timer !== null) {
-            clearTimeout(this._resize_debounce_timer);
-            this._resize_debounce_timer = null;
-        }
+        // 清理窗口/容器尺寸响应管线（观测器 + 双通道定时器/raf）
+        this._teardown_container_resize_observer();
         // 强制完成打开后的渲染等待（快速关开时旧回调不得触发；
         // 必须主动 finish，否则无过渡环境下 Promise 悬挂会卡死 open 队列）
         if (this._panel_settle_timer !== null) {
@@ -851,14 +895,6 @@ class DocumentReaderManager {
         if (this._ann_save_timer !== null) {
             clearTimeout(this._ann_save_timer);
             this._ann_save_timer = null;
-        }
-        if (this._window_resize_handler) {
-            window.removeEventListener('resize', this._window_resize_handler);
-            this._window_resize_handler = null;
-        }
-        if (this._resize_raf_id !== null) {
-            cancelAnimationFrame(this._resize_raf_id);
-            this._resize_raf_id = null;
         }
 
         // 清理 gesture 模块
@@ -1164,6 +1200,9 @@ class DocumentReaderManager {
             dr_scale: this.dr_scale,
             dr_canvas_x: this.dr_canvas_x,
             dr_canvas_y: this.dr_canvas_y,
+            // 视图偏移的坐标基准（_get_page_base_width）：恢复时据此判断窗口尺寸
+            // 是否变化，变化则丢弃绝对偏移、由 _scroll_to_page 重新锚定
+            view_base_w: this._get_page_base_width(),
             last_open_date: today,
             pages: pages.map(p => ({
                 stroke_history: p.stroke_history,
@@ -1281,7 +1320,8 @@ class DocumentReaderManager {
                     active_page_index: cache_data.active_page_index ?? -1,
                     dr_scale: cache_data.dr_scale ?? 1,
                     dr_canvas_x: cache_data.dr_canvas_x ?? 0,
-                    dr_canvas_y: cache_data.dr_canvas_y ?? 0
+                    dr_canvas_y: cache_data.dr_canvas_y ?? 0,
+                    view_base_w: cache_data.view_base_w ?? null
                 };
             }
             return null;
@@ -3160,12 +3200,98 @@ class DocumentReaderManager {
         }
     }
 
-    _schedule_reader_resize() {
-        if (!this.is_open || this._resize_raf_id !== null) return;
-        this._resize_raf_id = requestAnimationFrame(() => {
-            this._resize_raf_id = null;
-            this._handle_reader_resize();
-        });
+    // ====== 窗口/容器尺寸响应 ======
+    //
+    // ResizeObserver 观测 #docReaderScrollContainer（窗口拖拽/最大化/贴靠、面板
+    // 显隐、筛选栏换行等所有几何变化来源统一覆盖），拆成双通道：
+    //  - 轻量通道（rAF 合帧）：失效几何缓存 + _dr_apply_scale 幂等校正，
+    //    拖拽中的每一帧都保持页面不错位（纯数学计算，不触发布局）。
+    //  - 重量通道（180ms 防抖）：overlay canvas 重分配 + 全量重布局（页盒尺寸、
+    //    批注坐标缩放、tile 重建）。拖动期间反复重分配全屏 GPU 纹理会卡死
+    //    （历史问题），且动画中间尺寸上的重算结果必然被下一帧推翻，故延后到
+    //    尺寸稳定后一次完成。
+    // 阅读器关闭期间的窗口 resize 无观测在跑（close 断开观测器），由此产生的
+    // 几何偏差在下次 open 时由 _last_resize_base_w = -1 强制全量重布局对齐。
+
+    _setup_container_resize_observer() {
+        this._teardown_container_resize_observer();
+        if (!this._scroll_container) return;
+        if (typeof ResizeObserver !== 'undefined') {
+            this._container_resize_observer = new ResizeObserver(() => {
+                if (!this.is_open) return;
+                // observe() 的首次回调报告的是当前尺寸：与上次重布局基准一致时
+                // （正常重开场景）直接跳过，避免打开流程中被插入冗余重布局；
+                // 尺寸确实变化（如关闭期间窗口被调整）则照常进入响应管线
+                if (this._get_page_base_width() === this._last_resize_base_w
+                    && this._scroll_container.clientHeight === this._last_resize_container_h) return;
+                this._on_reader_geometry_changed();
+            });
+            this._container_resize_observer.observe(this._scroll_container);
+        } else {
+            // 极旧 WebView 回退：window resize 事件近似覆盖
+            this._legacy_resize_handler = () => {
+                if (this.is_open) this._on_reader_geometry_changed();
+            };
+            window.addEventListener('resize', this._legacy_resize_handler);
+        }
+    }
+
+    _teardown_container_resize_observer() {
+        if (this._container_resize_observer) {
+            try { this._container_resize_observer.disconnect(); } catch (_) {}
+            this._container_resize_observer = null;
+        }
+        if (this._legacy_resize_handler) {
+            window.removeEventListener('resize', this._legacy_resize_handler);
+            this._legacy_resize_handler = null;
+        }
+        if (this._resize_light_raf !== null) {
+            cancelAnimationFrame(this._resize_light_raf);
+            this._resize_light_raf = null;
+        }
+        if (this._resize_heavy_timer !== null) {
+            clearTimeout(this._resize_heavy_timer);
+            this._resize_heavy_timer = null;
+        }
+        if (this._resize_retry_timer !== null) {
+            clearTimeout(this._resize_retry_timer);
+            this._resize_retry_timer = null;
+        }
+    }
+
+    _on_reader_geometry_changed() {
+        // 轻量通道：每帧最多一次，拖拽/动画期间保持视觉正确
+        if (this._resize_light_raf === null) {
+            this._resize_light_raf = requestAnimationFrame(() => {
+                this._resize_light_raf = null;
+                if (!this.is_open) return;
+                this._cached_container_rect = null;
+                if (this._page_positions) this._page_positions.stale = true;
+                this._dr_apply_scale();
+            });
+        }
+        // 重量通道：防抖到尺寸稳定后全量重布局
+        if (this._resize_heavy_timer !== null) clearTimeout(this._resize_heavy_timer);
+        this._resize_heavy_timer = setTimeout(() => {
+            this._resize_heavy_timer = null;
+            this._run_heavy_reader_resize();
+        }, 180);
+    }
+
+    _run_heavy_reader_resize() {
+        if (!this.is_open) return;
+        // 最小化/最大化过渡（~300ms 动画）期间尺寸是中间态，跳过并延后重试，
+        // 过渡结束后（_windowTransitioning 复位）必定补一次重布局
+        if (window.main_is_window_transitioning?.()) {
+            if (this._resize_retry_timer !== null) clearTimeout(this._resize_retry_timer);
+            this._resize_retry_timer = setTimeout(() => {
+                this._resize_retry_timer = null;
+                this._run_heavy_reader_resize();
+            }, 250);
+            return;
+        }
+        this._sync_reader_overlay_size();
+        this._handle_reader_resize();
     }
 
     _sync_reader_overlay_size() {
@@ -3185,17 +3311,28 @@ class DocumentReaderManager {
 
     _handle_reader_resize() {
         if (!this.is_open || !this._zoom_wrapper || !this._scroll_container) return;
-        if (window.main_is_window_transitioning?.()) return;
+        // 过渡期守卫由调用方 _run_heavy_reader_resize 负责（含延后重试），
+        // 此处仅做纯粹的布局对齐
 
         const new_w = this._get_page_base_width();
+        const new_h = this._scroll_container.clientHeight;
 
-        // 页面宽度未变化时跳过昂贵的 tile 重建和 PDF 重渲染，仅更新页面可见性
+        // 宽高均未变化时无需任何重布局（open 后的强制对齐/动画校正常为此情形）
+        if (new_w === this._last_resize_base_w && new_h === this._last_resize_container_h) {
+            this._cached_container_rect = null;
+            this._dr_apply_scale();
+            return;
+        }
+
+        // 宽度不变（仅高度变化）不影响页面布局：移动边界与可见域随视口更新即可
         if (new_w === this._last_resize_base_w) {
+            this._last_resize_container_h = new_h;
             this._cached_container_rect = null;
             this._dr_apply_scale();
             return;
         }
         this._last_resize_base_w = new_w;
+        this._last_resize_container_h = new_h;
 
         const active = this.page_manager.pages_list[this.active_page_index]
             || this.page_manager.get_current_page();
