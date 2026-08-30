@@ -112,7 +112,7 @@
                                 <button class="clear-btn" id="searchClear" style="display:none">×</button>
                             </div>
                             <div class="toolbar-right">
-                                <div class="dropdown" id="filterTimeDrop">
+                                <div class="dropdown filter-drop" id="filterTimeDrop">
                                     <div class="dropdown-trigger" data-value="all">
                                         <span class="dropdown-label">全部时间</span>
                                         <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
@@ -123,6 +123,17 @@
                                         <div class="dropdown-option" data-value="yesterday">昨天<span class="dropdown-option-check">✓</span></div>
                                         <div class="dropdown-option" data-value="week">本周<span class="dropdown-option-check">✓</span></div>
                                         <div class="dropdown-option" data-value="month">本月<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
+                                <div class="dropdown" id="filterSortDrop">
+                                    <div class="dropdown-trigger" data-value="time">
+                                        <span class="dropdown-label">按时间</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="time">按时间<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="name">按名称<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="size">按大小<span class="dropdown-option-check">✓</span></div>
                                     </div>
                                 </div>
                                 <div class="dropdown" id="filterSizeDrop">
@@ -136,17 +147,6 @@
                                         <div class="dropdown-option" data-value="medium">中 (1-10MB)<span class="dropdown-option-check">✓</span></div>
                                         <div class="dropdown-option" data-value="large">大 (10-100MB)<span class="dropdown-option-check">✓</span></div>
                                         <div class="dropdown-option" data-value="huge">超大 (100MB+)<span class="dropdown-option-check">✓</span></div>
-                                    </div>
-                                </div>
-                                <div class="dropdown" id="filterSortDrop">
-                                    <div class="dropdown-trigger" data-value="time">
-                                        <span class="dropdown-label">按时间</span>
-                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
-                                    </div>
-                                    <div class="dropdown-menu">
-                                        <div class="dropdown-option selected" data-value="time">按时间<span class="dropdown-option-check">✓</span></div>
-                                        <div class="dropdown-option" data-value="name">按名称<span class="dropdown-option-check">✓</span></div>
-                                        <div class="dropdown-option" data-value="size">按大小<span class="dropdown-option-check">✓</span></div>
                                     </div>
                                 </div>
                                 <div class="view-toggle">

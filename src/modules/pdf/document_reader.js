@@ -403,8 +403,9 @@ class DocumentReaderManager {
         this._window_resize_handler = () => {
             // 最小化/最大化过渡期间跳过所有 resize 处理，避免在动画中间尺寸上做重量级重算
             if (window.main_is_window_transitioning?.()) return;
-            // ① overlay canvas 立即同步（轻量 GPU 纹理分配，需要即时视觉反馈）
-            this._sync_reader_overlay_size();
+            // ① overlay canvas：仅在防抖后同步（重分配全屏 GPU 纹理代价高）。
+            //    每帧都重分配会在拖动时（大量 resize 事件）反复分配数百 MB 显存/内存导致卡死，
+            //    拖动期间 overlay 为透明绘制预览层、无绘制发生，延后到稳定后再分配不影响视觉。
             // ② 400ms 防抖：最大化/恢复动画约 300ms，等待动画稳定后再执行重量级操作
             if (this._resize_debounce_timer) {
                 clearTimeout(this._resize_debounce_timer);
@@ -412,6 +413,7 @@ class DocumentReaderManager {
             this._resize_debounce_timer = setTimeout(() => {
                 this._resize_debounce_timer = null;
                 if (window.main_is_window_transitioning?.()) return;
+                this._sync_reader_overlay_size();
                 this._schedule_reader_resize();
             }, 400);
         };
@@ -3195,12 +3197,6 @@ class DocumentReaderManager {
         }
         this._last_resize_base_w = new_w;
 
-        // 虚拟化：基准宽度变化后重算绝对坐标与文档总高度并应用，保证滚动锚点正确
-        if (this._dom_virtualize()) {
-            this._compute_page_layout();
-            this._apply_page_positions();
-        }
-
         const active = this.page_manager.pages_list[this.active_page_index]
             || this.page_manager.get_current_page();
         const active_offset = active?.page_element
@@ -3209,19 +3205,27 @@ class DocumentReaderManager {
 
         const pages = this.page_manager.pages_list;
 
-        // ［性能］全部页仅更新 DOM box 尺寸（纯 style 赋值，不触发布局），
-        // 不覆盖 coord_width/coord_height —— 留给 _resize_page_layout 判断尺寸变化
+        // ① 全部页统一更新 DOM box 尺寸（纯 style 赋值，单次 O(n) 遍历，不触发布局）
+        //    不覆盖 coord_width/coord_height —— 留给 _resize_page_layout 判断尺寸变化
         for (let i = 0; i < pages.length; i++) {
             const pd = pages[i];
             if (!pd?.page_element) continue;
             this._set_page_box_size(pd, new_w);
         }
 
-        // 仅对已有 tile 的页执行完整 resize（含注解缩放 + tile 重建 + 重绘）
+        // ② 仅对已有 tile 的页执行完整 resize（含注解缩放 + tile 重建 + 重绘）。
+        //    bulk=true：跳过每页的全文档布局重算，避免 O(n²) 卡死，布局在 ③ 仅重算一次
         for (const i of this._pages_with_tiles) {
-            this._resize_page_layout(i, new_w);
+            this._resize_page_layout(i, new_w, true);
         }
 
+        // ③ 虚拟化：所有页尺寸更新后，全文档布局（绝对坐标/总高度）仅重算一次 O(n)，保证滚动锚点正确
+        if (this._dom_virtualize()) {
+            this._compute_page_layout();
+            this._apply_page_positions();
+        }
+
+        // ④ 以活动页为锚点修正滚动偏移（必须依赖 ③ 之后的新 offsetTop）
         if (active?.page_element && active_offset !== null) {
             this.dr_canvas_y = active_offset - active.page_element.offsetTop * this.dr_scale;
         }
@@ -3232,14 +3236,23 @@ class DocumentReaderManager {
         this._dr_apply_scale();
     }
 
-    _resize_page_layout(page_index, new_w) {
+    _resize_page_layout(page_index, new_w, bulk = false) {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data?.page_element) return;
 
-        const old_w = page_data.coord_width || Math.round(parseFloat(page_data.page_element.style.width)) || 0;
-        const old_h = page_data.coord_height || Math.round(parseFloat(page_data.page_element.style.height)) || 0;
-        this._set_page_box_size(page_data, new_w);
-        const new_h = Math.round(parseFloat(page_data.page_element.style.height)) || 0;
+        let old_w, old_h, new_h;
+        if (bulk) {
+            // 批量 resize：box 尺寸已由 _handle_reader_resize 统一设置，
+            // 此处仅读取基准用于批注缩放与坐标更新，避免重复 style 赋值
+            old_w = page_data.coord_width || 0;
+            old_h = page_data.coord_height || 0;
+            new_h = Math.round(parseFloat(page_data.page_element.style.height)) || 0;
+        } else {
+            old_w = page_data.coord_width || Math.round(parseFloat(page_data.page_element.style.width)) || 0;
+            old_h = page_data.coord_height || Math.round(parseFloat(page_data.page_element.style.height)) || 0;
+            this._set_page_box_size(page_data, new_w);
+            new_h = Math.round(parseFloat(page_data.page_element.style.height)) || 0;
+        }
 
         if (old_w > 0 && old_h > 0 && (Math.abs(old_w - new_w) >= 1 || Math.abs(old_h - new_h) >= 1)) {
             this._scale_page_annotations(page_data, new_w / old_w, old_h > 0 ? new_h / old_h : new_w / old_w);
@@ -3261,8 +3274,9 @@ class DocumentReaderManager {
         }
 
         // 虚拟化：单页尺寸变化后（图片加载/宽高比变化）重算绝对坐标，
-        // 否则后续页 top 不平移会重叠/错位（flex 流原本自动完成，绝对定位需手动）
-        if (this._dom_virtualize()) {
+        // 否则后续页 top 不平移会重叠/错位（flex 流原本自动完成，绝对定位需手动）。
+        // bulk 模式由 _handle_reader_resize 在全部页更新后统一重算一次，避免 O(n²)
+        if (!bulk && this._dom_virtualize()) {
             this._compute_page_layout();
             this._apply_page_positions();
         }
