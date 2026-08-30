@@ -3214,8 +3214,11 @@ class DocumentReaderManager {
         }
 
         // ② 仅对已有 tile 的页执行完整 resize（含注解缩放 + tile 重建 + 重绘）。
-        //    bulk=true：跳过每页的全文档布局重算，避免 O(n²) 卡死，布局在 ③ 仅重算一次
-        for (const i of this._pages_with_tiles) {
+        //    bulk=true：跳过每页的全文档布局重算，避免 O(n²) 卡死，布局在 ③ 仅重算一次。
+        //    必须遍历快照：_resize_page_layout 内部 destroy(delete)+init(add) 会改写
+        //    _pages_with_tiles 本身，对 Set 边删边加会让元素回到迭代末尾被再次访问
+        //    （经典 Set 死循环，打开文档即冻结）
+        for (const i of [...this._pages_with_tiles]) {
             this._resize_page_layout(i, new_w, true);
         }
 
