@@ -2232,7 +2232,17 @@ class DocumentReaderManager {
             // 暂时置回 coord_width（旧基准，见 2471 行），先渲染会把 canvas CSS
             // 尺寸定格在旧宽度，随后 _resize_page_layout 校正盒宽后非强制渲染
             // 会被参数守卫跳过——画布比页盒窄/矮一截（部分页面长宽错位）
-            this._render_pdf_page_direct(page_index);
+            //
+            // 升清判定：在途/已完成的渲染达不到当前期望（如相邻页此前只做了
+            // 1x 远景预渲染）时用 force 接管——取消低清任务立即按目标 DPR 重渲染，
+            // 翻到两页中间即开始变清晰，无需等完全翻过去；已达标（含在途的全量
+            // DPR 预渲染）则保持非 force，避免取消-重启抖动
+            const want = this._pdf_desired_render_params(page_index, page_data, false);
+            const inflight = page_data.pdf_render_promise ? page_data.pdf_render_inflight : null;
+            const have_w = inflight ? inflight.css_w : (page_data.pdf_render_css_width || 0);
+            const have_dpr = inflight ? (inflight.dpr || 0) : (page_data.pdf_render_dpr || 0);
+            const need_sharp = have_w !== want.css_w || have_dpr < want.target_dpr - 0.001;
+            this._render_pdf_page_direct(page_index, need_sharp);
             return;
         }
 
@@ -2615,9 +2625,13 @@ class DocumentReaderManager {
      * 根据缩放级别和内存压力计算自适应 DPR
      * @param {number} base_dpr - 基础设备像素比
      * @param {number} scale - 当前缩放级别
+     * @param {boolean} is_active_page - 是否活动页
+     * @param {boolean} is_visible - 是否（至少部分）在视口内。非活动的可见页
+     *   （翻页时半可见的相邻页）此前也被按"非活动"降级，是"翻到两页中间时
+     *   下一页模糊、完全翻过去才清晰"的根源之一
      * @returns {number} 降级后的 DPR
      */
-    _calculate_adaptive_dpr(base_dpr, scale, is_active_page = true) {
+    _calculate_adaptive_dpr(base_dpr, scale, is_active_page = true, is_visible = true) {
         if (!this._adaptive_dpr_enabled) return Math.min(base_dpr, 2);
 
         // 极低缩放（<0.3）时才强制降 DPR=1，避免 0.5x 附近的模糊
@@ -2626,22 +2640,41 @@ class DocumentReaderManager {
         // 内存压力检测：堆内存超 500MB 时降级 DPR
         if (performance.memory?.usedJSHeapSize > 500 * 1024 * 1024) return 1;
 
-        // 非当前页只在大幅放大（>3x）且不可见时才降级
-        if (!is_active_page && scale > 3) return 1;
-
         // 使用 ceil 语义避免向下取整导致的模糊，上限 4x 防止 OOM
         const dpr = base_dpr * scale;
         const step = 0.25;
-        return Math.min(Math.ceil(dpr / step) * step, 4);
+        const stepped = Math.min(Math.ceil(dpr / step) * step, 4);
+
+        // 活动页全量 DPR
+        if (is_active_page) return stepped;
+
+        // 非活动的可见页（翻页中半可见的相邻页）：保底 2x——scale=1 时与活动页
+        // 等清晰度，翻页瞬间即清晰；大幅放大时封顶 2x 兼顾显存
+        if (is_visible) return Math.min(stepped, 2);
+
+        // 不可见页（预渲染/远离）维持旧策略：大幅放大时降 1x 省内存
+        return scale > 3 ? 1 : stepped;
     }
 
     /** 计算某页当前期望的 PDF 渲染参数（渲染起点与完成后收敛检查共用，避免两处漂移） */
     _pdf_desired_render_params(page_index, page_data, is_prerender) {
         const css_w = Math.round(parseFloat(page_data.page_element.style.width)) || page_data.page_element.clientWidth || 800;
-        const target_dpr = is_prerender ? 1 : this._calculate_adaptive_dpr(
-            window.devicePixelRatio || window.DRAW_CONFIG?.dpr || 1,
+        const base_dpr = window.devicePixelRatio || window.DRAW_CONFIG?.dpr || 1;
+        if (is_prerender) {
+            // 预渲染分级：与活动页相邻的页（翻页立即看到的页）直接按全量 DPR
+            // 栅格化——翻页瞬间无需再等一次高清重渲染；更远的页才降 1x 省资源
+            const dist = Math.abs(page_index - (this.active_page_index || 0));
+            if (dist > 1) return { css_w, target_dpr: 1 };
+            return {
+                css_w,
+                target_dpr: this._calculate_adaptive_dpr(base_dpr, this.dr_scale, false, true)
+            };
+        }
+        const target_dpr = this._calculate_adaptive_dpr(
+            base_dpr,
             this.dr_scale,
-            page_index === this.active_page_index
+            page_index === this.active_page_index,
+            !!page_data.is_visible
         );
         return { css_w, target_dpr };
     }
@@ -2672,6 +2705,12 @@ class DocumentReaderManager {
         // 或把守卫值改写成过期参数（表现为动态分辨率时好时坏、无法稳定复现）
         const my_seq = (page_data.pdf_render_seq = (page_data.pdf_render_seq || 0) + 1);
 
+        // 在途渲染参数快照：调用方（_on_page_visible 升清判定）据此区分
+        // "正在渲染的已是目标清晰度"与"在途的是低清预渲染需 force 接管"，
+        // 避免对已达标渲染重复 force 造成取消-重启抖动
+        const my_inflight = { css_w, dpr: target_dpr };
+        page_data.pdf_render_inflight = my_inflight;
+
         // 记录被本次调用覆盖前的旧渲染 promise：force 路径下会 cancel 旧渲染任务，
         // 旧任务以 RenderingCancelledException reject。本调用自身用本地 const 引用其 promise，
         // 避免后续 force 调用改写 page_data.pdf_render_promise 后，原调用误 await 到新 promise、
@@ -2680,9 +2719,13 @@ class DocumentReaderManager {
 
         const render_promise = (async () => {
             // 并发节流：非首屏且已在途渲染达上限 → 让出主线程到下一帧再启动，
-            // 摊平首屏/滚动时多页同现的渲染峰值（避免 getPage+drawImage 在主线程堆叠卡顿）
+            // 摊平首屏/滚动时多页同现的渲染峰值（避免 getPage+drawImage 在主线程堆叠卡顿）。
+            // 可见性驱动的真实渲染比预渲染多占一个槽位：翻页时下一页的升清渲染
+            // 不会被后台预渲染队列挤占饿死（否则要等滚动停止才轮得到，表现为
+            // "翻到两页中间时下一页持续模糊"）
             const _is_first = this._pending_first_render && page_index === this.active_page_index;
-            if (!_is_first && this._render_in_flight >= this._RENDER_MAX) {
+            const render_cap = is_prerender ? this._RENDER_MAX : this._RENDER_MAX + 1;
+            if (!_is_first && this._render_in_flight >= render_cap) {
                 await new Promise(r => requestAnimationFrame(r));
                 if (!this.is_open) return;
                 const pd_chk = this.page_manager.pages_list[page_index];
@@ -2715,8 +2758,9 @@ class DocumentReaderManager {
                 const css_scale = css_w / base_viewport.width;
                 const css_viewport = pdf_page.getViewport({ scale: css_scale });
 
-                // 预渲染固定 1x，普通渲染沿用缓存检查阶段已算好的 target_dpr
-                const render_dpr = is_prerender ? 1 : target_dpr;
+                // 渲染 DPR 已由 _pdf_desired_render_params 分级决定
+                // （活动页/相邻预渲染页全量、远页 1x），此处不再按 is_prerender 一刀切
+                const render_dpr = target_dpr;
                 const render_viewport = pdf_page.getViewport({ scale: css_scale * render_dpr });
 
                 page_data.page_width = base_viewport.width;
@@ -2837,6 +2881,10 @@ class DocumentReaderManager {
             if (page_data.pdf_render_promise === render_promise) {
             page_data.pdf_render_promise = null;
         }
+            // 在途参数快照同理按引用清理：本调用被 force 接管后，快照已归属新调用
+            if (page_data.pdf_render_inflight === my_inflight) {
+                page_data.pdf_render_inflight = null;
+            }
     }
     }
 
