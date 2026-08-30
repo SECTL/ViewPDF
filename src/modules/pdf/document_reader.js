@@ -2213,7 +2213,6 @@ class DocumentReaderManager {
         if (this._open_prerender_locked) return;
 
         if (page_data.render_mode === 'pdfjs') {
-            this._render_pdf_page_direct(page_index);
             // 自愈兜底：页面若在缓存恢复前被误标为"空页面延迟创建"，
             // 而缓存恢复后该页实际有批注，必须清除误标并允许重新初始化，
             // 否则 is_tiles_initialized=true 会让下方初始化分支永久跳过
@@ -2229,6 +2228,11 @@ class DocumentReaderManager {
                 this._init_page_tiles(page_index);
                 this._update_overlay_size(page_index);
             }
+            // 背景渲染必须放在盒尺寸对齐之后：_ensure_page_runtime_dom 会把盒宽
+            // 暂时置回 coord_width（旧基准，见 2471 行），先渲染会把 canvas CSS
+            // 尺寸定格在旧宽度，随后 _resize_page_layout 校正盒宽后非强制渲染
+            // 会被参数守卫跳过——画布比页盒窄/矮一截（部分页面长宽错位）
+            this._render_pdf_page_direct(page_index);
             return;
         }
 
@@ -2468,7 +2472,7 @@ class DocumentReaderManager {
                 // 批注容器归位：游离的容器必须重新挂载，否则批注不可见
                 page_el.appendChild(page_data._tiles_container);
             }
-            this._set_page_box_size(page_data, page_data.coord_width || this._get_page_base_width());
+            this._sync_page_box_to_base(page_data);
             return;
         }
 
@@ -2507,7 +2511,25 @@ class DocumentReaderManager {
             page_el.appendChild(page_data._tiles_container);
         }
 
-        this._set_page_box_size(page_data, page_data.coord_width || this._get_page_base_width());
+        this._sync_page_box_to_base(page_data);
+    }
+
+    /**
+     * 把页盒对齐到当前基准宽。仅在宽度确实变化时写入样式——本函数在每次
+     * 可见性扫描都会被调用，无条件写入会反复打脏页面位置缓存（引发全量
+     * offsetTop 重读）。盒宽一律取当前基准，禁止回退 coord_width：那是批注
+     * 坐标系基准，可能停留在旧窗口宽度（跨会话缓存恢复/延迟补偿中），
+     * 用作盒宽会让该页保持旧尺寸且没有任何后续路径会再纠正它。
+     * 盒高可能相对最新宽高比滞后，由渲染完成校验/后台回填经
+     * _resize_page_layout（盒高现算）负责修正。
+     */
+    _sync_page_box_to_base(page_data) {
+        if (!page_data?.page_element) return;
+        const base_w = this._get_page_base_width();
+        const cur_w = Math.round(parseFloat(page_data.page_element.style.width)) || 0;
+        if (cur_w !== base_w) {
+            this._set_page_box_size(page_data, base_w);
+        }
     }
 
     _virtualize_page(page_index) {
@@ -2748,6 +2770,24 @@ class DocumentReaderManager {
                     page_data._render_retry_count = 0;
                     this._note_render_success();
 
+                    // 真实页面宽高已确定（2700 行处赋值），按真实宽高比校页盒：
+                    // 导入期除首页外全部按首页尺寸估算（folder._pages_estimated），
+                    // 而后台回填只处理当时已挂载的页——渲染时才发现真实比例的页，
+                    // 页盒仍是估算比例，画布 CSS 却是真实比例，表现为页面下方
+                    // 留白/内容越出页盒（窗口 resize 后用估算比例重算盒高会固化错位）。
+                    // 走 _resize_page_layout 完成对齐：含批注纵向补偿、tile 重建与
+                    // 布局重算；宽高比一致时差值 <=1px，直接跳过（幂等空操作）
+                    if (!this._open_prerender_locked && this.is_open
+                        && this.page_manager?.pages_list?.[page_index] === page_data
+                        && page_data.page_element) {
+                        const box_w = parseFloat(page_data.page_element.style.width) || 0;
+                        const box_h = parseFloat(page_data.page_element.style.height) || 0;
+                        const want_h = box_w > 0 ? Math.round(box_w / this._get_page_aspect(page_data)) : 0;
+                        if (want_h > 0 && box_h > 0 && Math.abs(box_h - want_h) > 1) {
+                            this._resize_page_layout(page_index, this._get_page_base_width());
+                        }
+                    }
+
                     // 首屏 DOM 加载完成：当前活动页真正渲染到显示 canvas 后，
                     // 隐藏阅读器内加载层（满足"等待 DOM 加载成功才算加载成功"）
                     if (this._pending_first_render && page_index === this.active_page_index) {
@@ -2917,8 +2957,11 @@ class DocumentReaderManager {
                     folder.pages[i].width = info.width;
                     folder.pages[i].height = info.height;
                 }
-                // 仅对已挂载的页面（虚拟化简易兜底）同步 box，未挂载页在重挂载时按真实 aspect 重建
-                this._set_page_box_size(pd, this._get_page_base_width());
+                // 已挂载的页面走完整 resize：宽高比修正必须同时纵向补偿批注坐标、
+                // 重建 tile 并重算布局——裸 _set_page_box_size 只改盒尺寸，会让
+                // 已有 tile/批注停留在旧比例坐标系（渲染出的画布与批注互相错位）。
+                // 未挂载页在重挂载时按真实 aspect 重建（_resize_page_layout 内部守卫）
+                this._resize_page_layout(i, this._get_page_base_width());
                 dirty = true;
             }
             await new Promise(r => requestAnimationFrame(r));
@@ -3376,30 +3419,51 @@ class DocumentReaderManager {
         this._dr_apply_scale();
     }
 
+    /**
+     * 单页布局重算——页大小的唯一权威入口。
+     *
+     * 尺寸模型（三个坐标系，职责分明）：
+     *  - 页盒 style.width/height：视觉尺寸 = 基准宽 ÷ 当前最佳宽高比，由本函数现算；
+     *  - coord_width/height：批注坐标系基准，只在 tile 真正初始化时确立，
+     *    刻意滞后于页盒——与新页盒的差值就是批注的一次性补偿比例；
+     *  - aspect_ratio/page_width/page_height：文档数据，渲染完成/后台回填时更新。
+     *
+     * 关键约束：盒高必须用当前 aspect_ratio 现算，禁止回读 style.height——
+     * style 是上一次应用的产物，比例更新后回读会把过期值当成目标，触发
+     * "无变化"提前返回，页盒永久停留旧比例（resize 后部分页面长宽错误的根源）。
+     */
     _resize_page_layout(page_index, new_w, bulk = false) {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data?.page_element) return;
 
-        let old_w, old_h, new_h;
-        if (bulk) {
-            // 批量 resize：box 尺寸已由 _handle_reader_resize 统一设置，
-            // 此处仅读取基准用于批注缩放与坐标更新，避免重复 style 赋值
-            old_w = page_data.coord_width || 0;
-            old_h = page_data.coord_height || 0;
-            new_h = Math.round(parseFloat(page_data.page_element.style.height)) || 0;
-        } else {
-            old_w = page_data.coord_width || Math.round(parseFloat(page_data.page_element.style.width)) || 0;
-            old_h = page_data.coord_height || Math.round(parseFloat(page_data.page_element.style.height)) || 0;
-            this._set_page_box_size(page_data, new_w);
-            new_h = Math.round(parseFloat(page_data.page_element.style.height)) || 0;
-        }
+        // 权威现算：与 _set_page_box_size 内部公式逐字一致（含 200 下限），
+        // 保证 box_ok 判定与应用结果零偏差
+        const safe_w = Math.max(200, Math.round(new_w));
+        const new_h = Math.max(200, Math.round(safe_w / this._get_page_aspect(page_data)));
 
-        if (old_w > 0 && old_h > 0 && (Math.abs(old_w - new_w) >= 1 || Math.abs(old_h - new_h) >= 1)) {
-            this._scale_page_annotations(page_data, new_w / old_w, old_h > 0 ? new_h / old_h : new_w / old_w);
-        }
+        const el = page_data.page_element;
+        const cur_style_w = Math.round(parseFloat(el.style.width)) || 0;
+        const cur_style_h = Math.round(parseFloat(el.style.height)) || 0;
+        const box_ok = cur_style_w === safe_w && cur_style_h === new_h;
 
-        page_data.coord_width = new_w;
+        // 批注坐标系旧基准：未初始化过 tile 的页为 0，此时 style 值不代表
+        // 坐标基准（没有批注需要补偿），禁止把 style 当作 old 值参与缩放
+        const old_w = page_data.coord_width || 0;
+        const old_h = page_data.coord_height || 0;
+        const coords_ok = old_w === safe_w && old_h === new_h;
+
+        // 应用新盒尺寸（幂等；比例修正也随这次写入完成）
+        this._set_page_box_size(page_data, safe_w);
+
+        if (!coords_ok && old_w > 0 && old_h > 0) {
+            this._scale_page_annotations(page_data, safe_w / old_w, new_h / old_h);
+        }
+        page_data.coord_width = safe_w;
         page_data.coord_height = new_h;
+
+        // 盒尺寸与批注坐标基准均已对齐：无需销毁/重建 tile 或重渲染 PDF 背景
+        // （open() 末尾的强制对齐/重复可见性扫描常为此情形，属幂等空操作）
+        if (box_ok && coords_ok) return;
 
         // 旧 tile 始终销毁（轻量 CPU 清理），但仅对可见/附近页重建新 tile（避免 GPU 纹理无效分配）
         if (page_data.is_tiles_initialized) {
