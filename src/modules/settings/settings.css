@@ -894,14 +894,18 @@
     background: var(--color-surface-elevated, #3a3a3a);
 }
 
+/* 遮罩挂在 #settingsPanel 根节点内（JS 侧 appendChild 到面板），
+   覆盖面板全区域；标题栏在面板之外，不受遮罩影响 */
 .sp-color-picker-overlay {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
     z-index: 9999;
-    background: transparent;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
 }
 
 .sp-setting-label {

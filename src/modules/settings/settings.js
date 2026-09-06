@@ -393,6 +393,7 @@ async function initSettings() {
                     telemetryToggle.checked = telemetryEnabled;
                 }
 
+
                 // 文档关联状态检测（功能检测）
                 async function checkAssociation(ext, statusElId) {
                     const statusEl = document.getElementById(statusElId);
@@ -913,8 +914,12 @@ async function initSettings() {
         if (!color_picker_overlay) {
             color_picker_overlay = document.createElement('div');
             color_picker_overlay.className = 'sp-color-picker-overlay';
-            color_picker_overlay.addEventListener('click', settings_hide_color_picker);
-            document.body.appendChild(color_picker_overlay);
+            // 遮罩仅作视觉遮挡与点击屏障，点击遮罩不关闭，只能通过取消/确定退出
+            // 必须挂在面板根节点内：#settingsPanel(z-index:15) 是独立层叠上下文，
+            // 弹窗的 z-index 只在面板内生效；挂到 body 的话遮罩会盖住整个面板
+            // 子树，弹窗内部点击也被吞掉（表现为点哪都关闭）
+            const overlayHost = colorPickerPopup?.closest('#settingsPanel');
+            (overlayHost || document.body).appendChild(color_picker_overlay);
         }
         color_picker_overlay.style.display = 'block';
     }
