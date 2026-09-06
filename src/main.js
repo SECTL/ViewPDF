@@ -2309,6 +2309,38 @@ function main_toggle_maximize() {
     }
 }
 
+// 切换标题栏窗口控件样式：macOS 红绿灯（左置）/ Windows 经典（右置 ─ ▢ ✕）
+// 两套控件组独立存在于 DOM，靠 #titlebar.macos-mode 类二选一显示
+function main_apply_titlebar_style(macos_style) {
+    document.getElementById('titlebar')?.classList.toggle('macos-mode', !!macos_style);
+}
+
+// 跟踪窗口最大化状态：驱动 Windows 样式最大化按钮 ▢/❐ 图标与提示文字切换
+function main_setup_maximize_state_sync() {
+    if (!window.__TAURI__) return;
+    const { getCurrentWindow } = window.__TAURI__.window;
+    const titlebar = document.getElementById('titlebar');
+    const maxButtons = ['btnTitleMaximizeWin', 'btnTitleMaximizeMac']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+    let syncing = false;
+    const sync = async () => {
+        if (syncing) return;
+        syncing = true;
+        try {
+            const maximized = await getCurrentWindow().isMaximized();
+            titlebar?.classList.toggle('is-maximized', maximized);
+            for (const btn of maxButtons) {
+                btn.title = maximized ? '还原' : '最大化';
+            }
+        } catch (_) {} finally {
+            syncing = false;
+        }
+    };
+    getCurrentWindow().onResized(() => { sync(); }).catch(() => {});
+    sync();
+}
+
 function main_submit_close_window() {
     if (window.__TAURI__) {
         const { getCurrentWindow } = window.__TAURI__.window;
@@ -2318,10 +2350,19 @@ function main_submit_close_window() {
 
 // 绑定所有事件
 function main_setup_all_events() {
-    // 标题栏按钮
-    if (dom.btnTitleMinimize) dom.btnTitleMinimize.addEventListener('click', main_hide_window);
-    if (dom.btnTitleMaximize) dom.btnTitleMaximize.addEventListener('click', main_toggle_maximize);
-    if (dom.btnTitleClose) dom.btnTitleClose.addEventListener('click', main_submit_close_window);
+    // 标题栏按钮（mac/win 两套控件组共用同一处理器）
+    const titleButtonBindings = [
+        ['btnTitleMinimizeWin', main_hide_window],
+        ['btnTitleMinimizeMac', main_hide_window],
+        ['btnTitleMaximizeWin', main_toggle_maximize],
+        ['btnTitleMaximizeMac', main_toggle_maximize],
+        ['btnTitleCloseWin', main_submit_close_window],
+        ['btnTitleCloseMac', main_submit_close_window],
+    ];
+    for (const [btnId, handler] of titleButtonBindings) {
+        document.getElementById(btnId)?.addEventListener('click', handler);
+    }
+    main_setup_maximize_state_sync();
     main_update_tabs();
 
     // 标签栏交互增强：快捷键 + 横向滚轮（一次性注册）
@@ -3259,6 +3300,7 @@ window.main_update_canvas_transform = main_update_canvas_transform;
 window.main_init_pdfjs = main_init_pdfjs;
 window.main_hide_window = main_hide_window;
 window.main_toggle_maximize = main_toggle_maximize;
+window.main_apply_titlebar_style = main_apply_titlebar_style;
 window.main_submit_close_window = main_submit_close_window;
 window.main_is_window_transitioning = main_is_window_transitioning;
 window.main_add_recent_file = main_add_recent_file;

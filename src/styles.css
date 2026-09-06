@@ -153,13 +153,6 @@ body {
     flex: 1;
 }
 
-.titlebar-controls {
-    display: flex;
-    -webkit-app-region: no-drag;
-    height: 100%;
-    margin-left: auto;
-}
-
 .titlebar-btn {
     width: 46px;
     height: 100%;
@@ -182,15 +175,20 @@ body {
     color: #fff;
 }
 
-/* ===== macOS 红绿灯窗口控件 ===== */
-.titlebar-controls.mac {
+/* ===== macOS 红绿灯窗口控件（独立样式组：左置圆形，DOM 在 drag 区之前，
+   仅 #titlebar.macos-mode 时显示） ===== */
+.titlebar-controls-mac {
+    display: none;
     gap: 8px;
     align-items: center;
-    margin-left: 0;
-    margin-right: 0;
+    height: 100%;
     padding: 0 8px 0 16px;
+    -webkit-app-region: no-drag;
 }
-.titlebar-controls.mac .titlebar-btn {
+.titlebar.macos-mode .titlebar-controls-mac {
+    display: flex;
+}
+.tbm-btn {
     width: 12px;
     height: 12px;
     padding: 0;
@@ -198,27 +196,51 @@ body {
     background: var(--tb-color, #c7c7c7);
     color: rgba(0, 0, 0, 0.55);
     border: 0.5px solid rgba(0, 0, 0, 0.13);
-    transition: filter 0.1s ease, background 0.1s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: filter 0.1s ease;
 }
-.titlebar-controls.mac .titlebar-btn:hover {
-    background: var(--tb-color, #c7c7c7);
-    filter: brightness(0.94);
-}
-.titlebar-controls.mac .titlebar-btn:active {
-    filter: brightness(0.8);
-}
-.titlebar-controls.mac .tb-glyph {
+.tbm-btn svg {
     width: 12px;
     height: 12px;
     opacity: 0;
     transition: opacity 0.1s ease;
 }
-.titlebar-controls.mac .titlebar-btn:hover .tb-glyph {
+.tbm-btn:hover {
+    filter: brightness(0.94);
+}
+.tbm-btn:active {
+    filter: brightness(0.8);
+}
+.tbm-btn:hover svg {
     opacity: 1;
 }
-.titlebar-controls.mac .titlebar-btn-close { --tb-color: #ff5f57; }
-.titlebar-controls.mac .titlebar-btn-min   { --tb-color: #febc2e; }
-.titlebar-controls.mac .titlebar-btn-max   { --tb-color: #28c840; }
+.tbm-close { --tb-color: #ff5f57; }
+.tbm-min   { --tb-color: #febc2e; }
+.tbm-max   { --tb-color: #28c840; }
+
+/* ===== Windows 经典窗口控件（独立样式组：右置 ─ ▢ ✕，DOM 在 drag 区之后，
+   默认显示；最大化后 ▢ 切换为 ❐，is-maximized 类由 JS 维护） ===== */
+.titlebar-controls-win {
+    display: flex;
+    height: 100%;
+    margin-left: auto;
+    -webkit-app-region: no-drag;
+}
+.titlebar.macos-mode .titlebar-controls-win {
+    display: none;
+}
+.titlebar-controls-win .tb-glyph-restore {
+    display: none;
+}
+.titlebar.is-maximized .titlebar-controls-win .tb-glyph-max {
+    display: none;
+}
+.titlebar.is-maximized .titlebar-controls-win .tb-glyph-restore {
+    display: block;
+}
 
 /* ===== App Body ===== */
 .app-body {

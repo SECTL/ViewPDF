@@ -393,6 +393,11 @@ async function initSettings() {
                     telemetryToggle.checked = telemetryEnabled;
                 }
 
+                const macosTitleBarToggle = document.getElementById('macosTitleBarToggle');
+                if (macosTitleBarToggle) {
+                    macosTitleBarToggle.checked = settings.macosTitleBar !== false;
+                }
+
 
                 // 文档关联状态检测（功能检测）
                 async function checkAssociation(ext, statusElId) {
@@ -1128,6 +1133,16 @@ async function initSettings() {
                     await window.documentReaderManager.delete_annotation_cache_files?.();
                 }
             }
+        });
+    }
+
+    // macOS 样式标题栏开关
+    const macosTitleBarToggle = document.getElementById('macosTitleBarToggle');
+    if (macosTitleBarToggle) {
+        macosTitleBarToggle.addEventListener('change', async () => {
+            const enabled = macosTitleBarToggle.checked;
+            await settings_save_all_local({ macosTitleBar: enabled });
+            window.main_apply_titlebar_style?.(enabled);
         });
     }
 

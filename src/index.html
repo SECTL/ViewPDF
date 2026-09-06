@@ -39,26 +39,47 @@
 </head>
 <body>
     <div class="container">
-        <div class="titlebar" id="titlebar">
-            <div class="titlebar-controls mac">
-                <button class="titlebar-btn titlebar-btn-close" id="btnTitleClose" title="关闭">
-                    <svg class="tb-glyph" viewBox="0 0 12 12" fill="none">
+        <div class="titlebar" id="titlebar" data-tauri-drag-region>
+            <!-- macOS 红绿灯控件组（左置，macos-mode 时显示） -->
+            <div class="titlebar-controls-mac" id="titlebarControlsMac">
+                <button class="tbm-btn tbm-close" id="btnTitleCloseMac" title="关闭">
+                    <svg viewBox="0 0 12 12" fill="none">
                         <path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
-                <button class="titlebar-btn titlebar-btn-min" id="btnTitleMinimize" title="最小化">
-                    <svg class="tb-glyph" viewBox="0 0 12 12" fill="none">
+                <button class="tbm-btn tbm-min" id="btnTitleMinimizeMac" title="最小化">
+                    <svg viewBox="0 0 12 12" fill="none">
                         <path d="M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
-                <button class="titlebar-btn titlebar-btn-max" id="btnTitleMaximize" title="最大化">
-                    <svg class="tb-glyph" viewBox="0 0 12 12" fill="none">
+                <button class="tbm-btn tbm-max" id="btnTitleMaximizeMac" title="最大化">
+                    <svg viewBox="0 0 12 12" fill="none">
                         <path d="M6 3v6M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
             </div>
-            <div class="titlebar-drag" data-tauri-drag-region>
-                <div class="titlebar-tabs" id="titlebarTabs"></div>
+            <div class="titlebar-tabs" id="titlebarTabs" data-tauri-drag-region></div>
+            <!-- Windows 经典控件组（右置，默认显示；─ ▢ ✕ 顺序，最大化后 ▢→❐） -->
+            <div class="titlebar-controls-win" id="titlebarControlsWin">
+                <button class="titlebar-btn" id="btnTitleMinimizeWin" title="最小化">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <button class="titlebar-btn" id="btnTitleMaximizeWin" title="最大化">
+                    <svg class="tb-glyph-max" viewBox="0 0 12 12" fill="none">
+                        <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/>
+                    </svg>
+                    <svg class="tb-glyph-restore" viewBox="0 0 12 12" fill="none">
+                        <rect x="3" y="5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/>
+                        <path d="M5 5V4a1 1 0 011-1h2a1 1 0 011 1v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <button class="titlebar-btn titlebar-btn-close" id="btnTitleCloseWin" title="关闭">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
             </div>
         </div>
 

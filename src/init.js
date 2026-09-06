@@ -76,12 +76,7 @@ function dom_init_all() {
     // 顶栏按钮
     dom.btnToggleTheme = document.getElementById('btnToggleTheme');
     dom.btnGlobalSettings = document.getElementById('btnGlobalSettings');
-    
-    // 标题栏按钮
-    dom.btnTitleMinimize = document.getElementById('btnTitleMinimize');
-    dom.btnTitleMaximize = document.getElementById('btnTitleMaximize');
-    dom.btnTitleClose = document.getElementById('btnTitleClose');
-    
+
     // 文档阅读器面板
     dom.documentReaderPanel = document.getElementById('documentReaderPanel');
     dom.docReaderScrollContainer = document.getElementById('docReaderScrollContainer');
@@ -721,6 +716,9 @@ async function main_init_all() {
         if (!dom_init_all()) {
             throw new Error('DOM 初始化失败');
         }
+
+        // 标题栏窗口控件样式（macOS 红绿灯默认开启，关闭后为 Windows 经典右置）
+        window.main_apply_titlebar_style?.(settings?.macosTitleBar !== false);
 
         // DOM 就绪后应用主题（theme_update_toolbar_text_visibility 等依赖 DOM 元素）
         if (settings?.theme) {

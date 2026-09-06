@@ -110,6 +110,7 @@
     "importSettings": "Import",
     "resetApp": "Reset",
     "blackboardEnabled": "Blackboard",
+    "macosTitleBar": "macOS-style title bar",
     "blackboardEnabledHint": "Enable the blackboard for drawing and annotation",
     "telemetry": "Telemetry",
     "telemetryHint": "Telemetry data is only used for usage analysis and does not contain any personal privacy information",

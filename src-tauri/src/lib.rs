@@ -1279,6 +1279,7 @@ fn config_fetch_default() -> serde_json::Value {
         "autoClearCacheDays": 15,
         "lastCacheClearDate": "",
         "theme": "com.viewstage.theme.simplify",
+        "macosTitleBar": true,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
         "wordCacheClearDays": 30,
@@ -1661,7 +1662,6 @@ async fn update_download_cancel() -> Result<(), String> {
     log::info!("已发送下载取消信号");
     Ok(())
 }
-
 /// Tauri IPC 命令：下载更新文件
 ///
 /// 优先使用 SECTL 分发接口下载，失败时回退到 GitHub 镜像加速。
@@ -3451,7 +3451,7 @@ pub fn app_init_run() {
                 }
                 
             }
-            
+
             Ok(())
         })
         // 主窗口关闭拦截：先让前端保存批注/阅读位置，保存完成由 app_confirm_close 放行
