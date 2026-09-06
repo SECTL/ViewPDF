@@ -854,9 +854,6 @@ class BlackboardManager {
             window.batchDrawManager.batch_draw_delete_all();
         }
         this.drawing_engine.set_draw_mode('move');
-        if (window.main_update_mode) {
-            window.main_update_mode('move');
-        }
         this._update_mode_buttons('move');
 
         // 使用 DrawingEngine 隔离历史
@@ -909,9 +906,6 @@ class BlackboardManager {
 
         this.draw_mode = 'comment';
         this.drawing_engine.set_draw_mode('comment');
-        if (window.main_update_mode) {
-            await window.main_update_mode('comment');
-        }
         this._update_mode_buttons('comment');
 
         // 笔画加载与面板过渡并发：瓦片重绘不依赖面板可见性，
@@ -1012,9 +1006,8 @@ class BlackboardManager {
             }
         }
         if (!bb_active) {
-            if (window.main_update_mode) {
-                window.main_update_mode('move');
-            }
+            // 不回置阅读器鼠标模式：黑板与阅读器鼠标状态完全独立，
+            // 阅读器保持打开黑板之前的模式
             if (window.main_update_tabs) {
                 window.main_update_tabs();
             }
@@ -1454,14 +1447,14 @@ class BlackboardManager {
             this._el.btnClose.addEventListener('click', () => this.close());
         }
 
-        // 模式按钮 — 同步 blackboard.draw_mode、drawing_engine.draw_mode 与按钮视觉
+        // 模式按钮 — 仅同步黑板自身状态（draw_mode / 按钮视觉），
+        // 不联动阅读器全局鼠标模式（window.main_update_mode）
         const handle_mode_click = (btn) => {
             const mode = btn.dataset.bbMode;
             if (this.draw_mode === mode) {
                 // 已激活的按钮再次点击 → 唤出笔控制面板（move 无面板）
                 if (mode === 'move') {
                     this.drawing_engine.set_draw_mode('move');
-                    window.main_update_mode?.('move');
                     this._update_mode_buttons('move');
                     return;
                 }
@@ -1469,7 +1462,6 @@ class BlackboardManager {
             } else {
                 this.draw_mode = mode;
                 this.drawing_engine.set_draw_mode(mode);
-                window.main_update_mode?.(mode);
                 this._update_mode_buttons(mode);
             }
         };
