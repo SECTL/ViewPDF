@@ -398,6 +398,11 @@ async function initSettings() {
                     macosTitleBarToggle.checked = settings.macosTitleBar !== false;
                 }
 
+                const toolbarTextToggle = document.getElementById('toolbarTextToggle');
+                if (toolbarTextToggle) {
+                    toolbarTextToggle.checked = settings.showToolbarText === true;
+                }
+
 
                 // 文档关联状态检测（功能检测）
                 async function checkAssociation(ext, statusElId) {
@@ -1143,6 +1148,16 @@ async function initSettings() {
             const enabled = macosTitleBarToggle.checked;
             await settings_save_all_local({ macosTitleBar: enabled });
             window.main_apply_titlebar_style?.(enabled);
+        });
+    }
+
+    // 工具栏文字提示开关（覆盖主题包配置，立即应用到主工具栏与黑板工具栏）
+    const toolbarTextToggle = document.getElementById('toolbarTextToggle');
+    if (toolbarTextToggle) {
+        toolbarTextToggle.addEventListener('change', async () => {
+            const show = toolbarTextToggle.checked;
+            await settings_save_all_local({ showToolbarText: show });
+            window.ThemeManager?.theme_set_user_toolbar_text?.(show);
         });
     }
 

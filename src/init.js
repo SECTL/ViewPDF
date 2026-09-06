@@ -717,6 +717,10 @@ async function main_init_all() {
             throw new Error('DOM 初始化失败');
         }
 
+        // 用户级工具栏文字提示开关（设置面板），优先于主题包内置配置；
+        // 须在主题应用前设置，主题应用内部的文字显隐刷新即携带该偏好
+        window.ThemeManager?.theme_set_user_toolbar_text?.(settings?.showToolbarText === true);
+
         // 标题栏窗口控件样式（macOS 红绿灯默认开启，关闭后为 Windows 经典右置）
         window.main_apply_titlebar_style?.(settings?.macosTitleBar !== false);
 

@@ -183,6 +183,15 @@ const ThemeManager = {
   },
 
   /**
+   * 设置用户级工具栏文字开关（优先于主题包配置），并立即应用到所有工具栏
+   * @param {boolean} show
+   */
+  theme_set_user_toolbar_text(show) {
+    this._user_toolbar_text = show !== false;
+    this.theme_update_toolbar_text_visibility();
+  },
+
+  /**
    * 获取当前激活的主题包名
    * @returns {string|null} 主题包名
    */
@@ -192,9 +201,13 @@ const ThemeManager = {
 
   /**
    * 获取主题是否显示工具栏文字标签
+   * 用户级开关（设置面板）优先，未设置时回退主题包配置
    * @returns {boolean} true=显示文字，false=仅图标
    */
   theme_fetch_toolbar_text() {
+    if (this._user_toolbar_text !== undefined) {
+      return this._user_toolbar_text;
+    }
     if (this.currentThemeModule && this.currentThemeModule.fetch_toolbar_text) {
       return this.currentThemeModule.fetch_toolbar_text();
     }

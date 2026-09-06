@@ -1280,6 +1280,7 @@ fn config_fetch_default() -> serde_json::Value {
         "lastCacheClearDate": "",
         "theme": "com.viewstage.theme.simplify",
         "macosTitleBar": true,
+        "showToolbarText": false,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
         "wordCacheClearDays": 30,

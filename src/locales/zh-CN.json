@@ -110,6 +110,7 @@
     "importSettings": "导入设置",
     "resetApp": "重置应用",
     "blackboardEnabled": "小黑板",
+    "toolbarText": "工具栏文字提示",
     "macosTitleBar": "macOS 样式标题栏",
     "blackboardEnabledHint": "启用小黑板进行绘图和批注",
     "telemetry": "遥测功能",
