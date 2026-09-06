@@ -1419,51 +1419,36 @@ class BlackboardManager {
         if (this.drawing_engine?.is_drawing) return;
         if (this.tile_renderer) this.tile_renderer.cancel_idle_shrink();
 
-        // Ctrl+滚轮 = 缩放，普通滚轮 = 上下平移
-        if (e.ctrlKey) {
-            e.preventDefault();
-            const s = this.bb_state;
-            const max_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3;
-            const min_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.minScale : 0.5;
-            const delta = e.deltaY > 0 ? -0.1 : 0.1;
-            const new_scale = Math.max(min_scale, Math.min(max_scale, s.scale + delta));
+        // 滚轮（含 Ctrl+滚轮）= 以鼠标位置为锚点缩放
+        e.preventDefault();
+        const s = this.bb_state;
+        const max_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.maxScaleImage : 3;
+        const min_scale = window.DRAW_CONFIG ? window.DRAW_CONFIG.minScale : 0.5;
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const new_scale = Math.max(min_scale, Math.min(max_scale, s.scale + delta));
 
-            if (new_scale !== s.scale) {
-                if (!this._cached_container_rect) {
-                    this._cached_container_rect = (window.dom.mainContent || window.dom.canvasContainer).getBoundingClientRect();
-                }
-                const container_rect = this._cached_container_rect;
-                const mouse_x = e.clientX - container_rect.left;
-                const mouse_y = e.clientY - container_rect.top;
+        if (new_scale === s.scale) return;
 
-                const old_scale = s.scale;
-                const scale_ratio = new_scale / old_scale;
-                const target_x = mouse_x - (mouse_x - s.canvas_x) * scale_ratio;
-                const target_y = mouse_y - (mouse_y - s.canvas_y) * scale_ratio;
-
-                s.scale = new_scale;
-                s.canvas_x = target_x;
-                s.canvas_y = target_y;
-
-                this._update_move_bound();
-                this._update_canvas_position();
-                this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 200);
-            }
-        } else {
-            // 普通滚轮 = 上下平移
-            e.preventDefault();
-            const s = this.bb_state;
-            const scroll_speed = 2;
-            s.canvas_y -= e.deltaY * scroll_speed;
-
-            // 仅在画布超出屏幕时 clamp
-            const scaled_h = this.bb_state.canvas_h * s.scale;
-            if (scaled_h > this.screen_h) {
-                s.canvas_y = Math.max(-(scaled_h - this.screen_h), Math.min(0, s.canvas_y));
-            }
-
-            this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 0);
+        // 锚点以黑板自身画布面为基准（面板 fixed 全屏，缩放跟随光标）
+        if (!this._cached_container_rect) {
+            this._cached_container_rect = this._el.canvasWrap.getBoundingClientRect();
         }
+        const wrap_rect = this._cached_container_rect;
+        const mouse_x = e.clientX - wrap_rect.left;
+        const mouse_y = e.clientY - wrap_rect.top;
+
+        const old_scale = s.scale;
+        const scale_ratio = new_scale / old_scale;
+        const target_x = mouse_x - (mouse_x - s.canvas_x) * scale_ratio;
+        const target_y = mouse_y - (mouse_y - s.canvas_y) * scale_ratio;
+
+        s.scale = new_scale;
+        s.canvas_x = target_x;
+        s.canvas_y = target_y;
+
+        this._update_move_bound();
+        this._update_canvas_position();
+        this._sync_bb_transform_smooth(s.canvas_x, s.canvas_y, s.scale, 200);
     }
 
     setup_toolbar_events() {
