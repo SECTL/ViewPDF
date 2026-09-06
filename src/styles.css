@@ -241,6 +241,23 @@ body {
 .titlebar.is-maximized .titlebar-controls-win .tb-glyph-restore {
     display: block;
 }
+/* 悬停提示集中到图标周围的小圆角方框（约 28px），不铺满整条按钮 */
+.titlebar-controls-win .titlebar-btn:hover,
+.titlebar-controls-win .titlebar-btn:active {
+    background: transparent;
+}
+.titlebar-controls-win .titlebar-btn svg {
+    box-sizing: content-box;
+    padding: 6px;
+    border-radius: 6px;
+    transition: background 0.1s ease;
+}
+.titlebar-controls-win .titlebar-btn:hover svg {
+    background: var(--color-surface-strong);
+}
+.titlebar-controls-win .titlebar-btn-close:hover svg {
+    background: var(--color-error);
+}
 
 /* ===== App Body ===== */
 .app-body {
