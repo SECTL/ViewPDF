@@ -1663,6 +1663,58 @@ async fn update_download_cancel() -> Result<(), String> {
     log::info!("已发送下载取消信号");
     Ok(())
 }
+/// 启动时清理历史更新安装包：updates 目录只保留最新一个安装包
+/// （保护"已下载待安装"的最新包不被误删），其余历史包全部删除。
+/// 安装器正在运行时文件被占用，删除会静默失败，不影响安装流程
+fn updates_cleanup_on_startup(app: &tauri::AppHandle) {
+    let paths = match AppPaths::new(app) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let updates_dir = &paths.updates_dir;
+    if !updates_dir.exists() {
+        return;
+    }
+
+    // 收集 (路径, 修改时间, 大小)，仅处理文件
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(updates_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push((path, modified, meta.len()));
+        }
+    }
+    if files.len() <= 1 {
+        return;
+    }
+
+    // 按修改时间排序，保留最新一个，删除其余历史包
+    files.sort_by_key(|(_, mtime, _)| *mtime);
+    let mut removed_size: u64 = 0;
+    let mut removed_count: u32 = 0;
+    for (path, _, size) in files.iter().take(files.len() - 1) {
+        if std::fs::remove_file(path).is_ok() {
+            removed_size += size;
+            removed_count += 1;
+        }
+    }
+    if removed_count > 0 {
+        log::info!(
+            "启动清理：删除 {} 个历史更新安装包，释放 {:.2} MB",
+            removed_count,
+            removed_size as f64 / 1024.0 / 1024.0
+        );
+    }
+}
+
 /// Tauri IPC 命令：下载更新文件
 ///
 /// 优先使用 SECTL 分发接口下载，失败时回退到 GitHub 镜像加速。
@@ -3451,6 +3503,28 @@ pub fn app_init_run() {
                     });
                 }
                 
+            }
+
+            // 启动清理（与缓存清理一并执行，不阻塞窗口启动）：
+            // 1) 历史更新安装包：updates 目录只保留最新一个
+            // 2) 触发缓存/Word 缓存自动清理（各自按配置间隔执行，未到期或
+            //    已关闭时自动跳过；此前 cache_validate_auto_clear 无调用方，
+            //    设置里的"自动清除缓存"实际从未生效，这里补上启动触发）
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    updates_cleanup_on_startup(&app_handle);
+                    match cache_validate_auto_clear(app_handle.clone()) {
+                        Ok(true) => log::info!("启动清理：已按间隔执行缓存自动清理"),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("启动清理：缓存自动清理失败: {}", e),
+                    }
+                    match word_cache_validate_auto_clear(app_handle.clone()) {
+                        Ok(true) => log::info!("启动清理：已按间隔执行 Word 缓存自动清理"),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("启动清理：Word 缓存自动清理失败: {}", e),
+                    }
+                });
             }
 
             Ok(())
