@@ -106,6 +106,13 @@ async function settings_load_config() {
             // 加载黑板启用状态（主题在 DOM 创建后应用，见 main_init_all）
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
 
+            // 钢笔效果模式：DRAW_CONFIG 默认 'full'，运行期唯一来源是它，
+            // 此前只有设置面板初始化时才回读保存值，导致 OOBE/设置中关闭后
+            // 重启仍按 'full' 生效
+            if (['off', 'limited', 'full'].includes(settings.penEffectMode)) {
+                window.DRAW_CONFIG.penEffectMode = settings.penEffectMode;
+            }
+
             console.log('[init] 配置加载完成');
             return settings;
         } catch (error) {
