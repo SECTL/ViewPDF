@@ -532,7 +532,16 @@ class BlackboardManager {
             const link = document.createElement('link');
             link.rel = 'stylesheet';
             link.href = 'blackboard.css';
+            // 记录样式表就绪 promise：open() 必须等它 resolve 后再添加 .active，
+            // 否则首次打开时初始态 translateY(-100%) 与 transition 尚未定义，
+            // 面板会直接跳到终态（无滑入动画）
+            this._bb_css_ready = new Promise(resolve => {
+                link.addEventListener('load', () => resolve(), { once: true });
+                link.addEventListener('error', () => resolve(), { once: true });
+            });
             document.head.appendChild(link);
+        } else {
+            this._bb_css_ready = Promise.resolve();
         }
 
         // 创建面板和工具栏 DOM
@@ -542,9 +551,10 @@ class BlackboardManager {
         const panel = this._el.panel;
         if (!panel) return;
 
-        // 使用面板尺寸，如果没有则使用传入的container或窗口尺寸
-        this.screen_w = Math.max(1, panel.clientWidth || container?.clientWidth || window.innerWidth);
-        this.screen_h = Math.max(1, panel.clientHeight || container?.clientHeight || window.innerHeight);
+        // 面板 fixed inset:0 全屏，几何基准直接取视口尺寸
+        // （CSS 异步加载期读面板 clientWidth/Height 会得到未布局的过渡值）
+        this.screen_w = Math.max(1, window.innerWidth);
+        this.screen_h = Math.max(1, window.innerHeight);
 
         // 黑板画布大小为屏幕两倍
         this.bb_state.canvas_w = Math.floor(this.screen_w * 2);
@@ -830,23 +840,6 @@ class BlackboardManager {
             this._bb_switch_md5(this._bb_current_pdf_md5());
         }
 
-        // 尺寸自检（必须在懒加载创建画布/瓦片之前）：init 时面板可能尚未完成布局，
-        // 或板关闭期间窗口已调整（关闭期无几何响应在跑）——以面板当前实际尺寸
-        // 走 resize() 完整对齐：保持视口中心内容点、重建瓦片网格、同步 overlay。
-        // 首次 open（tile_renderer/overlay 未建）时 resize 仅校正基础字段与
-        // 包装器盒尺寸，随后 _lazy_init_canvas 按新尺寸构建，二者不冲突
-        {
-            const p = this._el?.panel;
-            const w = Math.max(1, p?.clientWidth || window.innerWidth);
-            const h = Math.max(1, p?.clientHeight || window.innerHeight);
-            if (w !== this.screen_w || h !== this.screen_h) {
-                this.resize(w, h);
-            }
-        }
-
-        // 注：tile_renderer / overlay / DrawingEngine 子模块的初始化（_lazy_init_canvas）
-        // 推迟到面板激活并让出一帧之后执行，避免同步建瓦片阻塞滑入动画首帧（见下方）。
-
         if (window.main_submit_stroke) {
             await window.main_submit_stroke();
         }
@@ -867,6 +860,13 @@ class BlackboardManager {
         this.is_open = true;
         this._tiles_changed_since_snapshot = false;
 
+        // 首次打开时 blackboard.css 可能仍在加载：滑入动画的初始态与
+        // transition 都由它定义，就绪前添加 .active 会直接跳到终态。
+        // 等样式表就绪后再提交初始态并触发过渡
+        if (this._bb_css_ready) {
+            await this._bb_css_ready;
+        }
+
         const panel = this._el.panel;
         // 强制回流，提交面板的初始 translateY(-100%) 状态，
         // 否则首次打开时 init() 创建面板与 open() 添加 active 在同一任务内，
@@ -874,11 +874,36 @@ class BlackboardManager {
         void panel.offsetHeight;
         panel.classList.add('active');
 
-        // 让出一帧：浏览器先绘制面板滑入起点，再同步建瓦片/overlay，
+        // 让出一帧：浏览器先绘制面板滑入起点，再对齐几何/建瓦片，
         // 避免 _lazy_init_canvas 的 16 瓦片构建阻塞动画首帧（首笔延迟↓）
         await new Promise(r => requestAnimationFrame(r));
 
-        // 面板已激活、几何可信后再建瓦片/overlay（此前尺寸自检已完成 canvas_w/h）
+        // ===== 几何对齐：面板 fixed inset:0 全屏，几何基准 = 视口尺寸 =====
+        // 不读 panel.clientWidth：init 与 open 同任务执行时 CSS 可能尚未
+        // 加载，面板处于未布局状态（高度只有画布默认的 150px），读到过渡
+        // 尺寸会让位置落到角落。视口尺寸与 CSS 加载时序无关，任何时刻都正确
+        {
+            const w = Math.max(1, window.innerWidth);
+            const h = Math.max(1, window.innerHeight);
+            if (w !== this.screen_w || h !== this.screen_h) {
+                this.resize(w, h);
+            }
+        }
+
+        // 打开时板面始终定位在面板正中央（内容/页数/缩放按文档记忆，
+        // 位置不记忆）。板面为视口 2 倍大，居中即显示板面中央区域
+        {
+            const s = this.bb_state;
+            s.canvas_x = (this.screen_w - s.canvas_w * s.scale) / 2;
+            s.canvas_y = (this.screen_h - s.canvas_h * s.scale) / 2;
+            this._cached_move_bound_scale = null;
+            this._update_move_bound();
+            this._update_canvas_position();
+            s.last_transform = { x: null, y: null, scale: null };
+            this._sync_bb_transform();
+        }
+
+        // 面板已激活、几何对齐后再建瓦片/overlay
         this._lazy_init_canvas();
 
         // 监听 CSS transition 实际结束，替代固定 400ms 等待
