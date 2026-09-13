@@ -12,6 +12,11 @@
         window.__TAURI__?.core.invoke('main_signal_loaded').catch(()=>{});
         (async()=>{
             try {
+                // Wave 0: 共享基础模块（动态分辨率 / 覆盖层），必须先于渲染模块就绪
+                await Promise.all([
+                    import('./modules/canvas/resolution-controller.js'),
+                    import('./modules/canvas/overlay-manager.js'),
+                ]);
                 // Wave 1: independent modules in parallel
                 await Promise.all([
                     import('./themes/theme.js'),

@@ -267,10 +267,16 @@ class BlackboardManager {
         const lt = s.last_transform;
         if (lt.x === s.canvas_x && lt.y === s.canvas_y && lt.scale === s.scale) return;
 
+        const scaleChanged = lt.scale !== s.scale;
         lt.x = s.canvas_x;
         lt.y = s.canvas_y;
         lt.scale = s.scale;
 
+        // 仅缩放标记交互：冻结的目的是"缩放中目标 DPR 每帧都在变"；
+        // 纯平移不冻结，平移中新进入视野的瓦片按可见块立即补齐分辨率
+        if (scaleChanged) {
+            window.ResolutionController?.mark_interaction();
+        }
         this.bb_wrapper.style.transform = 'translate3d(' + s.canvas_x + 'px, ' + s.canvas_y + 'px, 0) scale(' + s.scale + ')';
 
         // 缩放进行中跳过 tile 更新，由缩放结束后批量刷新
@@ -385,6 +391,8 @@ class BlackboardManager {
         lt.y = s.canvas_y;
         lt.scale = s.scale;
 
+        // 标记为交互中：缩放动画期间冻结瓦片 DPR 重建
+        window.ResolutionController?.mark_interaction();
         this.bb_wrapper.style.transitionDuration = duration + 'ms';
         this.bb_wrapper.classList.add('smooth-transform');
         this.bb_wrapper.style.transform = `translate3d(${s.canvas_x}px, ${s.canvas_y}px, 0) scale(${s.scale})`;
@@ -662,8 +670,10 @@ class BlackboardManager {
         this.overlay_ctx = this.overlay_canvas.getContext('2d');
         this.overlay_ctx.imageSmoothingEnabled = false;
 
-        // batch_draw 使用覆盖层
-        this.drawing_engine.init_batch_draw(this.overlay_canvas, this.overlay_ctx);
+        // batch_draw 使用覆盖层（同时登记展示尺寸，供动态 DPR 调整使用）
+        this.drawing_engine.init_batch_draw(
+            this.overlay_canvas, this.overlay_ctx, this.screen_w, this.screen_h
+        );
         this.drawing_engine.batch_draw._tileRenderer = this.tile_renderer;
         // 预览层变换以"内容原点的实时屏幕位置"为锚（bb_wrapper 的 rect），
         // 自动包含工具栏高度、容器 padding、平移与缩放——
@@ -677,10 +687,23 @@ class BlackboardManager {
                 originY: r ? r.top : (lt.y || 0)
             };
         });
-        // 按 DPR 调整 overlay canvas 实际像素尺寸
+        // 按 DPR 调整 overlay canvas 实际像素尺寸（已由 overlay.attach 处理，此处仅同步状态）
         const init_dpr = this.drawing_engine.batch_draw._overlayDpr || 1;
         this.overlay_canvas.width = Math.ceil(this.screen_w * init_dpr);
         this.overlay_canvas.height = Math.ceil(this.screen_h * init_dpr);
+
+        // 注册到统一分辨率控制器：DPR 设置变更时自动刷新瓦片层与覆盖层
+        if (window.ResolutionController && !this._res_ctx) {
+            this._res_ctx = {
+                id: 'blackboard',
+                get_scale: () => this.bb_state?.last_transform?.scale || 1,
+                on_dpr_change: (scale, force) => {
+                    this.tile_renderer?.update_visible_tile_dpr(scale, true, true);
+                    this.drawing_engine?.batch_draw?.sync_overlay_dpr_now(scale, force);
+                }
+            };
+            window.ResolutionController.register_context(this._res_ctx);
+        }
 
         // 橡皮擦提示
         this.drawing_engine.init_eraser_hint(canvas_wrap);
@@ -1805,6 +1828,11 @@ class BlackboardManager {
                 await this.drawing_engine._submit_stroke();
             }
             this.drawing_engine.destroy();
+        }
+        // 注销分辨率上下文，避免控制器继续刷新已销毁的黑板
+        if (window.ResolutionController && this._res_ctx) {
+            window.ResolutionController.unregister_context(this._res_ctx);
+            this._res_ctx = null;
         }
         window.__HISTORY_ISOLATED = false;
         this._last_loaded_index = -1;

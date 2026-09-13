@@ -1,7 +1,7 @@
 const TILE_COLS = 4;
 const TILE_ROWS = 4;
-/** 每帧最多预升级的不可见瓦片数量（分帧降低缩放结束后的单帧卡顿） */
-const TILE_UPGRADE_BATCH = 3;
+/** 分帧重建：队列剩余不超过该数量时一帧做完，否则每帧处理这么多块 */
+const TILE_REBUILD_BATCH = 3;
 
 class TileRenderer {
     constructor(options) {
@@ -10,9 +10,6 @@ class TileRenderer {
         this._lastDprUpdateScale = 0;
         this._pendingDpr = null;
         this._rebuildRafId = null;
-        this._upgradeQueue = null;
-        this._upgradeTargetDpr = null;
-        this._upgradeRafId = null;
         this._queuedUpgradeKeys = new Set();
         this._quadtree = null;
         this._baseCaches = new Map();
@@ -27,6 +24,20 @@ class TileRenderer {
         this._strokeIndexVersion = -1;
         this._dirtyDrainIdleId = null;
         this._destroyed = false;
+
+        // 渐进重建队列：DPR 升级不再一帧内全量 recreate，
+        // 否则 16 块画布同时 realloc + 全量重绘必然掉帧，且中间态的
+        // 拉伸快照会被合成出去，表现为"先糊一下再变清"。
+        this._rebuildQueue = null;
+        this._rebuildRafId = null;
+        this._rebuildTargetDpr = null;
+        // 最近一次已知的视图缩放，供 idle 回收时计算目标 DPR
+        this._lastScale = 1;
+        // 最近一次视图检查时间（update_visible_tile_dpr 触达），idle 回收避让用
+        this._lastCheckAt = 0;
+        // 快照画布池：复用 _recreate_tile 的临时 canvas，减少 GC
+        this._snapshotPool = [];
+        this._SNAPSHOT_POOL_MAX = 3;
 
         // 诊断钩子：由宿主（阅读器）注入，(event, data) => void；受 drDiag 开关门控
         this.diag_hook = null;
@@ -94,47 +105,49 @@ class TileRenderer {
     }
 
     _schedule_dpr_update(scale, force) {
+        // 无论走哪条分支都先记录视图缩放：渐进泵的目标漂移检查
+        // 以 _lastScale 为准（缩放中冻结分支不改队列，靠此让泵自行中止）
+        if (scale != null) this._lastScale = scale;
+        // 手势进行中：冻结重建。此时目标 DPR 每帧都在变，重建完立刻作废，
+        // 且一帧内 realloc + 全量重绘必然掉帧。推迟到手势结束后再算一次。
+        const rc = window.ResolutionController;
+        if (!force && rc && rc.is_interacting) {
+            this._cancel_dpr_settle();
+            this._dprSettleTimerId = setTimeout(() => {
+                this._dprSettleTimerId = null;
+                this._schedule_dpr_update(scale, force);
+            }, rc.interaction_remain_ms() + 40);
+            return;
+        }
+
         const targetDpr = this._calc_target_dpr(scale);
+
+        // 只扫可见瓦片：dpr 与目标不符（升或降）才触发重建。
+        //  - 升级：分辨率不足，补清晰度
+        //  - 降级：缩小后目标低于当前 dpr，及时回收，节省显存与合成带宽
+        // 不可见瓦片一律不在交互路径处理（不预升级、不重建），
+        // 其显存回收由静止后的 idle-shrink 一次性完成。
         const keys = this.get_visible_keys();
-        let changed = false;
-        let visibleChanged = false;
-        // 检测是否存在：
-        //   1) 可见瓦片 DPR 与目标不匹配（需升级或降级）
-        //   2) 非可见瓦片 DPR > 1（需缩减至 1 以节约 GPU 内存）
-        //   3) 非可见瓦片 DPR 低于目标值（被 idle-shrink 降为 1 后重新进入视野
-        //      时需要升级）－ 修复动态分辨率在纯平移后不生效的问题
+        let needChange = false;
+        let invisibleOverSupplied = false;
         for (const info of this.tileInfos) {
             if (keys.has(info.key)) {
-                if (info.dpr !== targetDpr) {
-                    changed = true;
-                    visibleChanged = true;
-                    break;
-                }
-            } else if (info.dpr > 1 || (info.dpr < targetDpr && !this._queuedUpgradeKeys.has(info.key))) {
-                changed = true; break;
+                if (info.dpr !== targetDpr) { needChange = true; break; }
+            } else if (info.dpr > 1) {
+                invisibleOverSupplied = true;
             }
         }
-        if (!changed) return;
+        if (!needChange) {
+            // 可见区已达标：无需重建。但不可见瓦片若仍占用高分辨率，
+            // 交给 idle-shrink 在静止后回收（零交互开销）。
+            if (invisibleOverSupplied) this._schedule_idle_shrink();
+            return;
+        }
 
-        // 非可见瓦片需要升级（dpr < targetDpr）时不应用迟滞，
-        // 确保平移后重新进入视野时分辨率正确。迟滞仅用于阻止
-        // 缩放边界上的可见瓦片 DPR 反复跳动。
-        if (!force && !visibleChanged) {
-            let needsUpgrade = false;
-            for (const info of this.tileInfos) {
-                if (!keys.has(info.key) && info.dpr < targetDpr && !this._queuedUpgradeKeys.has(info.key)) {
-                    needsUpgrade = true;
-                    break;
-                }
-            }
-            if (!needsUpgrade) {
-                const cfg = window.DRAW_CONFIG;
-                const hysteresis = Math.max(0.15, (cfg.dprStep || 0.5) / Math.max(0.5, cfg.baseDpr || window.devicePixelRatio || 1));
-                if (Math.abs(scale - this._lastDprUpdateScale) < hysteresis) {
-                    return;
-                }
-            }
-        }
+        // 注：目标经步进量化后，相邻目标差恒 ≥ 1 个 step，传统"未跨步进不重建"
+        // 迟滞形同虚设；防抖由手势冻结（上方分支）+ settle 定时承担。
+        // 目标与上次一致（纯平移）时必须放行：新进入视野的低分辨率瓦片
+        // 依赖此路径补齐分辨率。
         this._lastDprUpdateScale = scale;
 
         this._cancel_pending_rebuild();
@@ -229,6 +242,12 @@ class TileRenderer {
     tile_key(col, row) { return `${col}_${row}`; }
 
     _calc_target_dpr(scale) {
+        // 动态分辨率计算的唯一来源：ResolutionController。
+        // 此前此处与 batch-draw 的 overlay 计算各写一份，改动设置时易漏改一处。
+        const res = window.ResolutionController;
+        if (res && typeof res.calc_tile_dpr === 'function') {
+            return res.calc_tile_dpr(scale);
+        }
         const cfg = window.DRAW_CONFIG;
         if (cfg.dynamicDprEnabled === false) return cfg.dpr;
         const baseDpr = cfg.baseDpr || window.devicePixelRatio || 1;
@@ -291,19 +310,17 @@ class TileRenderer {
         return { canvas, ctx };
     }
 
-    _recreate_tile(info, newDpr) {
+    _recreate_tile(info, newDpr, keepSnapshot = true) {
         const canvas = info.canvas;
         const ctx = info.ctx;
         if (!canvas || !ctx) return;
 
-        // 始终保留快照作占位（升/降级皆然）。此前降级不存快照、依赖
-        // "rebuild 必然紧随覆盖"——一旦可见键计算偏差，tile 会以已清空状态滞留，
-        // 表现为批注不可见且难以稳定复现。占位图会被 rebuild_tile 精确覆盖，无副作用。
+        // 快照作占位，防止 rebuild 未覆盖时 tile 以空白状态滞留。
+        // 原子重建（recreate 后同帧立即 rebuild）时跳过：那一次 drawImage
+        // 放大整块瓦片的开销不小，且占位图必然被随后 rebuild 清掉。
         let snapshot = null;
-        if (canvas.width > 0 && canvas.height > 0) {
-            snapshot = document.createElement('canvas');
-            snapshot.width = canvas.width;
-            snapshot.height = canvas.height;
+        if (keepSnapshot && canvas.width > 0 && canvas.height > 0) {
+            snapshot = this._acquire_snapshot(canvas.width, canvas.height);
             snapshot.getContext('2d').drawImage(canvas, 0, 0);
         }
 
@@ -320,6 +337,7 @@ class TileRenderer {
             ctx.drawImage(snapshot, 0, 0, canvas.width, canvas.height);
             ctx.restore();
             ctx.imageSmoothingEnabled = false;
+            this._release_snapshot(snapshot);
         }
 
         info.dpr = newDpr;
@@ -327,7 +345,24 @@ class TileRenderer {
         this.diag_hook?.('recreate', { key: info.key, dpr: newDpr });
     }
 
+    _acquire_snapshot(w, h) {
+        const c = this._snapshotPool.pop() || document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        return c;
+    }
+
+    _release_snapshot(c) {
+        if (this._snapshotPool.length < this._SNAPSHOT_POOL_MAX) {
+            this._snapshotPool.push(c);
+        }
+    }
+
     update_visible_tile_dpr(scale, force, skipSettle) {
+        if (scale != null) this._lastScale = scale;
+        // 最近一次视图检查时间：idle 回收用它避让一切变换活动（含纯平移），
+        // 防止平移过程中段突然回收不可见瓦片造成 realloc 抖动
+        this._lastCheckAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         if (skipSettle) {
             this._cancel_dpr_settle();
             this._schedule_dpr_update(scale, force);
@@ -347,7 +382,7 @@ class TileRenderer {
     _cancel_pending_rebuild() {
         this._cancel_dpr_settle();
         this._cancel_dirty_drain();
-        this._cancel_upgrade_queue();
+        this._cancel_rebuild_queue();
         if (this._rebuildRafId !== null) {
             cancelAnimationFrame(this._rebuildRafId);
             this._rebuildRafId = null;
@@ -362,20 +397,49 @@ class TileRenderer {
         }
     }
 
+    /**
+     * 静止后回收显存。分两类：
+     *   - 不可见瓦片：直接回收到 dpr=1
+     *   - 可见但过度供给的瓦片（缩小后仍在用高 dpr）：降到当前目标
+     * 降到「目标 dpr」在视觉上是无损的——目标本就等于 scale × 显示 DPR，
+     * 即在当前缩放下刚好铺满物理像素，再高只是浪费显存。
+     * 整段在同一个同步块内 recreate + rebuild，不存在中间态。
+     */
     _schedule_idle_shrink() {
         this._cancel_idle_shrink();
         this._idleShrinkTimerId = setTimeout(() => {
             this._idleShrinkTimerId = null;
+            if (this._destroyed) return;
+            const rc = window.ResolutionController;
+            const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+            // 仍在交互（缩放手势保持期内）或近期有任何视图检查活动（平移/缩放
+            // 都会触碰 update_visible_tile_dpr）则顺延：回收只做给真正静止后的
+            // 不可见瓦片，绝不打断变换中的视图
+            if ((rc && rc.is_interacting) ||
+                (this._lastCheckAt && now - this._lastCheckAt < 600)) {
+                this._schedule_idle_shrink();
+                return;
+            }
             const keys = this.get_visible_keys();
+            const targetDpr = this._calc_target_dpr(this._lastScale || 1);
             let anyShrunk = false;
             for (const info of this.tileInfos) {
-                if (!keys.has(info.key) && info.dpr > 1) {
-                    this._recreate_tile(info, 1);
+                if (!keys.has(info.key)) {
+                    if (info.dpr > 1) {
+                        // 保留旧内容作占位（等比缩入新画布）：块此后进入视野时
+                        // 不会短暂空白，等下次重建刷新为精确内容
+                        this._recreate_tile(info, 1, true);
+                        anyShrunk = true;
+                    }
+                } else if (info.dpr > targetDpr) {
+                    this._recreate_tile(info, targetDpr, false);
                     anyShrunk = true;
                 }
             }
             if (anyShrunk) {
                 this.rebuild_visible(keys);
+                // 回收产生的不可见脏块在 idle 分片补齐，不留长期滞留
+                this._drain_dirty_tiles(keys);
             }
         }, this._IDLE_SHRINK_MS);
     }
@@ -386,72 +450,125 @@ class TileRenderer {
         this._pendingDpr = null;
         if (targetDpr == null) return;
 
-        // 中断上一轮未完成的预升级队列（目标 DPR 可能已变化）
-        this._cancel_upgrade_queue();
+        // 中断上一轮未完成的队列（目标 DPR 可能已变化）
+        this._cancel_rebuild_queue();
 
         const keys = this.get_visible_keys();
         this.diag_hook?.('dpr-update', { dpr: targetDpr, keys: keys.size });
-        const deferredUpgrades = [];
-        for (const info of this.tileInfos) {
-            if (keys.has(info.key)) {
-                if (info.dpr !== targetDpr) {
-                    this._recreate_tile(info, targetDpr);
-                }
-            } else if (info.dpr < targetDpr) {
-                // 预升级非可见瓦片，使其在进入视野时已有正确分辨率。
-                // 不可见块延后分帧处理：一次 realloc 大量画布会造成缩放收尾掉帧
-                deferredUpgrades.push(info);
-            }
-        }
-        this.rebuild_visible(keys);
-        // 兜底：预升级/重建后仍为 dirty 的不可见 tile，分片惰性补建，
-        // 防止任何键集合偏差导致的空白 tile 长期滞留
-        this._drain_dirty_tiles(keys);
-        this._schedule_idle_shrink();
 
-        if (deferredUpgrades.length > 0) {
-            this._upgradeQueue = deferredUpgrades;
-            this._upgradeTargetDpr = targetDpr;
-            for (const info of deferredUpgrades) {
-                this._queuedUpgradeKeys.add(info.key);
-            }
-            this._upgradeRafId = requestAnimationFrame(() => this._pump_upgrade_queue());
+        // DPR 已达标但内容 dirty 的可见瓦片：直接重绘，不动画布尺寸
+        this.rebuild_visible(keys);
+
+        // 需要变更 DPR 的可见瓦片（升或降）排进渐进队列，不在此帧批量 realloc。
+        // 每块在轮到时于同一帧内原子完成 realloc → 精确重绘，未轮到的保持
+        // 原分辨率原内容，因此不存在"先变糊"。不可见瓦片不排队、不处理，
+        // 节约交互期性能；其显存回收由 idle-shrink 完成。
+        const vr = this._getVisibleRectFn ? this._getVisibleRectFn() : null;
+        const queue = [];
+        for (const info of this.tileInfos) {
+            if (!info.canvas || !info.ctx) continue;
+            if (!keys.has(info.key)) continue;
+            if (info.dpr === targetDpr) continue;
+            queue.push(info);
         }
+        if (vr && queue.length > 1) {
+            const cx = vr.x + vr.width / 2;
+            const cy = vr.y + vr.height / 2;
+            queue.sort((a, b) => this._tile_dist2(a, cx, cy) - this._tile_dist2(b, cx, cy));
+        }
+
+        this._rebuildQueue = queue;
+        this._rebuildTargetDpr = targetDpr;
+        for (const info of this._rebuildQueue) {
+            this._queuedUpgradeKeys.add(info.key);
+        }
+        this._pump_rebuild_queue();
     }
 
-    _cancel_upgrade_queue() {
-        if (this._upgradeRafId !== null) {
-            cancelAnimationFrame(this._upgradeRafId);
-            this._upgradeRafId = null;
+    _tile_dist2(info, cx, cy) {
+        const r = info.rect;
+        const dx = r.x + r.width / 2 - cx;
+        const dy = r.y + r.height / 2 - cy;
+        return dx * dx + dy * dy;
+    }
+
+    _cancel_rebuild_queue() {
+        if (this._rebuildRafId !== null) {
+            cancelAnimationFrame(this._rebuildRafId);
+            this._rebuildRafId = null;
         }
-        this._upgradeQueue = null;
-        this._upgradeTargetDpr = null;
+        this._rebuildQueue = null;
+        this._rebuildTargetDpr = null;
         this._queuedUpgradeKeys.clear();
     }
 
-    /** 分帧消费预升级队列，每帧至多 TILE_UPGRADE_BATCH 块 */
-    _pump_upgrade_queue() {
-        this._upgradeRafId = null;
-        const targetDpr = this._upgradeTargetDpr;
-        if (!this._upgradeQueue || this._upgradeQueue.length === 0 || targetDpr == null || this._destroyed) {
-            this._cancel_upgrade_queue();
+    /**
+     * 分帧消费重建队列。每块瓦片的「realloc → 精确重绘」在同一帧内原子完成：
+     * 未轮到的瓦片保持原分辨率原内容，因此不会出现"先变糊再变清"。
+     */
+    _pump_rebuild_queue() {
+        this._rebuildRafId = null;
+        const targetDpr = this._rebuildTargetDpr;
+        const q = this._rebuildQueue;
+        if (this._destroyed || !q || targetDpr == null || q.length === 0) {
+            this._finish_rebuild_queue();
             return;
         }
-        let budget = TILE_UPGRADE_BATCH;
-        while (budget-- > 0 && this._upgradeQueue.length > 0) {
-            const info = this._upgradeQueue.shift();
-            this._queuedUpgradeKeys.delete(info.key);
-            // 目标期间可能被 idle-shrink 降低过；仅升级仍低于目标的瓦片
-            if (info.dpr < targetDpr && info.ctx && info.canvas) {
-                this._recreate_tile(info, targetDpr);
-                this.rebuild_tile(info);
+
+        this._build_quadtree();
+        this._update_base_cache();
+
+        // 每帧以最新可见性过滤队列：建队后视图可能已变化，
+        // 已滚出视野的瓦片跳过（它是不可见块，显存交给 idle 回收），
+        // 仍可见的才继续重建——确保不会把可见块按不可见块对待
+        const liveKeys = this.get_visible_keys();
+        for (let i = q.length - 1; i >= 0; i--) {
+            if (!liveKeys.has(q[i].key)) {
+                this._queuedUpgradeKeys.delete(q[i].key);
+                q.splice(i, 1);
             }
         }
-        if (this._upgradeQueue.length > 0 && !this._destroyed) {
-            this._upgradeRafId = requestAnimationFrame(() => this._pump_upgrade_queue());
-        } else {
-            this._cancel_upgrade_queue();
+        if (q.length === 0) {
+            this._finish_rebuild_queue();
+            return;
         }
+        // 目标 DPR 已漂移（期间缩放目标变化）：中止本轮，由调度路径按新目标重排
+        if (this._calc_target_dpr(this._lastScale || 1) !== targetDpr) {
+            this._finish_rebuild_queue();
+            return;
+        }
+
+        // 剩余的预算：队列不长时一帧做完，避免拖出肉眼可见的"逐块变清"
+        let budget = q.length <= 6 ? q.length : TILE_REBUILD_BATCH;
+        while (budget-- > 0 && q.length > 0) {
+            const info = q.shift();
+            this._queuedUpgradeKeys.delete(info.key);
+            if (this._destroyed) break;
+            if (!liveKeys.has(info.key)) continue;
+            if (info.dpr === targetDpr || !info.ctx || !info.canvas) continue;
+            try {
+                this._recreate_tile(info, targetDpr, false);
+                this.rebuild_tile(info);
+            } catch (e) {
+                console.error('tile-renderer: DPR 重建失败', info.key, e);
+                this.dirty.add(info.key);
+            }
+        }
+
+        if (q.length > 0 && !this._destroyed) {
+            this._rebuildRafId = requestAnimationFrame(() => this._pump_rebuild_queue());
+        } else {
+            this._finish_rebuild_queue();
+        }
+    }
+
+    _finish_rebuild_queue() {
+        this._rebuildQueue = null;
+        this._rebuildTargetDpr = null;
+        this._queuedUpgradeKeys.clear();
+        // 兜底：仍为 dirty 的不可见 tile 分片惰性补建，防止空白 tile 长期滞留
+        this._drain_dirty_tiles(new Set());
+        this._schedule_idle_shrink();
     }
 
     /**
@@ -502,6 +619,7 @@ class TileRenderer {
 
     init_tiles(wrapper, initialScale) {
         const scale = initialScale || (window.state ? (window.state.scale || 1) : 1);
+        this._lastScale = scale;
         const existing = wrapper.querySelectorAll('.canvas-tile');
         for (const el of existing) el.remove();
 

@@ -969,19 +969,20 @@ class DocumentReaderManager {
 
         // 清理 batch_draw 和 overlay_canvas
         if (this.batch_draw) {
-            // 显式清空 overlay canvas 释放 GPU 纹理
-            if (this.batch_draw._overlayCanvas) {
-                const ctx = this.batch_draw._overlayCanvas.getContext('2d');
-                if (ctx) {
-                    ctx.clearRect(0, 0, this.batch_draw._overlayCanvas.width, this.batch_draw._overlayCanvas.height);
-                }
-                this.batch_draw._overlayCanvas.width = 0;
-                this.batch_draw._overlayCanvas.height = 0;
-                if (this.batch_draw._overlayCanvas.parentNode) {
-                    this.batch_draw._overlayCanvas.parentNode.removeChild(this.batch_draw._overlayCanvas);
-                }
+            // 显式清空 overlay canvas 释放 GPU 纹理，交由 OverlayManager 统一销毁
+            const ov = this.batch_draw.overlay;
+            if (ov?.canvas) {
+                const ctx = ov.canvas.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, ov.canvas.width, ov.canvas.height);
+                ov.canvas.width = 0;
+                ov.canvas.height = 0;
             }
+            this.batch_draw.destroy_overlay();
             this.batch_draw.batch_draw_delete_all();
+            if (window.ResolutionController && this._res_ctx) {
+                window.ResolutionController.unregister_context(this._res_ctx);
+                this._res_ctx = null;
+            }
             this.batch_draw = null;
         }
 
@@ -3386,18 +3387,9 @@ class DocumentReaderManager {
     }
 
     _sync_reader_overlay_size() {
-        if (!this.batch_draw?._overlayCanvas) return;
-        const overlay = this.batch_draw._overlayCanvas;
-        const overlay_dpr = this.batch_draw._calc_overlay_dpr(this.dr_scale || 1);
-        this.batch_draw._overlayDpr = overlay_dpr;
-        const target_w = Math.ceil(window.innerWidth * overlay_dpr);
-        const target_h = Math.ceil(window.innerHeight * overlay_dpr);
-        if (overlay.width !== target_w || overlay.height !== target_h) {
-            overlay.width = target_w;
-            overlay.height = target_h;
-            overlay.style.width = window.innerWidth + 'px';
-            overlay.style.height = window.innerHeight + 'px';
-        }
+        // 展示尺寸与动态 DPR 统一由 OverlayManager 计算并应用
+        if (!this.batch_draw?.overlay) return;
+        this.batch_draw.overlay.resize(window.innerWidth, window.innerHeight);
     }
 
     _handle_reader_resize() {
@@ -3680,7 +3672,7 @@ class DocumentReaderManager {
         // 阅读器为多页架构：_tileRenderer 必须始终指向当前页的渲染器，
         // 禁止回退到主画布渲染器（否则擦除会误伤主画布/其他页笔迹）
         this.batch_draw.fallbackToMain = false;
-        const init_overlay_dpr = this.batch_draw._calc_overlay_dpr(this.dr_scale || 1);
+        const init_overlay_dpr = this.batch_draw.calc_overlay_dpr(this.dr_scale || 1);
 
         // 设置初始尺寸为视口大小（含 DPR，确保清晰）
         overlay_canvas.width = Math.ceil(window.innerWidth * init_overlay_dpr);
@@ -3693,13 +3685,11 @@ class DocumentReaderManager {
         const overlay_ctx = overlay_canvas.getContext('2d');
         overlay_ctx.imageSmoothingEnabled = false;
 
-        // 初始化 batch_draw
-        this.batch_draw._overlayDpr = init_overlay_dpr;
-        this.batch_draw._overlayCanvas = overlay_canvas;
-        this.batch_draw._overlayCtx = overlay_ctx;
-        this.batch_draw._overlayTransformScale = 0;
-        this.batch_draw._overlayTransformX = 0;
-        this.batch_draw._overlayTransformY = 0;
+        // 统一经 OverlayManager 注入：登记视口展示尺寸 + 动态 DPR，
+        // 后续 zoom / 设置变更走 overlay.request_dpr 才不会把画布缩成 1px
+        this.batch_draw.overlay.attach(
+            overlay_canvas, overlay_ctx, window.innerWidth, window.innerHeight
+        );
         this.batch_draw._overlay_cached_rect_left = null;
         this.batch_draw._overlay_cached_rect_top = null;
         // 预览层变换以"当前页内容原点的实时屏幕位置"为锚（页面 rect），
@@ -3716,6 +3706,24 @@ class DocumentReaderManager {
 
         if (window.DRAW_CONFIG.frameRateMode) {
             this.batch_draw.batch_draw_update_frame_rate(window.DRAW_CONFIG.frameRateMode);
+        }
+
+        // 注册到统一分辨率控制器：DPR 设置变更时自动刷新瓦片层与覆盖层
+        if (window.ResolutionController && !this._res_ctx) {
+            this._res_ctx = {
+                id: 'reader',
+                get_scale: () => this.dr_scale || 1,
+                on_dpr_change: (scale, force) => {
+                    for (const i of this._pages_with_tiles) {
+                        const pd = this.page_manager.pages_list[i];
+                        if (pd && (pd.is_visible || this._is_page_near_active(i, this._tile_keep_distance))) {
+                            pd.tile_renderer?.update_visible_tile_dpr(scale, false, true);
+                        }
+                    }
+                    this.batch_draw?.sync_overlay_dpr_now(scale, force);
+                }
+            };
+            window.ResolutionController.register_context(this._res_ctx);
         }
     }
 
@@ -3817,25 +3825,32 @@ class DocumentReaderManager {
         };
     }
 
+    /**
+     * 分页 overlay 已废弃：批注实时预览统一走全局覆盖层（doc-reader-overlay-global），
+     * 其尺寸随视口变化，由 _sync_reader_overlay_size / OverlayManager 维护。
+     * 此处保留调用点语义：页面几何变化后使预览层变换缓存失效，下一帧重新对齐。
+     */
     _update_overlay_size(page_index) {
         const page_data = this.page_manager.pages_list[page_index];
-        if (!page_data?.overlay_canvas || !page_data.page_element) return;
-
-        const rect = page_data.page_element.getBoundingClientRect();
-        const w = Math.ceil(rect.width);
-        const h = Math.ceil(rect.height);
-
-        // 缓存尺寸，避免重复 resize 触发 GPU 纹理重建
-        if (page_data._overlay_cached_w === w && page_data._overlay_cached_h === h) return;
-        page_data._overlay_cached_w = w;
-        page_data._overlay_cached_h = h;
-
-        // overlay 仅用于实时预览，DPR=1 足够，节省 GPU 显存
-        page_data.overlay_canvas.width = w;
-        page_data.overlay_canvas.height = h;
-        page_data.overlay_canvas.style.width = w + 'px';
-        page_data.overlay_canvas.style.height = h + 'px';
-        page_data.overlay_ctx.imageSmoothingEnabled = false;
+        if (page_data?.overlay_canvas && page_data.page_element) {
+            // 历史版本遗留的分页 overlay：仍按原逻辑维护，避免残留 DOM 显示异常
+            const rect = page_data.page_element.getBoundingClientRect();
+            const w = Math.ceil(rect.width);
+            const h = Math.ceil(rect.height);
+            if (page_data._overlay_cached_w !== w || page_data._overlay_cached_h !== h) {
+                page_data._overlay_cached_w = w;
+                page_data._overlay_cached_h = h;
+                page_data.overlay_canvas.width = w;
+                page_data.overlay_canvas.height = h;
+                page_data.overlay_canvas.style.width = w + 'px';
+                page_data.overlay_canvas.style.height = h + 'px';
+                page_data.overlay_ctx.imageSmoothingEnabled = false;
+            }
+        }
+        // 全局覆盖层：强制下一帧重新同步视图变换
+        if (this.batch_draw?.overlay) {
+            this.batch_draw.overlay._transformScale = 0;
+        }
     }
 
     // ====== 批注渲染 ======
@@ -5365,7 +5380,15 @@ class DocumentReaderManager {
     /** 仅同步 transform（无 LOD 更新，用于高频拖拽） */
     _dr_sync_transform() {
         if (!this._zoom_wrapper) return;
+        // 仅缩放标记交互：冻结的目的是"缩放中目标 DPR 每帧都在变"；
+        // 纯平移不冻结，平移中新进入视野的瓦片按可见块立即补齐分辨率
+        if (this._dr_last_transform.scale !== this.dr_scale) {
+            window.ResolutionController?.mark_interaction();
+        }
         this._zoom_wrapper.style.transform = 'translate3d(' + this.dr_canvas_x + 'px, ' + this.dr_canvas_y + 'px, 0) scale(' + this.dr_scale + ')';
+        this._dr_last_transform.x = this.dr_canvas_x;
+        this._dr_last_transform.y = this.dr_canvas_y;
+        this._dr_last_transform.scale = this.dr_scale;
         this._dr_transform_changed = true;
     }
 
@@ -5378,6 +5401,10 @@ class DocumentReaderManager {
                 this._dr_pending_transform = null;
                 this._dr_transform_raf_id = null;
                 if (pt && this._zoom_wrapper) {
+                    // 仅缩放标记交互（理由同 _dr_sync_transform）
+                    if (this._dr_last_transform.scale !== pt.scale) {
+                        window.ResolutionController?.mark_interaction();
+                    }
                     this._zoom_wrapper.style.transform = 'translate3d(' + pt.x + 'px, ' + pt.y + 'px, 0) scale(' + pt.scale + ')';
                     this._dr_last_transform.x = pt.x;
                     this._dr_last_transform.y = pt.y;
@@ -5388,6 +5415,14 @@ class DocumentReaderManager {
                     // 仅新可见页有开销）。缩放进行中跳过，避免与缩放结束批量刷新冲突。
                     if (!this._dr_is_zooming) {
                         this._check_page_visibility();
+                        // 平移中新进入视野的瓦片按可见块立即补齐 DPR
+                        //（缩放结束路径由 _dr_set_zooming 的批量刷新负责）
+                        for (const i of this._pages_with_tiles) {
+                            const pd = this.page_manager.pages_list[i];
+                            if (pd && pd.is_visible && pd.tile_renderer) {
+                                pd.tile_renderer.update_visible_tile_dpr(this.dr_scale, false, true);
+                            }
+                        }
                     }
                 }
             });
@@ -5442,6 +5477,8 @@ class DocumentReaderManager {
             this._zoom_complete_timer = null;
             this._dr_is_zooming = false;
             if (this.batch_draw) {
+                // 缩放结束后按统一控制器重算 overlay DPR 再恢复显示
+                this.batch_draw.sync_overlay_dpr_now(this.dr_scale || 1);
                 this.batch_draw.show_overlay();
             }
             // 缩放结束后批量重绘可见页 + 更新 tile DPR

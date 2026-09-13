@@ -48,18 +48,8 @@ class RealtimeBatchDrawManager {
         this._dirtyBoundsCanvas = null;
         this._limitedTailWidth = null;
 
-        this._overlayCanvas = null;
-        this._overlayCtx = null;
-        this._overlayTransformScale = 0;
-        this._overlayTransformX = 0;
-        this._overlayTransformY = 0;
-        this._overlayDpr = 1;
-        this._overlayDprSettleTimerId = null;
-        this._overlayDprSettleMs = 300;
-        // 笔画进行中标记：overlay resize 会清空内容（进行中的笔迹闪断），
-        // 期间收到的 DPR 调整请求顺延到笔画结束（batch_draw_handle_end）
-        this._strokeActive = false;
-        this._deferredOverlayDpr = null;
+        // 覆盖层统一交由 OverlayManager 管理；动态分辨率由 ResolutionController 控制
+        this.overlay = new window.OverlayManager();
         // 最近绘制耗时滚动样本与外部性能回调（自适应帧率策略可消费）
         this._drawTimes = [];
         this._perfHook = null;
@@ -90,45 +80,37 @@ class RealtimeBatchDrawManager {
      * 未提供时回退到 window.state 的 canvasX/canvasY（旧约定）。
      */
     set_transform_provider(fn) {
-        this._transform_provider = fn;
+        this.overlay.set_transform_provider(fn);
     }
 
     /**
-     * 计算覆盖层 DPR。
-     * 覆盖层是屏幕空间画布（position: fixed 覆盖视口），DPR 超过 devicePixelRatio
-     * 对显示无增益，仅浪费显存。因此以 display_dpr 作为硬上限。
+     * 计算覆盖层 DPR（委托给 OverlayManager → ResolutionController）。
+     * 动态模式下取显示 DPR 为上限（此前错误地恒为 1，导致高分屏/放大下发虚）。
      * @param {number} scale - 当前画布缩放比例
      * @returns {number} 覆盖层 DPR
      */
-    _calc_overlay_dpr(scale) {
-        const cfg = window.DRAW_CONFIG;
-        if (cfg.overlayDpr != null && cfg.overlayDpr > 0) return cfg.overlayDpr;
-        if (cfg.dynamicDprEnabled === false) return Math.min(cfg.dpr, 2);
-        return 1;
+    calc_overlay_dpr(scale) {
+        return this.overlay.calc_overlay_dpr(scale);
     }
 
+    /** 兼容旧名：_calc_overlay_dpr */
+    _calc_overlay_dpr(scale) {
+        return this.overlay.calc_overlay_dpr(scale);
+    }
+
+    /**
+     * 请求按 scale 调整 overlay DPR（带迟滞，笔迹进行中自动顺延）。
+     * 全部状态（settle 定时器 / 笔画标记 / 顺延请求）由 OverlayManager 统一持有。
+     */
     update_overlay_dpr(scale, force) {
-        if (this._strokeActive) {
-            // 笔画进行中：resize overlay 会清空已绘制内容导致笔迹闪断。
-            // 暂存请求，待 batch_draw_handle_end 时补执行
-            this._deferredOverlayDpr = { scale, force };
-            if (this._overlayDprSettleTimerId != null) {
-                clearTimeout(this._overlayDprSettleTimerId);
-                this._overlayDprSettleTimerId = null;
-            }
-            return;
-        }
-        if (this._overlayDprSettleTimerId != null) {
-            clearTimeout(this._overlayDprSettleTimerId);
-            this._overlayDprSettleTimerId = null;
-        }
-        this._overlayDprSettleTimerId = setTimeout(() => {
-            this._overlayDprSettleTimerId = null;
-            const targetDpr = this._calc_overlay_dpr(scale);
-            if (targetDpr !== this._overlayDpr || force) {
-                this._apply_overlay_dpr(targetDpr);
-            }
-        }, this._overlayDprSettleMs);
+        if (!this.overlay) return;
+        this.overlay.request_dpr(scale, force);
+    }
+
+    /** 立即按 scale 应用 overlay DPR（无迟滞），用于 resize / 设置变更。 */
+    sync_overlay_dpr_now(scale, force) {
+        if (!this.overlay) return;
+        this.overlay.sync_dpr_now(scale, force);
     }
 
     /** 注册绘制性能采样回调（参数为最近 20 次 flush 的平均耗时 ms），节流 500ms */
@@ -136,133 +118,56 @@ class RealtimeBatchDrawManager {
         this._perfHook = typeof fn === 'function' ? fn : null;
     }
 
-    _apply_overlay_dpr(newDpr) {
-        if (!this._overlayCanvas) return;
-        const screenW = window.DRAW_CONFIG?.screenW || 1;
-        const screenH = window.DRAW_CONFIG?.screenH || 1;
-        this._overlayDpr = newDpr;
-        this._overlayCanvas.width = Math.ceil(Math.max(1, screenW * newDpr));
-        this._overlayCanvas.height = Math.ceil(Math.max(1, screenH * newDpr));
-        this._overlayTransformScale = 0;
-        this._overlayTransformX = 0;
-        this._overlayTransformY = 0;
-    }
+    // _apply_overlay_dpr 已下沉至 OverlayManager._apply_dpr
 
     init_overlay(container, screenW, screenH, dpr) {
-        this._overlayCanvas = document.createElement('canvas');
-        this._overlayCanvas.className = 'canvas-tile draw-overlay';
-        this._overlayDpr = this._calc_overlay_dpr(window.state.scale || 1);
-        this._overlayCanvas.width = Math.ceil(screenW * this._overlayDpr);
-        this._overlayCanvas.height = Math.ceil(screenH * this._overlayDpr);
-        this._overlayCanvas.style.width = screenW + 'px';
-        this._overlayCanvas.style.height = screenH + 'px';
-        container.appendChild(this._overlayCanvas);
-        this._overlayCtx = this._overlayCanvas.getContext('2d', { willReadFrequently: false });
-        if (!this._overlayCtx) {
-            console.error('batch-draw: 无法获取 overlay canvas 上下文');
-            return;
-        }
-        this._overlayCtx.imageSmoothingEnabled = false;
-        this._overlayTransformScale = 0;
-        this._overlayTransformX = 0;
-        this._overlayTransformY = 0;
+        this.overlay.init(container, screenW, screenH, dpr);
     }
 
     resize_overlay(screenW, screenH, dpr) {
-        if (this._overlayCanvas) {
-        this._overlayDpr = this._calc_overlay_dpr(window.state.scale || 1);
-            this._overlayCanvas.width = Math.ceil(screenW * this._overlayDpr);
-            this._overlayCanvas.height = Math.ceil(screenH * this._overlayDpr);
-            this._overlayCanvas.style.width = screenW + 'px';
-            this._overlayCanvas.style.height = screenH + 'px';
-        }
-        this._overlayTransformScale = 0;
-        this._overlayTransformX = 0;
-        this._overlayTransformY = 0;
+        this.overlay.resize(screenW, screenH);
     }
 
     destroy_overlay() {
-        if (this._overlayCanvas && this._overlayCanvas.parentNode) {
-            this._overlayCanvas.parentNode.removeChild(this._overlayCanvas);
-        }
-        this._overlayCanvas = null;
-        this._overlayCtx = null;
+        if (this.overlay) this.overlay.destroy();
     }
 
     /** 缩放期间隐藏 overlay，释放 GPU 合成层 */
     hide_overlay() {
-        if (this._overlayCanvas) this._overlayCanvas.style.visibility = 'hidden';
+        if (this.overlay) this.overlay.hide();
     }
 
     /** 缩放结束后恢复 overlay */
     show_overlay() {
-        if (this._overlayCanvas) this._overlayCanvas.style.visibility = '';
+        if (this.overlay) this.overlay.show();
     }
 
     _fetch_view_transform() {
-        if (this._transform_provider) {
-            const t = this._transform_provider();
-            return {
-                scale: t?.scale || 1,
-                originX: t?.originX || 0,
-                originY: t?.originY || 0
-            };
-        }
-        return {
-            scale: window.state.scale || 1,
-            originX: window.state.canvasX || 0,
-            originY: window.state.canvasY || 0
-        };
+        return this.overlay._fetch_view_transform();
     }
 
     _sync_overlay_transform() {
-        if (!this._overlayCtx) return;
-        const dpr = this._overlayDpr;
-        const { scale, originX, originY } = this._fetch_view_transform();
-        if (this._overlayTransformScale === scale &&
-            this._overlayTransformX === originX &&
-            this._overlayTransformY === originY) {
-            return;
-        }
-        this._overlayTransformScale = scale;
-        this._overlayTransformX = originX;
-        this._overlayTransformY = originY;
-        this._overlayCtx.setTransform(
-            scale * dpr, 0, 0, scale * dpr,
-            originX * dpr, originY * dpr
-        );
+        this.overlay.sync_transform();
     }
 
     clear_overlay() {
-        if (!this._overlayCtx) return;
-        this._overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
-
-        if (this._dirtyBoundsCanvas) {
-            const { scale: s, originX, originY } = this._fetch_view_transform();
-            const dpr = this._overlayDpr;
-            const ox = originX * dpr;
-            const oy = originY * dpr;
-            const x = Math.floor(this._dirtyBoundsCanvas.x * s * dpr + ox - 1);
-            const y = Math.floor(this._dirtyBoundsCanvas.y * s * dpr + oy - 1);
-            const w = Math.ceil((this._dirtyBoundsCanvas.x2 - this._dirtyBoundsCanvas.x) * s * dpr + 2);
-            const h = Math.ceil((this._dirtyBoundsCanvas.y2 - this._dirtyBoundsCanvas.y) * s * dpr + 2);
-            const cw = this._overlayCanvas.width;
-            const ch = this._overlayCanvas.height;
-            const clampX = Math.max(0, Math.min(x, cw));
-            const clampY = Math.max(0, Math.min(y, ch));
-            const clampW = Math.max(0, Math.min(w, cw - clampX));
-            const clampH = Math.max(0, Math.min(h, ch - clampY));
-            if (clampW > 0 && clampH > 0) {
-                this._overlayCtx.clearRect(clampX, clampY, clampW, clampH);
-            }
-        } else {
-            this._overlayCtx.clearRect(0, 0, this._overlayCanvas.width, this._overlayCanvas.height);
-        }
+        if (this.overlay) this.overlay.clear(this._dirtyBoundsCanvas);
         this._dirtyBoundsCanvas = null;
-        this._overlayTransformScale = 0;
-        this._overlayTransformX = 0;
-        this._overlayTransformY = 0;
     }
+
+    // ===== 兼容代理：保留外部（阅读器 / 小黑板）对 overlay 内部字段的直接访问 =====
+    get _overlayCanvas() { return this.overlay ? this.overlay.canvas : null; }
+    set _overlayCanvas(v) { if (this.overlay) this.overlay.canvas = v; }
+    get _overlayCtx() { return this.overlay ? this.overlay.ctx : null; }
+    set _overlayCtx(v) { if (this.overlay) this.overlay.ctx = v; }
+    get _overlayDpr() { return this.overlay ? this.overlay.dpr : 1; }
+    set _overlayDpr(v) { if (this.overlay) this.overlay.dpr = v; }
+    get _overlayTransformScale() { return this.overlay ? this.overlay._transformScale : 0; }
+    set _overlayTransformScale(v) { if (this.overlay) this.overlay._transformScale = v; }
+    get _overlayTransformX() { return this.overlay ? this.overlay._transformX : 0; }
+    set _overlayTransformX(v) { if (this.overlay) this.overlay._transformX = v; }
+    get _overlayTransformY() { return this.overlay ? this.overlay._transformY : 0; }
+    set _overlayTransformY(v) { if (this.overlay) this.overlay._transformY = v; }
 
     _each_visible_tile(fn) {
         const tr = this._get_active_tile_renderer();
@@ -769,8 +674,7 @@ class RealtimeBatchDrawManager {
         this._segmentTimes = [];
         this._dirtyBoundsCanvas = null;
         this._limitedTailWidth = null;
-        this._strokeActive = false;
-        this._deferredOverlayDpr = null;
+        this.overlay.end_stroke(false);
         this.clear_overlay();
     }
 
@@ -780,8 +684,7 @@ class RealtimeBatchDrawManager {
         this.lastDrawTime = performance.now();
         this._penEffectMode = 'off';
         this._strokeStart = true;
-        this._strokeActive = true;
-        this._deferredOverlayDpr = null;
+        this.overlay.begin_stroke();
         this.ellipseMode = window.DRAW_CONFIG?.ellipseStrokeEnabled === true;
         this._totalSegments = 0;
         this._lastMidX = null;
@@ -877,12 +780,7 @@ class RealtimeBatchDrawManager {
         this.clear_overlay();
 
         // 笔画结束：补执行进行期间被顺延的 overlay DPR 调整
-        this._strokeActive = false;
-        if (this._deferredOverlayDpr) {
-            const d = this._deferredOverlayDpr;
-            this._deferredOverlayDpr = null;
-            this.update_overlay_dpr(d.scale, d.force);
-        }
+        this.overlay.end_stroke();
 
         if (this.is_adaptive) {
             this.drawTimes = [];
@@ -897,3 +795,15 @@ class RealtimeBatchDrawManager {
 
 window.RealtimeBatchDrawManager = RealtimeBatchDrawManager;
 window.batchDrawManager = new RealtimeBatchDrawManager();
+
+// 主画布上下文注册到统一分辨率控制器：DPR 设置变更时无需外部逐处手写同步
+if (window.ResolutionController) {
+    window.ResolutionController.register_context({
+        id: 'main',
+        get_scale: () => (window.state?.scale || 1),
+        on_dpr_change: (scale, force) => {
+            window.tileRenderer?.update_visible_tile_dpr(scale, true, true);
+            window.batchDrawManager.sync_overlay_dpr_now(scale, force);
+        }
+    });
+}

@@ -835,31 +835,18 @@ function main_setup_pdf_file_open() {
         const settings = event.payload;
         console.log('收到设置更改通知:', settings);
         
-        if (settings.dynamicDprEnabled !== undefined) {
-            DRAW_CONFIG.dynamicDprEnabled = settings.dynamicDprEnabled;
-        }
-        if (settings.dprMin !== undefined) {
-            DRAW_CONFIG.dprMin = settings.dprMin;
-        }
-        if (settings.dprMax !== undefined) {
-            DRAW_CONFIG.dprMax = settings.dprMax;
-        }
-        if (settings.dprStep !== undefined) {
-            DRAW_CONFIG.dprStep = settings.dprStep;
-        }
-        if (settings.overlayDpr !== undefined) {
-            DRAW_CONFIG.overlayDpr = settings.overlayDpr;
-        }
-        if (settings.dynamicDprEnabled !== undefined || settings.dprMin !== undefined ||
-            settings.dprMax !== undefined || settings.dprStep !== undefined ||
-            settings.overlayDpr !== undefined) {
-            if (window.tileRenderer) {
-                window.tileRenderer.update_visible_tile_dpr(state.scale, true, true);
-            }
-            if (window.batchDrawManager) {
-                window.batchDrawManager.update_overlay_dpr(state.scale, true);
-            }
-            // 同步阅读器和黑板
+        // 动态分辨率相关设置统一经 ResolutionController 写入，
+        // 再由已注册的渲染上下文（主画布 / 阅读器 / 黑板）各自刷新
+        const dpr_changed = window.ResolutionController
+            ? window.ResolutionController.update_settings({
+                dynamicDprEnabled: settings.dynamicDprEnabled,
+                dprMin: settings.dprMin,
+                dprMax: settings.dprMax,
+                dprStep: settings.dprStep,
+                overlayDpr: settings.overlayDpr
+            })
+            : [];
+        if (dpr_changed.length > 0) {
             window.sync_all_overlay_dpr?.();
         }
 
@@ -2432,11 +2419,19 @@ function main_update_canvas_transform() {
     last_canvas_transform.x = state.canvasX;
     last_canvas_transform.y = state.canvasY;
     last_canvas_transform.scale = state.scale;
-    
+
+    // 仅缩放标记交互：手势冻结的目的是"目标 DPR 每帧都在变，重建完立刻作废"，
+    // 纯平移不改变目标，冻结反而让平移中新进入视野的低分辨率瓦片
+    // 被按不可见块对待、整段平移期间发糊。平移期间按可见块立即补齐。
+    if (scaleChanged) {
+        window.ResolutionController?.mark_interaction();
+    }
+
     dom.canvasWrapper.style.transform = 'translate3d(' + state.canvasX + 'px, ' + state.canvasY + 'px, 0) scale(' + state.scale + ')';
 
-    // 仅 scale 变化时更新 tile DPR（平移/惯性期间跳过冗余调用）
-    if (scaleChanged && window.tileRenderer) {
+    // 平移也做轻量 DPR 检查：新进入视野的瓦片若分辨率不足（或缩小后
+    // 需降级），手势冻结会顺延到停止后渐进处理。内部仅 16 块扫描，开销可忽略。
+    if (window.tileRenderer) {
         window.tileRenderer.update_visible_tile_dpr(state.scale, false, true);
     }
     if (window.batchDrawManager) {
@@ -3325,34 +3320,11 @@ if (document.readyState === 'loading') {
     setTimeout(main_update_tabs, 100);
 }
 
-/** 同步所有 overlay DPR（主界面 + 阅读器 + 黑板） */
+/**
+ * 同步所有渲染上下文的分辨率（主界面 + 阅读器 + 黑板）。
+ * 原先此处逐处手写三份 overlay 尺寸赋值，易与各上下文自身逻辑脱节；
+ * 现改为由 ResolutionController 向已注册上下文统一分发。
+ */
 window.sync_all_overlay_dpr = function () {
-    const dpr = window.DRAW_CONFIG?.overlayDpr;
-    if (dpr == null || dpr <= 0) return;
-    // 主界面
-    if (window.batchDrawManager) {
-        window.batchDrawManager.resize_overlay(
-            DRAW_CONFIG.screenW || 800,
-            DRAW_CONFIG.screenH || 600
-        );
-    }
-    // 阅读器
-    const reader = window.documentReaderManager;
-    if (reader?.batch_draw?._overlayCanvas) {
-        const overlay = reader.batch_draw._overlayCanvas;
-        reader.batch_draw._overlayDpr = dpr;
-        overlay.width = Math.ceil(window.innerWidth * dpr);
-        overlay.height = Math.ceil(window.innerHeight * dpr);
-        overlay.style.width = window.innerWidth + 'px';
-        overlay.style.height = window.innerHeight + 'px';
-    }
-    // 黑板
-    const bb = window.blackboardManager;
-    if (bb?.overlay_canvas && bb.drawing_engine?.batch_draw) {
-        bb.drawing_engine.batch_draw._overlayDpr = dpr;
-        bb.overlay_canvas.width = Math.ceil(bb.screen_w * dpr);
-        bb.overlay_canvas.height = Math.ceil(bb.screen_h * dpr);
-        bb.overlay_canvas.style.width = bb.screen_w + 'px';
-        bb.overlay_canvas.style.height = bb.screen_h + 'px';
-    }
+    window.ResolutionController?.refresh_all(true);
 };

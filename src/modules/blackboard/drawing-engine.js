@@ -74,16 +74,14 @@ export class DrawingEngine {
 
     // ====== 初始化 ======
 
-    init_batch_draw(overlay_canvas, overlay_ctx) {
+    init_batch_draw(overlay_canvas, overlay_ctx, screenW, screenH) {
         this.batch_draw = new window.RealtimeBatchDrawManager();
         // 黑板为多页架构：禁止回退到主画布渲染器，防止擦除误伤主画布笔迹
         this.batch_draw.fallbackToMain = false;
-        this.batch_draw._overlayCanvas = overlay_canvas;
-        this.batch_draw._overlayCtx = overlay_ctx;
-        this.batch_draw._overlayDpr = this.batch_draw._calc_overlay_dpr(this.coord.get_scale() || 1);
-        this.batch_draw._overlayTransformScale = 0;
-        this.batch_draw._overlayTransformX = 0;
-        this.batch_draw._overlayTransformY = 0;
+        // 统一经 OverlayManager 注入已有 canvas：同时记录展示尺寸，
+        // 后续 DPR 调整才不会因尺寸未知把画布缩成 1px
+        this.batch_draw.overlay.attach(overlay_canvas, overlay_ctx, screenW, screenH);
+        // 黑板以 bb_wrapper 的实时 gBCR 为锚，覆盖默认的 provider 变换
         this.batch_draw._sync_overlay_transform = () => this._sync_overlay_transform();
 
         if (window.DRAW_CONFIG?.frameRateMode) {
