@@ -1,80 +1,28 @@
 /**
- * HTTP 请求封装：reportOnline(), reportFieldValue()
+ * HTTP 请求封装：reportOnline()
  */
 
 import {
     API_BASE,
     PLATFORM_ID,
-    API_ENDPOINT_ONLINE,
-    API_ENDPOINT_FIELD_VALUE
+    API_ENDPOINT_ONLINE
 } from './telemetry-config.js';
 import { getInstallUUID, getDeviceType } from './telemetry-identity.js';
 import { getGeo } from './telemetry-geo.js';
 
-const CPU_GPU_STORAGE_KEY = 'telemetry_cpu_gpu';
-
 /**
- * 获取 CPU 和 GPU 信息（通过 Tauri IPC）
+ * 用户是否允许遥测。上报前统一走这里判断：
+ * 开关必须收敛在唯一出口（此前只有 telemetryInit 判一次，而 reportOnline
+ * 可被任何模块直调 —— 关了开关照样上报 UUID/IP/地理，形同虚设）。
  */
-async function getCpuGpuInfo() {
+export async function telemetry_is_enabled() {
     try {
         const invoke = window.__TAURI__?.core?.invoke;
-        if (!invoke) return null;
-        const info = await invoke('telemetry_fetch_cpu_gpu');
-        return info || null;
+        if (!invoke) return false;
+        const result = await invoke('settings_fetch_all');
+        return result?.settings?.telemetryEnabled !== false;
     } catch (e) {
-        console.warn('[telemetry] cpu/gpu fetch failed:', e);
-        return null;
-    }
-}
-
-/**
- * 检查 CPU/GPU 是否需要上报（与上次上报的信息不同）
- */
-function shouldReportCpuGpu(cpuGpuInfo) {
-    if (!cpuGpuInfo) return false;
-    const lastReported = localStorage.getItem(CPU_GPU_STORAGE_KEY);
-    return lastReported !== cpuGpuInfo;
-}
-
-/**
- * 保存已上报的 CPU/GPU 信息
- */
-function saveReportedCpuGpu(cpuGpuInfo) {
-    if (cpuGpuInfo) {
-        localStorage.setItem(CPU_GPU_STORAGE_KEY, cpuGpuInfo);
-    }
-}
-
-/**
- * 上报自定义字段值（通过 Tauri IPC 绕过 CORS）
- * 返回 true 表示成功，false 表示失败
- */
-export async function reportFieldValue(fieldKey, value, reportedBy = 'viewstage-client') {
-    try {
-        const body = {
-            platform_id: PLATFORM_ID,
-            field_key: fieldKey,
-            value: value,
-            source: 'api',
-            reported_by: reportedBy
-        };
-
-        const invoke = window.__TAURI__?.core?.invoke;
-        if (!invoke) {
-            console.warn('[telemetry] Tauri IPC unavailable');
-            return false;
-        }
-
-        const result = await invoke('telemetry_http_post', {
-            url: `${API_BASE}${API_ENDPOINT_FIELD_VALUE}`,
-            body: JSON.stringify(body)
-        });
-
-        console.log(`[telemetry] field value reported: ${fieldKey} = ${value}`);
-        return true;
-    } catch (e) {
-        console.warn('[telemetry] field value report error:', e);
+        console.warn('[telemetry] failed to fetch settings, treat as disabled:', e);
         return false;
     }
 }
@@ -84,10 +32,13 @@ export async function reportFieldValue(fieldKey, value, reportedBy = 'viewstage-
  */
 export async function reportOnline() {
     try {
+        if (!(await telemetry_is_enabled())) {
+            console.log('[telemetry] disabled by user settings');
+            return;
+        }
         const installId = await getInstallUUID();
         const deviceType = getDeviceType();
         const geo = await getGeo();
-        const cpuGpuInfo = await getCpuGpuInfo();
 
         const body = {
             platform_id: PLATFORM_ID,
@@ -115,14 +66,6 @@ export async function reportOnline() {
 
         const parsed = JSON.parse(result);
         console.log(`[telemetry] online reported, count: ${parsed.online_count}`);
-
-        // 若有 CPU/GPU 信息且与上次上报不同，则上报 cpu_and_gpu 字段
-        if (shouldReportCpuGpu(cpuGpuInfo)) {
-            const success = await reportFieldValue('cpu_and_gpu', cpuGpuInfo);
-            if (success) {
-                saveReportedCpuGpu(cpuGpuInfo);
-            }
-        }
     } catch (e) {
         console.warn('[telemetry] online report error:', e);
     }

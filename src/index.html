@@ -4,22 +4,30 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>ViewStage</title>
+    <title>ViewPDF</title>
     <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" href="blackboard.css">
-    <script type="module" src="modules/pdf/pdf.min.mjs"></script>
     <script src="modules/i18n.js" defer></script>
+    <script src="modules/renderMarkdown.js" defer></script>
     <script>
         window.__TAURI__?.core.invoke('main_signal_loaded').catch(()=>{});
         (async()=>{
             try {
-                await import('./themes/theme.js');
-                await import('./modules/canvas/batch-draw.js');
-                await import('./modules/canvas/pen_tessellator.js');
-                await import('./modules/canvas/tile-renderer.js');
+                // Wave 0: 共享基础模块（动态分辨率 / 覆盖层），必须先于渲染模块就绪
+                await Promise.all([
+                    import('./modules/canvas/resolution-controller.js'),
+                    import('./modules/canvas/overlay-manager.js'),
+                ]);
+                // Wave 1: independent modules in parallel
+                await Promise.all([
+                    import('./themes/theme.js'),
+                    import('./modules/canvas/batch-draw.js'),
+                    import('./modules/canvas/pen_tessellator.js'),
+                    import('./modules/canvas/tile-renderer.js'),
+                    import('./modules/pdf/document_reader_page.js'),
+                    import('./modules/pdf/document_reader.js'),
+                ]);
+                // Wave 2: dependent modules (imports resolve from cache)
                 await import('./main.js');
-                await import('./modules/pdf/document_reader_page.js');
-                await import('./modules/pdf/document_reader.js');
                 await import('./init.js');
             } catch(e) {
                 console.error('[boot] module load error:', e);
@@ -36,24 +44,45 @@
 </head>
 <body>
     <div class="container">
-        <div class="titlebar" id="titlebar">
-            <div class="titlebar-drag" data-tauri-drag-region>
-                <div class="titlebar-tabs" id="titlebarTabs"></div>
+        <div class="titlebar" id="titlebar" data-tauri-drag-region>
+            <!-- macOS 红绿灯控件组（左置，macos-mode 时显示） -->
+            <div class="titlebar-controls-mac" id="titlebarControlsMac">
+                <button class="tbm-btn tbm-close" id="btnTitleCloseMac" title="关闭">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <button class="tbm-btn tbm-min" id="btnTitleMinimizeMac" title="最小化">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <button class="tbm-btn tbm-max" id="btnTitleMaximizeMac" title="最大化">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M6 3v6M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                    </svg>
+                </button>
             </div>
-            <div class="titlebar-controls">
-                <button class="titlebar-btn" id="btnTitleMinimize" title="最小化">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path d="M3 8h10" stroke="currentColor" stroke-width="1.2"/>
+            <div class="titlebar-tabs" id="titlebarTabs" data-tauri-drag-region></div>
+            <!-- Windows 经典控件组（右置，默认显示；─ ▢ ✕ 顺序，最大化后 ▢→❐） -->
+            <div class="titlebar-controls-win" id="titlebarControlsWin">
+                <button class="titlebar-btn" id="btnTitleMinimizeWin" title="最小化">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3 6h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
-                <button class="titlebar-btn" id="btnTitleMaximize" title="最大化">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                <button class="titlebar-btn" id="btnTitleMaximizeWin" title="最大化">
+                    <svg class="tb-glyph-max" viewBox="0 0 12 12" fill="none">
+                        <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/>
+                    </svg>
+                    <svg class="tb-glyph-restore" viewBox="0 0 12 12" fill="none">
+                        <rect x="3" y="5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/>
+                        <path d="M5 5V4a1 1 0 011-1h2a1 1 0 011 1v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
-                <button class="titlebar-btn titlebar-btn-close" id="btnTitleClose" title="关闭">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.2"/>
+                <button class="titlebar-btn titlebar-btn-close" id="btnTitleCloseWin" title="关闭">
+                    <svg viewBox="0 0 12 12" fill="none">
+                        <path d="M3.5 3.5l5 5M8.5 3.5l-5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                     </svg>
                 </button>
             </div>
@@ -64,71 +93,105 @@
                 <div class="app-body">
                     <div class="app-sidebar">
                         <div class="sidebar-section">
-                            <div class="sidebar-section-title">新建导入</div>
+                            <div class="sidebar-section-title">新建</div>
                             <button class="sidebar-item" id="sideImportPdf">
-                                <img data-icon="pdf" width="14" height="14" alt=""><span>导入 PDF</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 3v7M8 3L5.5 5.5M8 3l2.5 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    <path d="M3 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <span>打开文件</span>
                             </button>
                         </div>
                         <div class="sidebar-section">
-                            <div class="sidebar-section-title">文件视图</div>
+                            <div class="sidebar-section-title">文件</div>
                             <button class="sidebar-item active" id="sideRecent">
-                                <img data-icon="clock" width="14" height="14" alt=""><span>最近</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M8 5v3l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <span>最近</span>
                             </button>
                             <button class="sidebar-item" id="sideStarred">
-                                <img data-icon="star" width="14" height="14" alt=""><span>星标</span>
+                                <svg viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 2.5l1.8 3.6 4 .6-2.9 2.8.7 4L8 11.4 4.4 13.5l.7-4L2.2 6.7l4-.6L8 2.5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+                                </svg>
+                                <span>星标</span>
                             </button>
                         </div>
                         <div class="sidebar-footer">
                             <button class="sidebar-item" id="sideSettings">
-                                <img data-icon="settings" width="14" height="14" alt=""><span>系统设置</span>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                    <path d="M12.0122 2.25C12.7462 2.25846 13.4773 2.34326 14.1937 2.50304C14.5064 2.57279 14.7403 2.83351 14.7758 3.15196L14.946 4.67881C15.0231 5.37986 15.615 5.91084 16.3206 5.91158C16.5103 5.91188 16.6979 5.87238 16.8732 5.79483L18.2738 5.17956C18.5651 5.05159 18.9055 5.12136 19.1229 5.35362C20.1351 6.43464 20.8889 7.73115 21.3277 9.14558C21.4223 9.45058 21.3134 9.78203 21.0564 9.9715L19.8149 10.8866C19.4607 11.1468 19.2516 11.56 19.2516 11.9995C19.2516 12.4389 19.4607 12.8521 19.8157 13.1129L21.0582 14.0283C21.3153 14.2177 21.4243 14.5492 21.3297 14.8543C20.8911 16.2685 20.1377 17.5649 19.1261 18.6461C18.9089 18.8783 18.5688 18.9483 18.2775 18.8206L16.8712 18.2045C16.4688 18.0284 16.0068 18.0542 15.6265 18.274C15.2463 18.4937 14.9933 18.8812 14.945 19.3177L14.7759 20.8444C14.741 21.1592 14.5122 21.4182 14.204 21.4915C12.7556 21.8361 11.2465 21.8361 9.79803 21.4915C9.48991 21.4182 9.26105 21.1592 9.22618 20.8444L9.05736 19.32C9.00777 18.8843 8.75434 18.498 8.37442 18.279C7.99451 18.06 7.5332 18.0343 7.1322 18.2094L5.72557 18.8256C5.43422 18.9533 5.09403 18.8833 4.87678 18.6509C3.86462 17.5685 3.11119 16.2705 2.6732 14.8548C2.57886 14.5499 2.68786 14.2186 2.94485 14.0293L4.18818 13.1133C4.54232 12.8531 4.75147 12.4399 4.75147 12.0005C4.75147 11.561 4.54232 11.1478 4.18771 10.8873L2.94516 9.97285C2.6878 9.78345 2.5787 9.45178 2.67337 9.14658C3.11212 7.73215 3.86594 6.43564 4.87813 5.35462C5.09559 5.12236 5.43594 5.05259 5.72724 5.18056L7.12762 5.79572C7.53056 5.97256 7.9938 5.94585 8.37577 5.72269C8.75609 5.50209 9.00929 5.11422 9.05817 4.67764L9.22824 3.15196C9.26376 2.83335 9.49786 2.57254 9.8108 2.50294C10.5281 2.34342 11.26 2.25865 12.0122 2.25ZM12.0124 3.7499C11.5583 3.75524 11.1056 3.79443 10.6578 3.86702L10.5489 4.84418C10.4471 5.75368 9.92003 6.56102 9.13042 7.01903C8.33597 7.48317 7.36736 7.53903 6.52458 7.16917L5.62629 6.77456C5.05436 7.46873 4.59914 8.25135 4.27852 9.09168L5.07632 9.67879C5.81513 10.2216 6.25147 11.0837 6.25147 12.0005C6.25147 12.9172 5.81513 13.7793 5.07632 14.3221L4.27852 14.9093C4.59914 15.7496 5.05436 16.5322 5.62629 17.2264L6.52458 16.8317C7.36736 16.4619 8.33597 16.5177 9.13042 16.9819C9.92003 17.4399 10.4471 18.2472 10.5489 19.1567L10.6578 20.1339C11.1056 20.2065 11.5583 20.2457 12.0124 20.251C12.4666 20.2457 12.9193 20.2065 13.3671 20.1339L13.476 19.1567C13.5778 18.2472 14.1049 17.4399 14.8945 16.9819C15.689 16.5177 16.6576 16.4619 17.5004 16.8317L18.3987 17.2264C18.9706 16.5322 19.4258 15.7496 19.7464 14.9093L18.9486 14.3221C18.2098 13.7793 17.7735 12.9172 17.7735 12.0005C17.7735 11.0837 18.2098 10.2216 18.9486 9.67879L19.7464 9.09168C19.4258 8.25135 18.9706 7.46873 18.3987 6.77456L17.5004 7.16917C16.6576 7.53903 15.689 7.48317 14.8945 7.01903C14.1049 6.56102 13.5778 5.75368 13.476 4.84418L13.3671 3.86702C12.9193 3.79443 12.4666 3.75524 12.0124 3.7499ZM12.0122 8.00046C14.2133 8.00046 16.0122 9.79932 16.0122 12.0005C16.0122 14.2016 14.2133 16.0005 12.0122 16.0005C9.81111 16.0005 8.01225 14.2016 8.01225 12.0005C8.01225 9.79932 9.81111 8.00046 12.0122 8.00046ZM12.0122 9.50046C10.6396 9.50046 9.51225 10.6278 9.51225 12.0005C9.51225 13.3731 10.6396 14.5005 12.0122 14.5005C13.3849 14.5005 14.5122 13.3731 14.5122 12.0005C14.5122 10.6278 13.3849 9.50046 12.0122 9.50046Z" fill="currentColor"/>
+                                </svg>
+                                <span>设置</span>
                             </button>
                         </div>
                     </div>
                     <div class="app-main">
-                        <div class="file-area-header">
-                            <div class="file-area-search">
-                                <img data-icon="search" width="13" height="13" alt="">
-                                <input type="text" id="fileSearch" placeholder="在当前列表搜索..." class="file-search-input">
-                                <button class="search-clear" id="searchClear" style="display:none">×</button>
+                        <div class="main-toolbar">
+                            <div class="search-field">
+                                <svg viewBox="0 0 14 14" fill="none">
+                                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <input type="text" placeholder="搜索文件..." id="fileSearch">
+                                <button class="clear-btn" id="searchClear" style="display:none">×</button>
                             </div>
-                            <div class="file-area-filters">
-                                <select class="filter-select" id="filterTime">
-                                    <option value="all">全部时间</option>
-                                    <option value="today">今天</option>
-                                    <option value="yesterday">昨天</option>
-                                    <option value="week">本周</option>
-                                    <option value="month">本月</option>
-                                </select>
-                                <select class="filter-select" id="filterSize2">
-                                    <option value="all">全部大小</option>
-                                    <option value="small">小 (≤1MB)</option>
-                                    <option value="medium">中 (1-10MB)</option>
-                                    <option value="large">大 (10-100MB)</option>
-                                    <option value="huge">超大 (100MB+)</option>
-                                </select>
-                                <select class="filter-select" id="filterSort">
-                                    <option value="time">按时间</option>
-                                    <option value="name">按名称</option>
-                                    <option value="size">按大小</option>
-                                </select>
-                                <button class="sort-btn" id="fileSortToggle" title="切换排序">↑↓</button>
+                            <div class="toolbar-right">
+                                <div class="dropdown filter-drop" id="filterTimeDrop">
+                                    <div class="dropdown-trigger" data-value="all">
+                                        <span class="dropdown-label">全部时间</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="all">全部时间<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="today">今天<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="yesterday">昨天<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="week">本周<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="month">本月<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
+                                <div class="dropdown" id="filterSortDrop">
+                                    <div class="dropdown-trigger" data-value="time">
+                                        <span class="dropdown-label">按时间</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="time">按时间<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="name">按名称<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="size">按大小<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
+                                <div class="dropdown" id="filterSizeDrop">
+                                    <div class="dropdown-trigger" data-value="all">
+                                        <span class="dropdown-label">全部大小</span>
+                                        <svg class="dropdown-arrow" viewBox="0 0 8 4" fill="none"><path d="M0 0l4 4 4-4z" fill="currentColor"/></svg>
+                                    </div>
+                                    <div class="dropdown-menu">
+                                        <div class="dropdown-option selected" data-value="all">全部大小<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="small">小 (≤1MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="medium">中 (1-10MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="large">大 (10-100MB)<span class="dropdown-option-check">✓</span></div>
+                                        <div class="dropdown-option" data-value="huge">超大 (100MB+)<span class="dropdown-option-check">✓</span></div>
+                                    </div>
+                                </div>
                                 <div class="view-toggle">
-                                    <button class="view-toggle-btn active" id="viewList" title="列表视图">☰</button>
-                                    <button class="view-toggle-btn" id="viewGrid" title="缩略图视图">▦</button>
+                                    <button class="view-toggle-btn active" id="viewList" title="列表">☰</button>
+                                    <button class="view-toggle-btn" id="viewGrid" title="网格">▦</button>
                                 </div>
                             </div>
                         </div>
-                        <div class="file-browser-list" id="recentFileList">
-                            <div class="file-list-empty" id="recentFileEmpty">
-                                <div class="file-list-empty-icon">
-                                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" opacity="0.25">
-                                        <rect x="10" y="6" width="28" height="36" rx="3" stroke="currentColor" stroke-width="1.5"/>
-                                        <path d="M10 18h28M10 26h28M10 34h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                                        <path d="M24 42V30m-6 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        <div class="file-area" id="recentFileList">
+                            <div class="empty-state" id="recentFileEmpty">
+                                <div class="empty-state-icon">
+                                    <svg viewBox="0 0 28 28" fill="none">
+                                        <path d="M6 4h10l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2z" stroke="currentColor" stroke-width="1.3"/>
+                                        <path d="M16 4v6h6" stroke="currentColor" stroke-width="1.3"/>
+                                        <path d="M10 15h8M10 18h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                                     </svg>
                                 </div>
-                                <span class="file-list-empty-title">拖拽文件到此处</span>
-                                <span class="file-list-empty-sub">支持 PDF、Office 文档，或点击左侧「导入 PDF」按钮</span>
+                                <div class="empty-state-title">没有最近的文件</div>
+                                <div class="empty-state-sub">拖拽 PDF、Office 文档到此处，或点击按钮打开</div>
                             </div>
                         </div>
                     </div>
@@ -139,15 +202,17 @@
                 <div class="canvas-wrapper" id="canvasWrapper">
                     <img id="imageElement" class="image-element" alt="">
                 </div>
-                <div class="eraser-hint" id="eraserHint"></div>
-                <div class="palm-eraser-hint" id="palmEraserHint"></div>
+            <div class="eraser-hint" id="eraserHint"></div>
             </div>
 
             <div class="document-reader-panel" id="documentReaderPanel">
                 <div class="doc-reader-scroll-container" id="docReaderScrollContainer"></div>
             </div>
+
+            <!-- 设置面板懒加载：标记由 modules/settings/settings-panel.js 导出、样式见同目录 settings.css，由 main.js 的 settings_ensure_dom 在首次打开时注入 -->
         </div>
     </div>
 
+    <script type="module" src="modules/pdf/pdf.min.mjs"></script>
 </body>
 </html>

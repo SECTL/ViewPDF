@@ -11,7 +11,7 @@ export function init_pdfjs() {
     if (window.pdfjsLib) {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'modules/pdf/pdf.worker.min.mjs';
         // 抑制 PDF.js 的 CMap/ToUnicode 警告（不影响功能）
-        window.pdfjsLib.verbosity = 0;
+        window.pdfjsLib.verbosity = window.pdfjsLib.VerbosityLevel?.ERRORS ?? 0;
         return true;
     }
     console.warn('[DocLoader] PDF.js 库未加载');
@@ -19,11 +19,26 @@ export function init_pdfjs() {
 }
 
 /**
+ * 计算 PDF.js 附属资源（标准字体 / CMaps）的基 URL。
+ * 基于本模块自身路径推导，与 workerSrc 的加载基准一致，且对文档子路径鲁棒。
+ * @returns {string} 以 "/" 结尾的基 URL
+ */
+export function get_pdfjs_assets_base() {
+    try {
+        const base = new URL('./', import.meta.url).href;
+        return base.endsWith('/') ? base : base + '/';
+    } catch (_) {
+        // import.meta.url 不可用时回退到与 workerSrc 相同的相对目录
+        return 'modules/pdf/';
+    }
+}
+
+/**
  * 等待 PDF.js 库加载完成
  * @param {number} max_wait - 最大等待毫秒数
  * @returns {Promise<boolean>} 是否加载成功
  */
-export async function wait_pdfjs(max_wait = 5000) {
+export async function wait_pdfjs(max_wait = 10000) {
     const start_time = Date.now();
     while (!window.pdfjsLib && (Date.now() - start_time) < max_wait) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -92,11 +107,16 @@ export async function render_pdf_pages_lazy(pdf, total_pages, initial_pages = 3,
 
 // ====== 加载/错误 UI ======
 
+// 并发加载计数：多个文件同时加载时共享一个遮罩，
+// 只有全部完成后才隐藏，避免先完成的一方提前撤掉遮罩（高负载下加载窗口拉长时尤其明显）
+let _loading_ref_count = 0;
+
 /**
  * 显示加载遮罩
  * @param {string} message - 显示的加载消息
  */
 export function show_loading_overlay(message) {
+    _loading_ref_count++;
     const existing = document.getElementById('loadingOverlay');
     if (existing) existing.remove();
 
@@ -122,9 +142,11 @@ export function update_loading_progress(message) {
 }
 
 /**
- * 隐藏加载遮罩
+ * 隐藏加载遮罩（引用计数，归零才真正隐藏）
  */
 export function hide_loading_overlay() {
+    if (_loading_ref_count > 0) _loading_ref_count--;
+    if (_loading_ref_count > 0) return;
     const overlay = document.getElementById('loadingOverlay');
     if (overlay) overlay.remove();
 }

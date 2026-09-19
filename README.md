@@ -1,8 +1,9 @@
 <div align="center">
-   <img src="https://github.com/ospneam/ViewStage/blob/main/src-tauri/icons/Square1024x1024Logo.png" width=15%>
-   <h1>ViewStage</h1>
-   <p>基于 <strong>Tauri v2</strong> 构建的桌面实物展台与演示批注应用，适用于教学、会议、产品展示等多种场景。</p>
-   <p>无需 Node.js 构建前端 — 原生 ES Module 直接加载，零 bundler 依赖。</p>
+    <img src="https://github.com/SECTL/ViewPDF/blob/main/src-tauri/icons/Square1024x1024Logo.png" width=15%>
+    <h1>ViewPDF</h1>
+    <p>基于 <strong>Tauri v2</strong> 构建的桌面演示批注应用，适用于教学、会议、产品展示等多种场景。</p>
+    <p>无需 Node.js 构建前端 — 原生 ES Module 直接加载，零 bundler 依赖。</p>
+    <p>此项目由viewstage衍生而来</p>
 </div>
 
 <p align="center">
@@ -15,19 +16,13 @@
 
 | 类别 | 功能 |
 |------|------|
-| 📷 **摄像头** | 实时画面采集，多设备/分辨率切换，旋转/镜像/黑白/亮度对比度调节，降噪，最小化自动关开 |
-| 🖼 **图片** | 导入本地图片，缩略图侧边栏，旋转/居中/删除 |
-| 📄 **文档** | PDF.js 渲染 PDF；PowerShell COM 自动转换 Word（Office/WPS/LibreOffice）为 PDF；系统文件关联 |
-| ✏️ **批注** | 移动/批注/橡皮擦三模式，压感笔锋，Catmull-Rom 平滑，自定义颜色粗细，笔画分割擦除 |
-| ↩️ **撤销** | Command 模式撤销重做，上限 50 步，超限自动压缩快照 |
-| 🎨 **主题** | 深色/浅色双内置主题，支持 .vst 自定义导入，实时切换 |
-| 🌐 **国际化** | 简体中文、繁体中文、英文 |
-| ⚙️ **设置** | 画布/画笔/信号源/文件关联/缓存/日志管理，设置导入导出 JSON |
-| 🔄 **更新** | 检查 GitHub Release，多镜像下载，进度条，自动安装 |
-| 📸 **截图** | 画布合并导出 PNG，摄像头帧捕获，源切换自动保存批注快照 |
-| 🧩 **源管理** | 摄像头/图片/文档三源统一管理，缩放状态与批注自动保存恢复 |
-| 🖥 **渲染** | 双图层 + 平铺渲染 + 动态 DPR + 四叉树索引 + 自适应帧率 |
-| 🚀 **其他** | OOBE 首次引导、Splashscreen 启动屏、无框全屏窗口 |
+| 🖼 **图片** | 导入本地图片，支持旋转与删除 |
+| 📄 **文档** | 基于 PDF.js 渲染 PDF；通过 PowerShell COM 自动将 Word 文档（支持 Office/WPS/LibreOffice）转换为 PDF；支持系统文件关联直接打开 |
+| ✏️ **批注** | 移动、批注、橡皮擦三种模式；支持压感笔锋与贝塞尔曲线平滑；可自定义颜色与粗细 |
+| ↩️ **撤销** | 采用 Command 模式实现撤销与重做，上限 50 步，超限自动合并快照以控制内存 |
+| 🌐 **国际化** | 支持简体中文、繁体中文、英文、德语、西班牙语、法语、日语、韩语、俄语共九种界面语言 |
+| ⚙️ **设置** | 统一管理画布、画笔、信号源、文件关联、缓存与日志；支持设置导入导出为 JSON 文件 |
+
 
 ## 技术栈
 
@@ -40,10 +35,11 @@
 | **Word 转换** | PowerShell COM 互操作 (Office/WPS/LibreOffice) |
 | **日志** | simplelog |
 
-
 > 项目无需 `npm` / `package.json`，前端直接以 ES Module 方式加载。
 
-## 运行条件
+## 安装
+
+从 [Releases](https://github.com/SECTL/ViewPDF/releases) 下载最新安装包（支持 MSI 和 NSIS 安装器），运行即用。
 
 ### 系统要求
 
@@ -60,27 +56,28 @@
 
 - **Microsoft Office** / **WPS Office** / **LibreOffice**：用于 Word 文档转换
 
-## 开发环境要求
+## 开发
 
-- **Rust**（稳定版，[安装](https://rustup.rs/)）
+### 环境要求
+
+- **Rust** 稳定版（[安装](https://rustup.rs/)）
 - **Tauri CLI**：`cargo install tauri-cli --locked`
-- **Cargo**（随 Rust 一起安装）
 
-## 构建与运行
+### 构建与运行
 
 ```bash
-# 开发模式（热重载）
+# 开发模式
 cargo tauri dev
 
 # 生产构建
 cargo tauri build
 ```
 
-CI 触发器：推送 `v*` 标签或手动触发。
+CI 自动构建：推送 `v*` 标签触发，手动也可在 Actions 页面触发。
 
-## 许可证
+## 开源许可
 
-本项目采用开源许可证，详见 [LICENSE](LICENSE) 文件。使用本仓库代码构建的应用也必须开源。
+本项目采用Apache-2.0 license开源许可证，详见 [LICENSE](LICENSE) 文件。使用本仓库代码构建的应用也必须开源。
 
 ## 致谢
 
@@ -105,14 +102,6 @@ CI 触发器：推送 `v*` 标签或手动触发。
 - [reqwest](https://github.com/seanmonstar/reqwest) — HTTP 客户端
 - [winreg](https://github.com/gentoo90/winreg-rs) — Windows 注册表操作（文件关联）
 - [simplelog](https://github.com/dermesser/simplelog) — 日志记录
-- [windows-sys](https://github.com/microsoft/windows-rs) — Windows API 绑定（内存清理 FFI）
-
-### 前端库
-
-- [PDF.js](https://mozilla.github.io/pdf.js/) — Mozilla 的 PDF 渲染库
-- [mammoth.js](https://github.com/mwilliamson/mammoth.js) — Word 文档转为 HTML
-- [html2canvas](https://html2canvas.hertzen.com/) — HTML 元素渲染为 Canvas
-
 ### Tauri 插件
 
 - [tauri-plugin-opener](https://github.com/tauri-apps/plugins-workspace) — 文件打开

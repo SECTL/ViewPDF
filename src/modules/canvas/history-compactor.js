@@ -11,7 +11,6 @@ let _compactIdleId = null;
  * @param {Function} deps.releaseOffscreenCanvas
  * @param {Function} deps.renderAllStrokes
  * @param {Function} deps.loadBaseImage
- * @param {Function} deps.safeScaleFn
  * @param {Function} deps.penManager
  * @param {Function} deps.historyValidateCompact
  * @param {Function} deps.historyFetchUndoStack
@@ -83,7 +82,6 @@ export function createHistoryCompactor(deps) {
             }
 
             await renderStrokesToContext(tempCtx, strokesToCompact, {
-                renderScale: deps.safeScaleFn(),
                 penManager: deps.penManager()
             });
 

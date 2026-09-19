@@ -3,15 +3,12 @@ const ThemeManager = {
   currentTheme: null,
   currentThemeModule: null,
   userThemePath: null,
-  isSettingsPage: false,
 
   /**
    * 初始化主题管理器，加载指定主题（默认从配置读取）
    * @param {string|null} themeName - 主题包名，不传则从后端配置读取
    */
   async init(themeName = null) {
-    this.isSettingsPage = window.location.pathname.includes('settings.html');
-    
     if (!themeName) {
       themeName = await this.theme_fetch_saved();
     }
@@ -87,7 +84,7 @@ const ThemeManager = {
       this.currentTheme = themeName;
       
       if (this.currentThemeModule.load_theme) {
-        await this.currentThemeModule.load_theme(this.isSettingsPage);
+        await this.currentThemeModule.load_theme();
       }
       this.theme_update_toolbar_text_visibility();
       this.theme_load_icons();
@@ -156,12 +153,10 @@ const ThemeManager = {
       config: mergedConfig,
       themeDir: normalizedThemeDir,
       
-      async load_theme(isSettingsPage = false) {
+      async load_theme() {
         const link = document.createElement('link');
         link.rel = 'stylesheet';
-        const cssFile = isSettingsPage ? 'settings.css' : 'theme.css';
-        // convertFileSrc 需要系统路径格式（Windows 用反斜杠）
-        const cssPath = `${this.themeDir}/${cssFile}`.replace(/\//g, '\\');
+        const cssPath = `${this.themeDir}/theme.css`.replace(/\//g, '\\');
         link.href = convertFileSrc(cssPath);
         document.head.appendChild(link);
       },
@@ -188,6 +183,15 @@ const ThemeManager = {
   },
 
   /**
+   * 设置用户级工具栏文字开关（优先于主题包配置），并立即应用到所有工具栏
+   * @param {boolean} show
+   */
+  theme_set_user_toolbar_text(show) {
+    this._user_toolbar_text = show !== false;
+    this.theme_update_toolbar_text_visibility();
+  },
+
+  /**
    * 获取当前激活的主题包名
    * @returns {string|null} 主题包名
    */
@@ -197,9 +201,13 @@ const ThemeManager = {
 
   /**
    * 获取主题是否显示工具栏文字标签
+   * 用户级开关（设置面板）优先，未设置时回退主题包配置
    * @returns {boolean} true=显示文字，false=仅图标
    */
   theme_fetch_toolbar_text() {
+    if (this._user_toolbar_text !== undefined) {
+      return this._user_toolbar_text;
+    }
     if (this.currentThemeModule && this.currentThemeModule.fetch_toolbar_text) {
       return this.currentThemeModule.fetch_toolbar_text();
     }
@@ -286,11 +294,9 @@ const ThemeManager = {
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    ThemeManager.isSettingsPage = window.location.pathname.includes('settings.html');
     ThemeManager.theme_update_active('com.viewstage.theme.simplify');
   });
 } else {
-  ThemeManager.isSettingsPage = window.location.pathname.includes('settings.html');
   ThemeManager.theme_update_active('com.viewstage.theme.simplify');
 }
 

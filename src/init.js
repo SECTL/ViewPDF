@@ -1,20 +1,25 @@
 /**
- * ViewStage 初始化 —— 文件管理
+ * ViewPDF 初始化 —— 文件管理
  */
 import ThemeManager from './themes/theme.js';
+import * as Eraser from './modules/eraser/eraser.js';
 
 console.log('[init] module loaded, readyState:', document.readyState);
 
 let currentView = 'recent'; // 'recent' | 'starred'
 
-// 星标状态管理
+// 星标状态管理（缓存避免每次 is_starred 重复 JSON.parse）
+let _starredCache = null;
 function get_starred_set() {
+    if (_starredCache) return _starredCache;
     try {
-        return new Set(JSON.parse(localStorage.getItem('starred_files') || '[]'));
-    } catch(e) { return new Set(); }
+        _starredCache = new Set(JSON.parse(localStorage.getItem('starred_files') || '[]'));
+    } catch(e) { _starredCache = new Set(); }
+    return _starredCache;
 }
 function save_starred_set(set) {
     localStorage.setItem('starred_files', JSON.stringify([...set]));
+    _starredCache = set;
 }
 function toggle_starred(path) {
     const set = get_starred_set();
@@ -36,24 +41,19 @@ if (document.readyState === 'loading') {
     window.main_init_pdfjs();
 }
 
-// 初始化缓存路径
+// 初始化缓存路径（并行获取）
 async function dir_init_cache_path() {
     if (window.__TAURI__) {
         try {
-            window.cacheDir = await window.__TAURI__.core.invoke('dir_fetch_cache');
-            window.configDir = await window.__TAURI__.core.invoke('dir_fetch_config');
-            window.cdsDir = await window.__TAURI__.core.invoke('dir_fetch_pictures_viewstage');
+            const [cacheDir, configDir] = await Promise.all([
+                window.__TAURI__.core.invoke('dir_fetch_cache'),
+                window.__TAURI__.core.invoke('dir_fetch_config'),
+            ]);
+            window.cacheDir = cacheDir;
+            window.configDir = configDir;
         } catch (error) {
             console.error('获取缓存目录失败:', error);
         }
-    }
-}
-
-// 发射启动进度事件
-function app_emit_splash_progress(step, message) {
-    if (window.__TAURI__) {
-        const { emit } = window.__TAURI__.event;
-        emit('splash-progress', { step, message }).catch(e => console.warn('发射启动进度失败:', e));
     }
 }
 
@@ -76,12 +76,7 @@ function dom_init_all() {
     // 顶栏按钮
     dom.btnToggleTheme = document.getElementById('btnToggleTheme');
     dom.btnGlobalSettings = document.getElementById('btnGlobalSettings');
-    
-    // 标题栏按钮
-    dom.btnTitleMinimize = document.getElementById('btnTitleMinimize');
-    dom.btnTitleMaximize = document.getElementById('btnTitleMaximize');
-    dom.btnTitleClose = document.getElementById('btnTitleClose');
-    
+
     // 文档阅读器面板
     dom.documentReaderPanel = document.getElementById('documentReaderPanel');
     dom.docReaderScrollContainer = document.getElementById('docReaderScrollContainer');
@@ -94,7 +89,7 @@ function dom_init_all() {
     return true;
 }
 
-// 加载设置
+// 加载设置，返回 settings 对象供后续复用
 async function settings_load_config() {
     if (window.__TAURI__) {
         try {
@@ -103,18 +98,31 @@ async function settings_load_config() {
             const settings = (result && typeof result === 'object' && result.settings)
                 ? result.settings : {};
 
-            if (settings.theme) {
-                await ThemeManager.theme_update_active(settings.theme);
-            }
-            
-            // 加载黑板启用状态
+            // 加载黑板启用状态（主题在 DOM 创建后应用，见 main_init_all）
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
-            
+
+            // 钢笔效果模式：DRAW_CONFIG 默认 'full'，运行期唯一来源是它，
+            // 此前只有设置面板初始化时才回读保存值，导致 OOBE/设置中关闭后
+            // 重启仍按 'full' 生效
+            if (['off', 'limited', 'full'].includes(settings.penEffectMode)) {
+                window.DRAW_CONFIG.penEffectMode = settings.penEffectMode;
+            }
+
+            // DPR 相关设置回放到 DRAW_CONFIG：这是唯一一次在首帧渲染前
+            // 把持久化画质设置落地的机会。此前只由设置面板在"被打开并改动"
+            // 时写入，导致「画面精度已更改，建议重启应用」的提示实际不成立
+            // ——重启后一律回落到默认值。必须在任何瓦片初始化之前执行。
+            window.ResolutionController?.apply_persisted(settings);
+            // 跟随显示器 DPR 变化（跨屏拖动 / 系统缩放调整）
+            window.ResolutionController?.watch_display_dpr();
+
             console.log('[init] 配置加载完成');
+            return settings;
         } catch (error) {
             console.error('加载配置失败:', error);
         }
     }
+    return {};
 }
 
 // 绑定事件
@@ -223,16 +231,14 @@ function main_setup_events() {
         viewList.addEventListener('click', () => {
             viewList.classList.add('active');
             viewGrid?.classList.remove('active');
-            fileListEl?.classList.remove('file-browser-grid');
-            document.querySelectorAll('.file-row').forEach(el => el.classList.remove('file-row-grid'));
+            fileListEl?.classList.remove('grid-view');
         });
     }
     if (viewGrid) {
         viewGrid.addEventListener('click', () => {
             viewGrid.classList.add('active');
             viewList?.classList.remove('active');
-            fileListEl?.classList.add('file-browser-grid');
-            document.querySelectorAll('.file-row').forEach(el => el.classList.add('file-row-grid'));
+            fileListEl?.classList.add('grid-view');
         });
     }
     
@@ -274,6 +280,136 @@ function main_setup_events() {
             });
         }
     }
+    
+    // 工具栏筛选（时间/大小/排序）— 自定义下拉栏
+    const filterTimeDrop = document.getElementById('filterTimeDrop');
+    const filterSizeDrop = document.getElementById('filterSizeDrop');
+    const filterSortDrop = document.getElementById('filterSortDrop');
+    let openDropdown = null;
+    
+    function closeAllDropdowns() {
+        if (openDropdown) {
+            openDropdown.querySelector('.dropdown-trigger').classList.remove('open');
+            openDropdown.querySelector('.dropdown-menu').classList.remove('open');
+            openDropdown = null;
+        }
+    }
+    
+    function init_dropdown(dropEl) {
+        if (!dropEl) return;
+        const trigger = dropEl.querySelector('.dropdown-trigger');
+        const menu = dropEl.querySelector('.dropdown-menu');
+        const options = menu.querySelectorAll('.dropdown-option');
+        const label = trigger.querySelector('.dropdown-label');
+        
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasOpen = trigger.classList.contains('open');
+            closeAllDropdowns();
+            if (!wasOpen) {
+                trigger.classList.add('open');
+                menu.classList.add('open');
+                openDropdown = dropEl;
+            }
+        });
+        
+        options.forEach(opt => {
+            opt.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const value = opt.dataset.value;
+                // 更新选中状态
+                options.forEach(o => o.classList.remove('selected'));
+                opt.classList.add('selected');
+                // 更新 trigger 显示
+                trigger.dataset.value = value;
+                label.textContent = opt.textContent.replace('✓', '').trim();
+                // 关闭菜单
+                closeAllDropdowns();
+                // 触发筛选
+                apply_toolbar_filters();
+            });
+        });
+    }
+    
+    init_dropdown(filterTimeDrop);
+    init_dropdown(filterSizeDrop);
+    init_dropdown(filterSortDrop);
+    
+    // 点击外部关闭下拉栏
+    document.addEventListener('click', closeAllDropdowns);
+    
+    function getDropdownValue(dropEl) {
+        return dropEl?.querySelector('.dropdown-trigger')?.dataset.value || 'all';
+    }
+    
+    function apply_toolbar_filters() {
+        const rows = document.querySelectorAll('.file-row');
+        const groups = document.querySelectorAll('.file-time-group');
+        const timeVal = getDropdownValue(filterTimeDrop);
+        const sizeVal = getDropdownValue(filterSizeDrop);
+        const sortVal = getDropdownValue(filterSortDrop);
+        const now = Date.now();
+        const DAY = 86400000;
+        
+        // 1. 时间 + 大小过滤
+        rows.forEach(r => {
+            let show = true;
+            // 时间过滤
+            if (timeVal !== 'all') {
+                const t = parseInt(r.dataset.time) || 0;
+                if (!t) { show = false; } else {
+                    const age = now - t;
+                    if (timeVal === 'today' && age > DAY) show = false;
+                    else if (timeVal === 'yesterday' && (age <= DAY || age > 2 * DAY)) show = false;
+                    else if (timeVal === 'week' && age > 7 * DAY) show = false;
+                    else if (timeVal === 'month' && age > 30 * DAY) show = false;
+                }
+            }
+            // 大小过滤
+            if (show && sizeVal !== 'all') {
+                const sz = parseInt(r.dataset.size) || 0;
+                if (sizeVal === 'small' && sz > 1048576) show = false;
+                else if (sizeVal === 'medium' && (sz <= 1048576 || sz > 10485760)) show = false;
+                else if (sizeVal === 'large' && (sz <= 10485760 || sz > 104857600)) show = false;
+                else if (sizeVal === 'huge' && sz <= 104857600) show = false;
+            }
+            r.style.display = show ? '' : 'none';
+        });
+        
+        // 隐藏空分组
+        groups.forEach(g => {
+            const hasVisible = g.querySelector('.file-row:not([style*="display: none"])');
+            g.style.display = hasVisible ? '' : 'none';
+        });
+        
+        // 2. 排序
+        if (sortVal !== 'time') {
+            groups.forEach(g => {
+                const rowsArr = Array.from(g.querySelectorAll('.file-row'));
+                if (rowsArr.length < 2) return;
+                rowsArr.sort((a, b) => {
+                    if (sortVal === 'name') return (a.dataset.name || '').localeCompare(b.dataset.name || '');
+                    if (sortVal === 'size') return (parseInt(b.dataset.size) || 0) - (parseInt(a.dataset.size) || 0);
+                    return 0;
+                });
+                const header = g.querySelector('.file-time-header');
+                rowsArr.forEach(r => g.appendChild(r));
+                if (header) g.insertBefore(header, g.firstChild);
+            });
+        } else {
+            // 按时间排序（恢复原始顺序：每组内按时间降序）
+            groups.forEach(g => {
+                const rowsArr = Array.from(g.querySelectorAll('.file-row'));
+                if (rowsArr.length < 2) return;
+                rowsArr.sort((a, b) => (parseInt(b.dataset.time) || 0) - (parseInt(a.dataset.time) || 0));
+                const header = g.querySelector('.file-time-header');
+                rowsArr.forEach(r => g.appendChild(r));
+                if (header) g.insertBefore(header, g.firstChild);
+            });
+        }
+    }
+    
+    window.apply_toolbar_filters = apply_toolbar_filters;
     
     // 文件打开事件
     window.main_setup_pdf_file_open();
@@ -393,6 +529,7 @@ window.main_render_recent_files = (files) => {
     }
 
     const entries = files.map(norm_file_entry);
+    const fragment = document.createDocumentFragment();
 
     // 按时间分组
     const groups = {};
@@ -423,10 +560,20 @@ window.main_render_recent_files = (files) => {
             row.className = 'file-row';
             row.tabIndex = 0;
             row.dataset.path = entry.path;
+            row.dataset.name = entry.name.toLowerCase();
+            row.dataset.time = entry.time || '';
+            row.dataset.size = entry.size != null ? String(entry.size) : '';
+            row.dataset.group = label;
 
             const icon = document.createElement('div');
             icon.className = 'file-type-icon ' + info.cls;
-            icon.textContent = info.label;
+            if (ext === 'pdf') {
+                icon.innerHTML = '<img src="assets/pdf.ico" style="width:20px;height:20px">';
+            } else if (ext === 'doc' || ext === 'docx') {
+                icon.innerHTML = '<img src="assets/word.ico" style="width:20px;height:20px">';
+            } else {
+                icon.textContent = info.label;
+            }
 
             const infoDiv = document.createElement('div');
             infoDiv.className = 'file-row-info';
@@ -516,8 +663,10 @@ window.main_render_recent_files = (files) => {
             groupDiv.appendChild(row);
         }
 
-        dom.recentFileList.appendChild(groupDiv);
+        fragment.appendChild(groupDiv);
     }
+
+    dom.recentFileList.appendChild(fragment);
 
     if (window.ThemeManager?.theme_load_icons) {
         window.ThemeManager.theme_load_icons();
@@ -525,6 +674,8 @@ window.main_render_recent_files = (files) => {
     
     // 渲染后根据当前视图过滤
     if (currentView !== 'recent') window.apply_view_filter?.();
+    // 渲染后应用工具栏筛选
+    window.apply_toolbar_filters?.();
 };
 
 // 黑板懒加载函数
@@ -551,93 +702,86 @@ window.blackboard_ensure_loaded = (async (container) => {
 async function main_init_all() {
     console.log('[init] main_init_all start');
     try {
-        app_emit_splash_progress(0, '正在初始化...');
-        
+        window.__eraser = Eraser;
+
         if (window.i18n) {
-            app_emit_splash_progress(0, '正在初始化多语言...');
             await window.i18n.init_start();
         }
-        
-        if (window.__TAURI__) {
-            app_emit_splash_progress(0, '正在检查运行环境...');
-            const isOobeActive = await window.__TAURI__.core.invoke('oobe_check_active');
-            if (isOobeActive) {
-                return;
-            }
+
+        // 并行执行独立的 IPC 调用
+        const oobePromise = window.__TAURI__
+            ? window.__TAURI__.core.invoke('oobe_check_active').catch(() => false)
+            : Promise.resolve(false);
+        const [isOobeActive, settings] = await Promise.all([
+            oobePromise,
+            settings_load_config(),
+            dir_init_cache_path(),
+        ]);
+        if (isOobeActive) {
+            return;
         }
-        
-        app_emit_splash_progress(0, '正在构建界面...');
+
         if (!dom_init_all()) {
             throw new Error('DOM 初始化失败');
         }
-        
-        app_emit_splash_progress(1, '正在加载设置...');
-        await dir_init_cache_path();
-        await settings_load_config();
-        
-        app_emit_splash_progress(2, '正在加载组件...');
-        
+
+        // 用户级工具栏文字提示开关（设置面板），优先于主题包内置配置；
+        // 须在主题应用前设置，主题应用内部的文字显隐刷新即携带该偏好
+        window.ThemeManager?.theme_set_user_toolbar_text?.(settings?.showToolbarText === true);
+
+        // 标题栏窗口控件样式（macOS 红绿灯默认开启，关闭后为 Windows 经典右置）
+        window.main_apply_titlebar_style?.(settings?.macosTitleBar !== false);
+
+        // DOM 就绪后应用主题（theme_update_toolbar_text_visibility 等依赖 DOM 元素）
+        if (settings?.theme) {
+            try {
+                await ThemeManager.theme_update_active(settings.theme);
+            } catch (e) {
+                console.warn('[init] 主题应用失败:', e);
+            }
+        }
+
         // 初始化文档阅读器
         if (window.documentReaderManager) {
             window.documentReaderManager.init();
         }
-        
+
         // 绑定事件
         main_setup_events();
-        
-        // 初始化黑板（如果启用）
-        if (window.__blackboardEnabled !== false) {
-            try {
-                const bb = await window.blackboard_ensure_loaded(document.body);
-                if (bb) {
-                    bb.setup_toolbar_events();
-                }
-            } catch (e) {
-                console.error('[init] blackboard lazy load error:', e);
-            }
-        }
-        
-        app_emit_splash_progress(3, '正在完成...');
-        
-        // 恢复上次打开的文档
-        if (window.documentReaderManager) {
-            setTimeout(() => {
-                window.__TAURI__.core.invoke('settings_fetch_all').then(result => {
-                    const settings = (result && typeof result === 'object' && result.settings)
-                        ? result.settings : {};
-                    if (settings.restoreLastDoc !== false) {
-                        window.documentReaderManager.restore_last_document().then(() => {
-                            // Reader handles startup screen visibility internally
-                        }).catch(e => {
-                            console.log('[init] 恢复上次文档失败:', e);
-                        });
-                    }
-                }).catch(e => {
-                    console.log('[init] 读取设置失败:', e);
-                });
-            }, 500);
-        }
-        
-        // 初始化标签管理器
+
+        // 注册退出保存流程（Rust 拦截关闭 → 保存批注/位置 → 确认退出）
+        init_app_close_flow();
+
+        // 初始化标签管理器和UI状态
         if (window.main_update_tabs) {
             window.main_update_tabs();
         }
-        
-        // 在恢复文档后再次更新标签
-        setTimeout(() => {
-            if (window.main_update_tabs) {
-                window.main_update_tabs();
-            }
-        }, 1000);
-        
-        } catch (error) {
-            console.error('初始化失败:', error);
-            window.main_show_error_dialog(
-                window.i18n?.format_translate('errors.initFailed') || '初始化失败',
-                window.i18n?.format_translate('errors.initFailedDesc') || '应用初始化失败，请刷新页面重试'
-            );
+        if (window.main_update_ui_state) {
+            window.main_update_ui_state();
         }
+
+        // 黑板改为按需懒加载：首次点击工具栏黑板按钮（document_reader.js:3893）
+        // 才 ensure_loaded + open，启动期不再构建整套面板/工具栏 DOM 与瓦片，
+        // 缩短冷启动并降低空板内存峰值。
+
+        // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）
+        // 同步初始化退出保存分支使用的标志（此前只在设置面板切换时赋值，
+        // 导致每次启动后直接关窗会误入"删除批注缓存"分支）
+        window.__restoreLastDocEnabled = settings?.restoreLastDoc !== false;
+        if (window.documentReaderManager && window.__restoreLastDocEnabled) {
+            window.documentReaderManager.restore_last_document().catch(e => {
+                console.log('[init] 恢复上次文档失败:', e);
+            });
+        }
+
+    } catch (error) {
+        console.error('初始化失败:', error);
+        window.main_show_error_dialog(
+            window.i18n?.format_translate('errors.initFailed') || '初始化失败',
+            window.i18n?.format_translate('errors.initFailedDesc') || '应用初始化失败，请刷新页面重试'
+        );
     }
+}
 
 // 启动
 if (document.readyState === 'loading') {
@@ -646,15 +790,70 @@ if (document.readyState === 'loading') {
     main_init_all();
 }
 
-// 清理
-document.addEventListener('beforeunload', () => {
-    if (window.documentReaderManager) {
-        if (window.__restoreLastDocEnabled) {
-            window.documentReaderManager._save_annotations_to_cache?.();
-            window.documentReaderManager._save_last_doc_state?.();
-        } else {
-            window.documentReaderManager.destroy?.();
-            window.documentReaderManager.delete_annotation_cache_files?.();
+// 【虚拟桌面/最小化返回黑屏保险层】
+// WebView2 渲染器被系统挂起后（虚拟桌面切换、遮挡误判），恢复时可能残留
+// 冻结帧。Rust 侧已禁用遮挡判定根治；此处再在重新可见时强制合成器重绘一次。
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    try {
+        document.body.style.transform = 'translateZ(0)';
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.body.style.removeProperty('transform');
+            });
+        });
+    } catch (_) {}
+});
+
+/**
+ * 应用退出保存流程：
+ * Rust 侧拦截主窗口 CloseRequested 并发出 app-close-requested，
+ * 前端完成批注/阅读位置保存后调用 app_confirm_close 放行关闭。
+ * Rust 侧另有 3 秒超时兜底，前端异常时也能退出。
+ */
+function init_app_close_flow() {
+    if (!window.__TAURI__) return;
+    const { listen } = window.__TAURI__.event;
+    const { invoke } = window.__TAURI__.core;
+    let _closing = false;
+    window.__appCloseSaveDone = false;
+
+    listen('app-close-requested', async () => {
+        if (_closing) return;
+        _closing = true;
+        try {
+            const reader = window.documentReaderManager;
+            if (reader) {
+                // 退出路径跳过空闲调度立即写盘（高负载下 idle 回调可能被长期饥饿）
+                await reader._save_annotations_to_cache?.({ awaitIdle: false });
+                await reader._save_last_doc_state?.();
+            }
+            // 标记已完成，beforeunload 兜底保存可跳过（避免大文档退出时双倍序列化+写盘）
+            window.__appCloseSaveDone = true;
+        } catch (e) {
+            console.error('[close-flow] 退出保存失败:', e);
+        } finally {
+            try {
+                await invoke('app_confirm_close');
+            } catch (e) {
+                console.error('[close-flow] 确认关闭失败:', e);
+            }
         }
+    }).catch(e => console.error('[close-flow] 注册关闭监听失败:', e));
+}
+
+// 清理：仅做 best-effort 兜底快照保存。
+// 注意：退出路径绝不删除批注缓存（delete_annotation_cache_files 只能由显式用户操作触发），
+// 正常关闭由 init_app_close_flow 的拦截流程保证保存完成，此处覆盖极端情况；
+// close-flow 已成功保存时跳过，避免大文档退出时双倍序列化+写盘
+document.addEventListener('beforeunload', () => {
+    if (window.__appCloseSaveDone) return;
+    const reader = window.documentReaderManager;
+    if (!reader) return;
+    try {
+        reader._save_annotations_to_cache?.({ awaitIdle: false });
+        reader._save_last_doc_state?.();
+    } catch (e) {
+        console.error('[beforeunload] 保存失败:', e);
     }
 });

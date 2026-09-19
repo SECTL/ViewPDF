@@ -47,8 +47,6 @@
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
     
-    --blur-bg: rgba(26, 26, 26, 0.7);
-    --blur-surface: rgba(42, 42, 42, 0.7);
     
     --btn-height: 40px;
     --btn-height-sm: 32px;
@@ -57,6 +55,7 @@
     --scrollbar-track: rgba(255, 255, 255, 0.05);
     --scrollbar-thumb: rgba(255, 255, 255, 0.2);
     --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+    --icon-filter: invert(1);
 }
 
 /* ===== 基础覆盖 ===== */
@@ -120,7 +119,7 @@ body {
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-decoration: none;
     white-space: nowrap;
 }
@@ -152,7 +151,7 @@ body {
     border: 1px solid var(--color-hairline);
     border-radius: 50%;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-icon:hover {
@@ -251,7 +250,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     white-space: nowrap;
 }
 
@@ -280,7 +279,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     white-space: nowrap;
 }
 
@@ -302,7 +301,7 @@ body {
     border-radius: var(--rounded-md);
     font-size: 18px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-back:hover {
@@ -344,7 +343,7 @@ body {
     border-radius: var(--rounded-sm);
     font-size: 20px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-close:hover {
@@ -367,7 +366,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-align: left;
 }
 
@@ -418,7 +417,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-clear-cache:hover {
@@ -439,7 +438,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     text-decoration: none;
 }
 
@@ -463,7 +462,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     border: none;
 }
 
@@ -508,7 +507,7 @@ body {
     right: 0;
     bottom: 0;
     background-color: var(--color-surface-strong);
-    transition: 0.15s ease;
+    transition: background-color 0.15s ease;
     border-radius: var(--rounded-pill);
 }
 
@@ -520,7 +519,7 @@ body {
     left: 3px;
     bottom: 3px;
     background-color: var(--color-canvas);
-    transition: 0.15s ease;
+    transition: transform 0.15s ease;
     border-radius: 50%;
     box-shadow: var(--shadow-sm);
 }
@@ -559,7 +558,7 @@ body {
     border: 1px solid var(--color-hairline);
     box-shadow: var(--shadow-md);
     flex: none;
-    transition: all 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
     pointer-events: auto;
 }
 
@@ -613,7 +612,7 @@ body {
     cursor: pointer;
     font-size: 11px;
     font-weight: 500;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     min-height: 40px;
     min-width: 40px;
     touch-action: manipulation;
@@ -644,7 +643,7 @@ body {
     width: 18px;
     height: 18px;
     flex-shrink: 0;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .toolbar-btn img {
@@ -688,7 +687,7 @@ body {
     border: 1px solid var(--color-hairline);
     box-shadow: var(--shadow-md);
     flex: none;
-    transition: all 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
     width: 270px;
     height: calc(100vh - 80px);
     max-height: calc(100vh - 80px);
@@ -784,7 +783,7 @@ body {
     overflow: hidden;
     cursor: pointer;
     border: 2px solid transparent;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     flex-shrink: 0;
     width: 100%;
     align-self: center;
@@ -853,7 +852,7 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .sidebar-import-btn img {
@@ -877,7 +876,7 @@ body {
     color: var(--color-ink);
     font-size: 13px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .sidebar-action-btn:hover {
@@ -894,7 +893,7 @@ body {
     border: 1px solid transparent;
     border-radius: var(--rounded-md);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     flex-shrink: 0;
     width: 100%;
     box-sizing: border-box;
@@ -996,7 +995,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     padding: 0;
 }
 
@@ -1016,7 +1015,7 @@ body {
     height: var(--dot-size);
     border-radius: 50%;
     background: var(--dot-color, var(--color-muted));
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .pen-size-label {
@@ -1040,7 +1039,7 @@ body {
     border-radius: 50%;
     border: 2px solid transparent;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     padding: 0;
     box-shadow: var(--shadow-sm);
 }
@@ -1083,7 +1082,7 @@ body {
     opacity: 0;
     visibility: hidden;
     transform: translateY(10px);
-    transition: all 0.2s ease;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
     pointer-events: none;
     min-width: 220px;
 }
@@ -1279,7 +1278,7 @@ body {
     color: var(--color-body);
     font-size: 16px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .settings-btn:hover {
@@ -1433,7 +1432,7 @@ body {
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     white-space: nowrap;
 }
 
@@ -1562,7 +1561,7 @@ body {
 .error-btn {
     border-radius: var(--rounded-md);
     font-weight: 500;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .error-btn-close {
@@ -1583,4 +1582,455 @@ body {
 
 .error-btn-retry:hover {
     background: var(--color-primary-active);
+}
+
+/* ===== 设置面板 - 主题覆盖 ===== */
+.sp-btn-icon img {
+    filter: invert(1) !important;
+}
+
+/* ===== 页面标题 ===== */
+.sp-page-title {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-hairline);
+}
+
+.sp-section-title {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-hairline);
+}
+
+.sp-setting-label {
+    color: var(--color-ink);
+}
+
+.sp-setting-hint {
+    color: var(--color-muted);
+}
+
+/* ===== 选择器/开关/滑块 ===== */
+.sp-select-selected {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.select-selected:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+}
+
+.select-selected::after {
+    border-color: var(--color-muted);
+}
+
+.toggle-slider {
+    background-color: var(--color-surface-strong);
+}
+
+.toggle-slider:before {
+    background-color: var(--color-ink);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--color-brand-accent);
+}
+
+.switch .slider {
+    background-color: var(--color-surface-strong);
+}
+
+.switch .slider:before {
+    background-color: var(--color-ink);
+}
+
+.switch input:checked + .slider {
+    background-color: var(--color-brand-accent);
+}
+
+.switch input:checked + .slider::before {
+    background-color: var(--color-on-primary);
+}
+
+.slider {
+    background: var(--color-surface-strong);
+}
+
+.slider::-webkit-slider-thumb {
+    background: var(--color-brand-accent);
+}
+
+.slider::-moz-range-thumb {
+    background: var(--color-brand-accent);
+}
+
+.slider-value {
+    color: var(--color-brand-accent);
+}
+
+.version-label {
+    color: var(--color-muted);
+}
+
+.version-number {
+    color: var(--color-brand-accent);
+}
+
+.about-info p {
+    color: var(--color-muted);
+}
+
+.about-copyright {
+    color: var(--color-muted);
+}
+
+.model-name {
+    color: var(--color-ink);
+}
+
+.model-status {
+    background: var(--color-surface-card);
+    color: var(--color-muted);
+}
+
+.model-description {
+    color: var(--color-muted);
+}
+
+.model-description code {
+    background: var(--color-surface-card);
+    color: var(--color-brand-accent);
+}
+
+.progress-bar {
+    background: var(--color-surface-strong);
+}
+
+.progress-fill {
+    background: var(--color-brand-accent);
+}
+
+.progress-text {
+    color: var(--color-muted);
+}
+
+.update-app-info {
+    background: var(--color-surface-card);
+}
+
+.release-notes-content {
+    background: var(--color-surface-card);
+    color: var(--color-muted);
+}
+
+.release-notes-content h3,
+.release-notes-content h4,
+.release-notes-content h5 {
+    color: var(--color-ink);
+}
+
+.release-notes-content code {
+    background: var(--color-surface-strong);
+    color: var(--color-brand-accent);
+}
+
+.status-latest {
+    color: var(--color-success);
+}
+
+.status-available {
+    color: var(--color-brand-accent);
+}
+
+.status-success {
+    color: var(--color-success);
+}
+
+.status-error {
+    color: var(--color-error);
+}
+
+.settings-dialog-title {
+    color: var(--color-ink);
+}
+
+.settings-dialog-message {
+    color: var(--color-muted);
+}
+
+.settings-dialog-btn {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.settings-dialog-btn:hover {
+    background: var(--color-surface-strong);
+}
+
+.modal-title {
+    color: var(--color-ink);
+}
+
+.modal-message {
+    color: var(--color-muted);
+}
+
+.setting-group {
+    background: var(--color-surface-soft);
+}
+
+.setting-group-header:hover {
+    background: var(--color-surface-card);
+}
+
+.group-arrow {
+    color: var(--color-muted);
+}
+
+.checkbox-label {
+    color: var(--color-ink);
+}
+
+.color-picker-preset:hover {
+    border-color: var(--color-muted);
+}
+
+.color-picker-btns {
+    gap: 6px;
+}
+
+.btn-back {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-muted);
+}
+
+.btn-back:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+    color: var(--color-ink);
+}
+
+.btn-action {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: var(--color-brand-accent);
+}
+
+.btn-action:hover {
+    background: rgba(59, 130, 246, 0.25);
+    border-color: rgba(59, 130, 246, 0.5);
+}
+
+.btn-action.delete {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: var(--color-error);
+}
+
+.btn-action.delete:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
+.btn-reset {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: var(--color-error);
+}
+
+.btn-reset:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
+.btn-clear-cache {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.btn-clear-cache:hover {
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: var(--color-error);
+}
+
+.link-item {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+    color: var(--color-body);
+}
+
+.link-item:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-brand-accent);
+    color: var(--color-ink);
+}
+
+.modal-btn-cancel {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-body);
+}
+
+.modal-btn-cancel:hover {
+    background: var(--color-surface-strong);
+}
+
+.modal-btn-confirm {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.35);
+    color: var(--color-error);
+}
+
+.modal-btn-confirm:hover {
+    background: rgba(239, 68, 68, 0.3);
+    border-color: rgba(239, 68, 68, 0.55);
+}
+
+.color-picker-btn {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+}
+
+.color-picker-btn:hover {
+    background: var(--color-primary-active);
+}
+
+.color-picker-btn-cancel {
+    background: var(--color-surface-card);
+    color: var(--color-ink);
+}
+
+.color-picker-btn-cancel:hover {
+    background: var(--color-surface-strong);
+}
+
+.model-progress .progress-bar {
+    background: var(--color-surface-strong);
+}
+
+.model-progress .progress-fill {
+    background: linear-gradient(90deg, var(--color-brand-accent), #6bb3ff);
+}
+
+.model-progress .progress-text {
+    color: var(--color-muted);
+}
+
+/* ===== 侧栏/模态框 ===== */
+.sidebar {
+    background: var(--color-canvas);
+}
+
+.sidebar-btn:hover {
+    background: var(--color-surface-card);
+}
+
+.sidebar-btn.active {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+.select-options {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.select-option:hover {
+    background: var(--color-surface-card);
+}
+
+.select-option.selected {
+    background: rgba(59, 130, 246, 0.15);
+}
+
+.modal-dialog {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.settings-dialog {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.model-card {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+}
+
+.model-card:hover {
+    background: var(--color-surface-strong);
+    border-color: var(--color-hairline);
+}
+
+.setting-section {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline-soft);
+}
+
+.checkbox-item {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+}
+
+.checkbox-item:hover {
+    background: var(--color-surface-strong);
+}
+
+.color-edit-btn {
+    border-color: var(--color-hairline);
+}
+
+.color-edit-btn:hover {
+    border-color: var(--color-primary);
+}
+
+.color-picker-popup {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+}
+
+.color-picker-input {
+    background: var(--color-surface-card);
+    border-color: var(--color-hairline);
+    color: var(--color-ink);
+}
+
+.color-picker-input:focus {
+    border-color: var(--color-brand-accent);
+}
+
+.color-picker-preview {
+    border-color: var(--color-hairline);
+}
+
+/* ===== 极光背景 ===== */
+.aurora-bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    overflow: hidden;
+}
+
+.aurora-bg.active {
+    opacity: 1;
+}
+
+.aurora-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(100px);
+    opacity: 0.6;
+    will-change: transform;
+    transform: translateZ(0);
 }

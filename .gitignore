@@ -46,14 +46,6 @@ example/
 # Theme package archives
 *.vst
 
-# memreduct-viewstage subprocess build artifacts
-memreduct/bin/
-memreduct/x64/
-memreduct/ARM64/
-memreduct/Win32/
-memreduct/Release/
-memreduct/Debug/
-memreduct/ipch/
-memreduct/.vs/
-memreduct/*.user
-memreduct/*.suo
+# WorkBuddy 工作区数据（验证探针、审计脚本、记忆、报告等）全部保持本地，不入库
+.workbuddy/
+

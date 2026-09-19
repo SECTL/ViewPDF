@@ -1,5 +1,5 @@
 /**
- * ViewStage OOBE — 首次引导设置
+ * ViewPDF OOBE — 首次引导设置
  * 纯原生 JS，滑动向导
  */
 import { checkForUpdate, startDownload, onProgress, offProgress } from './modules/update/update.js';
@@ -12,9 +12,9 @@ const state = {
   step: 0,
   language: 'zh-CN',
   theme: 'com.viewstage.theme.simplify',
-  penEffectMode: 'limited',
+  penEffectMode: 'full',
   dynamicDprEnabled: true,
-  frameRateMode: 'adaptive',
+  frameRateMode: 'high',
   blackboardEnabled: true,
   restoreLastDoc: true,
   importedSettings: null,
@@ -560,9 +560,9 @@ async function setupInstalling() {
     } else {
       await invoke('oobe_submit_complete');
     }
-    // 遥测上报：OOBE 完成
+    // 遥测上报：OOBE 完成（telemetryInit 内部会先检查用户开关）
     import('./modules/telemetry/telemetry.js').then(m => {
-      m.reportOnline();
+      m.telemetryInit();
     }).catch(e => {
       console.warn('[oobe] telemetry report failed:', e);
     });

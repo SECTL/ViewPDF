@@ -1,5 +1,5 @@
 /**
- * ViewStage 公共绘制引擎
+ * ViewPDF 公共绘制引擎
  * 封装笔画生命周期、batch_draw 集成、橡皮擦、历史管理
  * 通过 CoordinateProvider 抽象与具体坐标系解耦
  *
@@ -18,20 +18,14 @@ import {
     history_execute_command,
     history_init_manager,
     history_validate_undo,
+    history_validate_redo,
     history_handle_undo,
+    history_handle_redo,
     history_handle_state_change,
     DrawCommand,
     ClearCommand,
     history_state
 } from '../history.js';
-
-import {
-    is_palm_by_pointer,
-    is_palm_by_touch_count,
-    get_palm_center,
-    compute_palm_eraser_size_from_pointer,
-    PALM_CONFIG
-} from '../palm-eraser/palm-eraser.js';
 
 export class DrawingEngine {
     /**
@@ -58,15 +52,6 @@ export class DrawingEngine {
         // 缓存鼠标/触摸位置的 rect（减少 getBoundingClientRect 调用）
         this.draw_canvas_rect = null;
 
-        // 速度擦除状态
-        this._eraser_speed_state = null;
-        this._last_draw_time = 0;
-        this._last_draw_x = null;
-        this._last_draw_y = null;
-        this._speed_buffer = new Array(5);
-        this._speed_buffer_idx = 0;
-        this._speed_buffer_count = 0;
-
         // batch_draw
         this.batch_draw = null;
 
@@ -80,12 +65,6 @@ export class DrawingEngine {
         this._eraser_hint = null;
         this._eraser_hint_raf_id = null;
         this._eraser_hint_pending_pos = null;
-
-        // 手掌擦除
-        this.isPalmErasing = false;
-        this.savedDrawMode = null;
-        this.palmEraserSize = 60;
-        this._palm_eraser_hint = null;
     }
 
     /**
@@ -97,38 +76,28 @@ export class DrawingEngine {
 
     // ====== 初始化 ======
 
-    init_batch_draw(overlay_canvas, overlay_ctx) {
+    init_batch_draw(overlay_canvas, screenW, screenH) {
         this.batch_draw = new window.RealtimeBatchDrawManager();
-        this.batch_draw._overlayCanvas = overlay_canvas;
-        this.batch_draw._overlayCtx = overlay_ctx;
-        this.batch_draw._overlayDpr = this.batch_draw._calc_overlay_dpr(this.coord.get_scale() || 1);
-        this.batch_draw._overlayTransformScale = 0;
-        this.batch_draw._overlayTransformX = 0;
-        this.batch_draw._overlayTransformY = 0;
-        this.batch_draw._sync_overlay_transform = () => this._sync_overlay_transform();
+        // 黑板为多页架构：禁止回退到主画布渲染器，防止擦除误伤主画布笔迹
+        this.batch_draw.fallbackToMain = false;
+        // 统一经 OverlayManager 注入已有 canvas：完成「创建 2D 上下文 + 登记展示
+        // 尺寸 + 按控制器计算覆盖层 DPR + 落地像素/CSS 尺寸 + imageSmoothingEnabled」。
+        // 变换锚点由调用方通过 overlay.set_rect_anchor 注入（见 blackboard.js），
+        // 覆盖层自身的 sync_transform 即最终实现，此处不得再覆盖该方法。
+        this.batch_draw.overlay.attach(overlay_canvas, null, screenW, screenH);
 
         if (window.DRAW_CONFIG?.frameRateMode) {
             this.batch_draw.batch_draw_update_frame_rate(window.DRAW_CONFIG.frameRateMode);
         }
     }
 
-    _sync_overlay_transform() {
-        if (!this.batch_draw?._overlayCtx) return;
-        const ctx = this.batch_draw._overlayCtx;
-        const s = this.coord.get_scale();
-        const origin = this.coord.get_origin();
-        const dpr = this.batch_draw._overlayDpr || 1;
-        const scale = s || 1;
-        const ox = origin?.x || 0;
-        const oy = origin?.y || 0;
-        if (this.batch_draw._overlayTransformScale === scale &&
-            this.batch_draw._overlayTransformX === ox &&
-            this.batch_draw._overlayTransformY === oy) return;
-        this.batch_draw._overlayTransformScale = scale;
-        this.batch_draw._overlayTransformX = ox;
-        this.batch_draw._overlayTransformY = oy;
-        ctx.setTransform(scale * dpr, 0, 0, scale * dpr, ox * dpr, oy * dpr);
-    }
+    // 预览层变换同步不再在此重写实现：OverlayManager.sync_transform 已是
+    // 唯一实现，其取数来源是 blackboard 通过 set_transform_provider 注入的
+    // 「bb_wrapper 实时 gBCR + 当前缩放」——与本文件原覆盖版逐项等价
+    // （coord.get_rect() 即 bb_wrapper.getBoundingClientRect()，
+    //   coord.get_scale() 即 bb_state.scale）。
+    // 保留两份的代价是：覆盖层新增能力（比如新的变换锚定策略）时
+    // 黑板会静默继续走老路径，正是此前"预览偏移 ~112px"那类问题的温床。
 
     init_history(on_state_change) {
         history_init_manager({ on_state_change });
@@ -136,6 +105,13 @@ export class DrawingEngine {
 
     /** 保存全局历史快照并创建隔离历史 */
     push_history_isolate(on_state_change) {
+        // 已有未 pop 的隔离快照时拒绝覆盖：再存一次会把"真正的全局历史"
+        // 换成黑板自己的隔离历史，close() 恢复时就把黑板栈写进了主程序
+        // —— 表现为主程序撤销历史永久丢失。
+        if (this.saved_history_state) {
+            console.warn('[drawing-engine] 历史隔离快照已存在，忽略重复 push_history_isolate');
+            return;
+        }
         window.__HISTORY_ISOLATED = true;
         this.saved_history_state = {
             undo_list: [...history_state.undo_list],
@@ -186,10 +162,7 @@ export class DrawingEngine {
             lineWidth: type === 'draw' ? DRAW_CONFIG.penWidth * inv_scale : baseEraserSize,
             eraserSize: baseEraserSize,
             eraserSizeRaw: DRAW_CONFIG.eraserSize,
-            eraserSpeedEnabled: DRAW_CONFIG.eraserSpeedEnabled,
-            eraserSpeedMinSize: (DRAW_CONFIG.eraserSpeedMinSize || 0) * inv_scale,
-            eraserSpeedMaxSize: (DRAW_CONFIG.eraserSpeedMaxSize || 0) * inv_scale,
-            eraserSpeedFactor: DRAW_CONFIG.eraserSpeedFactor,
+
             scale: this.coord.get_scale() || 1,
             bounds: {
                 minX: Infinity, minY: Infinity,
@@ -206,14 +179,6 @@ export class DrawingEngine {
         this.cached_draw_color = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
         const currentScale = this._fetch_safe_scale();
         this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth / currentScale : DRAW_CONFIG.eraserSize / currentScale;
-
-        this._last_draw_time = performance.now();
-        this._last_draw_x = null;
-        this._last_draw_y = null;
-        this._speed_buffer = new Array(5);
-        this._speed_buffer_idx = 0;
-        this._speed_buffer_count = 0;
-        this._eraser_speed_state = window.__eraserSpeed?.eraser_speed_create_state() ?? null;
 
         if (this.batch_draw) {
             this.batch_draw.batch_draw_init_start();
@@ -244,32 +209,6 @@ export class DrawingEngine {
             currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
             this.current_line_width = currentWidth;
             this.cached_draw_line_width = DRAW_CONFIG.penWidth / currentScale;
-        } else if (stroke.type === 'erase' && stroke.eraserSpeedEnabled) {
-            if (this._eraser_speed_state && window.__eraserSpeed) {
-                currentWidth = window.__eraserSpeed.eraser_speed_update(this._eraser_speed_state, stroke, to_x, to_y);
-            } else {
-                const now = performance.now();
-                const dt = now - this._last_draw_time;
-                if (this._last_draw_x !== null && dt > 0) {
-                    const dx = to_x - this._last_draw_x;
-                    const dy = to_y - this._last_draw_y;
-                    const speed = Math.sqrt(dx * dx + dy * dy) / dt;
-                    // 环形缓冲区替代 push/shift，避免数组扩容和 O(n) 移位
-                    this._speed_buffer[this._speed_buffer_idx] = speed;
-                    this._speed_buffer_idx = (this._speed_buffer_idx + 1) % 5;
-                    if (this._speed_buffer_count < 5) this._speed_buffer_count++;
-                    let speed_sum = 0;
-                    for (let i = 0; i < this._speed_buffer_count; i++) speed_sum += this._speed_buffer[i];
-                    const avgSpeed = speed_sum / this._speed_buffer_count;
-                    const sizeRange = stroke.eraserSpeedMaxSize - stroke.eraserSpeedMinSize;
-                    currentWidth = stroke.eraserSpeedMinSize + Math.min(avgSpeed * stroke.eraserSpeedFactor * 100, sizeRange);
-                    currentWidth = Math.max(stroke.eraserSpeedMinSize, Math.min(stroke.eraserSpeedMaxSize, currentWidth));
-                }
-                this._last_draw_time = now;
-                this._last_draw_x = to_x;
-                this._last_draw_y = to_y;
-            }
-            this.cached_draw_line_width = currentWidth;
         } else if (stroke.type === 'erase') {
             this.cached_draw_line_width = DRAW_CONFIG.eraserSize / currentScale;
         }
@@ -331,7 +270,23 @@ export class DrawingEngine {
 
     async handle_undo() {
         if (history_validate_undo() && !this.is_drawing) {
-            await history_handle_undo();
+            try {
+                await history_handle_undo();
+            } catch (err) {
+                // 命令 undo 内部抛错时栈已自行回滚，这里只保证画布与栈重新对齐
+                console.error('[drawing-engine] 撤销失败:', err);
+            }
+            await this.coord.render_all_strokes();
+        }
+    }
+
+    async handle_redo() {
+        if (history_validate_redo() && !this.is_drawing) {
+            try {
+                await history_handle_redo();
+            } catch (err) {
+                console.error('[drawing-engine] 重做失败:', err);
+            }
             await this.coord.render_all_strokes();
         }
     }
@@ -369,13 +324,6 @@ export class DrawingEngine {
         this.draw_canvas_rect = this._get_canvas_rect();
         if (!this.draw_canvas_rect) return;
 
-        const palmResult = is_palm_by_pointer(e);
-        if (palmResult.isPalm && (window.DRAW_CONFIG?.palmEraserEnabled !== false)) {
-            const size = compute_palm_eraser_size_from_pointer(palmResult.width, palmResult.height);
-            this._start_palm_erase(e.clientX, e.clientY, size);
-            return;
-        }
-
         const inv = 1 / this._fetch_safe_scale();
 
         if (this.draw_mode === 'move') {
@@ -399,11 +347,6 @@ export class DrawingEngine {
     handle_pointer_move(e) {
         e.preventDefault();
         if (!this._painting_allowed) return;
-
-        if (this.isPalmErasing) {
-            this._update_palm_erase(e.clientX, e.clientY);
-            return;
-        }
 
         if (this.draw_mode === 'eraser' && this.is_drawing) {
             this._update_eraser_hint_position(e.clientX, e.clientY);
@@ -444,10 +387,6 @@ export class DrawingEngine {
     }
 
     async handle_pointer_up(e) {
-        if (this.isPalmErasing) {
-            await this._end_palm_erase();
-            return;
-        }
         if (this._move_state) {
             this._move_state = null;
             return;
@@ -535,12 +474,6 @@ export class DrawingEngine {
         this._eraser_hint.style.width = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         this._eraser_hint.style.height = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         container.appendChild(this._eraser_hint);
-
-        this._palm_eraser_hint = document.createElement('div');
-        this._palm_eraser_hint.className = 'palm-eraser-hint';
-        this._palm_eraser_hint.style.width = '60px';
-        this._palm_eraser_hint.style.height = '60px';
-        container.appendChild(this._palm_eraser_hint);
     }
 
     _show_eraser_hint() {
@@ -603,83 +536,6 @@ export class DrawingEngine {
 
     // ====== 手掌擦除 ======
 
-    _show_palm_eraser_hint() {
-        if (!this._palm_eraser_hint) return;
-        this._palm_eraser_hint.classList.add('active');
-    }
-
-    _hide_palm_eraser_hint() {
-        if (!this._palm_eraser_hint) return;
-        this._palm_eraser_hint.classList.remove('active');
-    }
-
-    _update_palm_eraser_hint(clientX, clientY, size) {
-        if (!this._palm_eraser_hint) return;
-        const rect = this.coord.get_eraser_hint_rect
-            ? this.coord.get_eraser_hint_rect()
-            : this._get_canvas_rect();
-        if (!rect) return;
-        const x = clientX - rect.left;
-        const y = clientY - rect.top;
-        this._palm_eraser_hint.style.width = size + 'px';
-        this._palm_eraser_hint.style.height = size + 'px';
-        this._palm_eraser_hint.style.left = `${x}px`;
-        this._palm_eraser_hint.style.top = `${y}px`;
-        this._palm_eraser_hint.style.transform = 'translate(-50%, -50%)';
-    }
-
-    _init_palm_session() {
-        if (this._palmSession || !window.__palmEraser) return;
-        const self = this;
-        this._palmSession = new window.__palmEraser.PalmEraserSession({
-            getCanvasRect: () => self.draw_canvas_rect,
-            getScale: () => self._fetch_safe_scale(),
-            showHint: () => self._show_palm_eraser_hint(),
-            updateHint: (cx, cy, size) => self._update_palm_eraser_hint(cx, cy, size),
-            hideHint: () => self._hide_palm_eraser_hint(),
-            saveStrokePoint: (fromX, fromY, toX, toY, pressure) => self._save_stroke_point(fromX, fromY, toX, toY, pressure),
-            submitStroke: () => self._submit_stroke(),
-            onSessionStart(stroke, session) {
-                self.isPalmErasing = true;
-                self.savedDrawMode = self.draw_mode;
-                self.draw_mode = 'eraser';
-                self.palmEraserSize = session.palmEraserSize;
-                self.is_drawing = true;
-                self.current_stroke = stroke;
-                self.cached_draw_type = 'erase';
-                self.cached_draw_color = '#000000';
-                self.cached_draw_line_width = session.palmEraserSize / Math.max(0.001, self._fetch_safe_scale());
-                if (self.batch_draw) {
-                    self.batch_draw.batch_draw_init_start();
-                    self.batch_draw.eraserShape = 'square';
-                }
-            },
-            onSessionEnd() {
-                self.isPalmErasing = false;
-                self.is_drawing = false;
-                self.draw_canvas_rect = null;
-                self.draw_mode = self.savedDrawMode || 'comment';
-                self.savedDrawMode = null;
-                self.current_stroke = null;
-            }
-        });
-    }
-
-    _start_palm_erase(clientX, clientY, eraserWidth) {
-        this.draw_canvas_rect = this._get_canvas_rect();
-        if (!this.draw_canvas_rect) return;
-        this._init_palm_session();
-        if (this._palmSession) this._palmSession.start(clientX, clientY, eraserWidth);
-    }
-
-    _update_palm_erase(clientX, clientY) {
-        if (this._palmSession) this._palmSession.update(clientX, clientY);
-    }
-
-    async _end_palm_erase() {
-        if (this._palmSession) await this._palmSession.end();
-    }
-
     // ====== 清理 ======
 
     destroy() {
@@ -690,12 +546,11 @@ export class DrawingEngine {
         if (this._eraser_hint?.parentNode) {
             this._eraser_hint.parentNode.removeChild(this._eraser_hint);
         }
-        if (this._palm_eraser_hint?.parentNode) {
-            this._palm_eraser_hint.parentNode.removeChild(this._palm_eraser_hint);
-        }
         this._eraser_hint = null;
-        this._palm_eraser_hint = null;
         this._eraser_hint_pending_pos = null;
+        // 覆盖层像素释放 + DOM 摘除统一走 OverlayManager.destroy；
+        // 直接置 null 只是丢引用，backing store 要等 GC，长会话反复开关会驻留显存
+        this.batch_draw?.overlay?.destroy();
         this.batch_draw = null;
         this.coord = null;
     }

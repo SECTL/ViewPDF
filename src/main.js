@@ -1,5 +1,5 @@
 /**
- * ViewStage 主逻辑 —— PDF阅读器及批注应用核心
+ * ViewPDF 主逻辑 —— PDF阅读器及批注应用核心
  * 架构: 图像层(img) + 批注层(canvas)，批注系统含笔画记录/压缩/撤销
  * 性能: RAF批量绘制减少重绘；Blob URL替代Data URL节省内存
  */
@@ -12,7 +12,9 @@ import {
     ClearCommand,
     SnapshotCommand,
     history_validate_undo,
+    history_validate_redo,
     history_handle_undo,
+    history_handle_redo,
     history_delete_all,
     history_validate_compact,
     history_fetch_undo_stack,
@@ -20,9 +22,14 @@ import {
     history_format_compact,
     MAX_HISTORY_STEPS
 } from './modules/history.js';
-import { DocLoader } from './modules/pdf/document_loader.js';
+import { DocLoader, get_pdf_page_info, get_pdfjs_assets_base } from './modules/pdf/document_loader.js';
+
+// PDF.js 附属资源基址（标准字体 / CMaps），随应用打包在 modules/pdf 下。
+// 不提供则 useSystemFonts:false 时标准字体（Helvetica/Times/Courier 等）页无法正确渲染，
+// 并刷出 "Ensure that the standardFontDataUrl API parameter is provided" 警告。
+const PDFJS_ASSETS_BASE = get_pdfjs_assets_base();
 import { resetContextState, updateContextState } from './modules/canvas/context-state.js';
-import { renderStrokesToContext, getPenEffectMode } from './modules/canvas/stroke-renderer.js';
+import { renderStrokesToContext, getPenEffectMode, invalidate_stroke_path_cache } from './modules/canvas/stroke-renderer.js';
 import { createHistoryCompactor } from './modules/canvas/history-compactor.js';
 
 // === 全局变量 ===
@@ -34,7 +41,7 @@ function main_init_pdfjs() {
     return DocLoader.init_pdfjs();
 }
 
-async function main_wait_pdfjs(maxWait = 5000) {
+async function main_wait_pdfjs(maxWait = 10000) {
     return DocLoader.wait_pdfjs(maxWait);
 }
 
@@ -46,13 +53,8 @@ const DRAW_CONFIG = {
     penSizePresets: [2, 5, 10, 15, 21],
     eraserSize: 15,
     eraserSizePresets: [5, 15, 25, 38, 50],
-    eraserSpeedEnabled: false,
-    eraserSpeedMinSize: 5,
-    eraserSpeedMaxSize: 120,
-    eraserSpeedFactor: 0.3,
-    palmEraserEnabled: false,
-    palmEraserSize: 60,
-    momentumEnabled: false,
+    // 拖拽平移松手后的惯性滑动（阅读器/小黑板 move 模式；主画布无拖拽平移不涉及）
+    momentumEnabled: true,
     minScale: 0.5,
     maxScale: 3,
     maxScaleImage: 4,
@@ -67,7 +69,10 @@ const DRAW_CONFIG = {
     dprMax: 4,
     dprStep: 0.25,
     imageSmoothingQuality: 'high',
-    baseDpr: window.devicePixelRatio || 1,
+    // baseDpr 由控制器从当前显示器 DPR 推导（全应用唯一 DPR 事实来源），
+    // 运行期由 watch_display_dpr() 跟随显示器变化刷新。
+    // 这里不再裸读 devicePixelRatio：该读取全应用只允许出现在控制器内。
+    baseDpr: window.ResolutionController?.display_dpr?.() || 1,
     canvasBgColor: '#2a2a2a',
     penColors: [
         '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
@@ -75,7 +80,7 @@ const DRAW_CONFIG = {
         '#14b8a6', '#64748b', '#1e293b', '#000000', '#ffffff'
     ],
     penSmoothness: 0.8,
-    penEffectMode: 'limited',
+    penEffectMode: 'full',
     penMinWidthRatio: 0.4,
     gestureFrameDelta: 60
 };
@@ -88,11 +93,15 @@ if (DRAW_CONFIG.penColor === null && DRAW_CONFIG.penColors.length > 0) {
 // 将配置暴露到全局，供 batch-draw.js 使用
 window.DRAW_CONFIG = DRAW_CONFIG;
 
-// 应用 DPR 限制（0=自动无限制）
-function main_calc_capped_dpr(rawDpr, limit) {
-    return limit > 0 ? Math.min(rawDpr, limit) : rawDpr;
+// 静态倍率 DPR（动态分辨率关闭时的固定倍率）由 ResolutionController 统一派生。
+// 此处不再自持一份公式：base*limit 的算法只在控制器里存在一份，
+// 外部任何地方都不得直写 DRAW_CONFIG.dpr。
+function main_sync_static_dpr() {
+    return window.ResolutionController
+        ? window.ResolutionController.sync_static_dpr()
+        : DRAW_CONFIG.dpr;
 }
-window.main_calc_capped_dpr = main_calc_capped_dpr;
+window.main_sync_static_dpr = main_sync_static_dpr;
 
 function main_fetch_safe_scale() {
     return Math.max(0.001, state.scale || 1);
@@ -116,7 +125,7 @@ class RealPenManager {
     }
     
     reset() {
-        this.cached_tessellated = new WeakMap();
+        this.invalidate_cache();
         this.init_tessellator();
     }
     
@@ -249,6 +258,9 @@ class RealPenManager {
     
     invalidate_cache() {
         this.cached_tessellated = new WeakMap();
+        // 细分对象被丢弃后，tessellator 里以旧细分对象为键的 runs 已不可达，
+        // 连同体积配额计数一起清掉（否则配额被死条目永久占用）
+        if (this.tessellator) this.tessellator.reset_runs_cache();
     }
 }
 
@@ -303,98 +315,141 @@ class StrokeQuadTree {
         this.depth = depth;
         this.strokes = [];
         this.children = null;
+        // 节点范围构造后不再改变。相交判定是全部热点中调用最频繁的一处
+        // （一次 build 里被调用数十万次），把右/下边界预先算成数字，
+        // 省掉判定里每次重复的加法与属性读取。
+        this._bx = boundary.x;
+        this._by = boundary.y;
+        this._br = boundary.x + boundary.width;
+        this._bb = boundary.y + boundary.height;
     }
-    
+
+    /**
+     * 把包围盒归一化成 4 个数字。历史实现容忍两种形状（{minX..} 或 {x,width..}），
+     * 而这份归一化此前发生在**每个节点的每次**相交判定里 —— 同一笔画的包围盒
+     * 在一次插入中会被归一化 5^depth 次。抽到入口只做一次，判定退化为纯数值比较。
+     */
+    static _normalize(b) {
+        if (b.minX != null) {
+            return { minX: b.minX, maxX: b.maxX, minY: b.minY, maxY: b.maxY };
+        }
+        return { minX: b.x, maxX: b.x + b.width, minY: b.y, maxY: b.y + b.height };
+    }
+
+    /** 已归一化包围盒与本节点范围的相交判定（padding 5，与旧实现逐字一致） */
+    _hits_norm(nb) {
+        return !(nb.maxX + 5 < this._bx ||
+                 nb.minX - 5 > this._br ||
+                 nb.maxY + 5 < this._by ||
+                 nb.minY - 5 > this._bb);
+    }
+
     insert(stroke) {
         if (!stroke.bounds) return false;
-        
-        if (!this.intersects(stroke.bounds)) return false;
-        
+        return this._insert_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
+    }
+
+    /** 插入递归实现：入参须为已归一化包围盒，避免逐层重复归一化 */
+    _insert_norm(stroke, nb) {
+        if (!this._hits_norm(nb)) return false;
+
         if (this.children) {
-            return this.insert_to_children(stroke);
+            return this.insert_to_children_norm(stroke, nb);
         }
-        
+
         this.strokes.push(stroke);
-        
+
         if (this.strokes.length > this.capacity && this.depth < this.maxDepth) {
             this.subdivide();
         }
-        
+
         return true;
     }
-    
+
     insert_to_children(stroke) {
+        if (!stroke.bounds) return false;
+        return this.insert_to_children_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
+    }
+
+    insert_to_children_norm(stroke, nb) {
         let inserted = false;
         for (const child of this.children) {
-            if (child.insert(stroke)) {
+            if (child._insert_norm(stroke, nb)) {
                 inserted = true;
             }
         }
         return inserted;
     }
-    
+
     subdivide() {
         const { x, y, width, height } = this.boundary;
         const hw = width / 2;
         const hh = height / 2;
-        
+
         this.children = [
             new StrokeQuadTree({ x, y, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x: x + hw, y, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x, y: y + hh, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x: x + hw, y: y + hh, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1)
         ];
-        
+
         for (const stroke of this.strokes) {
-            this.insert_to_children(stroke);
+            if (!stroke.bounds) continue;
+            this.insert_to_children_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
         }
         this.strokes = [];
     }
-    
+
     query(range, found = new Set()) {
-        if (!this.intersects(range)) return found;
-        
+        return this._query_norm(StrokeQuadTree._normalize(range), found);
+    }
+
+    _query_norm(nb, found) {
+        if (!this._hits_norm(nb)) return found;
+
         for (const stroke of this.strokes) {
-            if (this.stroke_intersects(stroke, range)) {
+            if (this._stroke_hits_norm(stroke, nb)) {
                 found.add(stroke);
             }
         }
-        
+
         if (this.children) {
             for (const child of this.children) {
-                child.query(range, found);
+                child._query_norm(nb, found);
             }
         }
-        
+
         return found;
     }
-    
+
     intersects(bounds) {
-        const padding = 5;
-        const bMinX = bounds.minX != null ? bounds.minX : bounds.x;
-        const bMaxX = bounds.maxX != null ? bounds.maxX : bounds.x + bounds.width;
-        const bMinY = bounds.minY != null ? bounds.minY : bounds.y;
-        const bMaxY = bounds.maxY != null ? bounds.maxY : bounds.y + bounds.height;
-        return !(bMaxX + padding < this.boundary.x ||
-                 bMinX - padding > this.boundary.x + this.boundary.width ||
-                 bMaxY + padding < this.boundary.y ||
-                 bMinY - padding > this.boundary.y + this.boundary.height);
+        return this._hits_norm(StrokeQuadTree._normalize(bounds));
     }
-    
-    stroke_intersects(stroke, range) {
+
+    /**
+     * 笔画与本节点范围的相交判定。
+     * 入参为已归一化范围：改造前这里直接读 range.x / range.x + range.width，
+     * 全应用唯一的调用方（tile-renderer 的 rebuild_tile）传的正是
+     * {x, y, width, height} 形状，故语义完全一致。
+     */
+    _stroke_hits_norm(stroke, nb) {
         if (!stroke.bounds) return true;
         const padding = Math.max(stroke.lineWidth || 5, stroke.eraserSize || 5);
-        return !(stroke.bounds.maxX + padding < range.x ||
-                 stroke.bounds.minX - padding > range.x + range.width ||
-                 stroke.bounds.maxY + padding < range.y ||
-                 stroke.bounds.minY - padding > range.y + range.height);
+        return !(stroke.bounds.maxX + padding < nb.minX ||
+                 stroke.bounds.minX - padding > nb.maxX ||
+                 stroke.bounds.maxY + padding < nb.minY ||
+                 stroke.bounds.minY - padding > nb.maxY);
     }
-    
+
+    stroke_intersects(stroke, range) {
+        return this._stroke_hits_norm(stroke, StrokeQuadTree._normalize(range));
+    }
+
     clear() {
         this.strokes = [];
         this.children = null;
     }
-    
+
     build(strokes) {
         this.clear();
         for (const stroke of strokes) {
@@ -448,7 +503,6 @@ let state = {
     baseImageURL: null,
     baseImageObj: null,
     baseImageLoadId: 0,
-    currentStroke: null,
     moveBound: {
         minX: 0, maxX: 0,
         minY: 0, maxY: 0
@@ -459,7 +513,7 @@ let state = {
     fileList: [],
     currentFolderIndex: -1,
     currentFolderPageIndex: -1,
-    pdfDocuments: new Map(),
+    loadingPdfMd5: new Set(),
     loadedPages: new Set(),
     currentPressure: 0.5,
     currentVelocity: 0,
@@ -468,8 +522,6 @@ let state = {
     settingsOpen: false
 };
 
-const MAX_PDF_CACHE = 10;
-
 // === 源ID管理系统 ===
 // 统一管理所有源（摄像头、图片、文档）的缩放和批注数据
 
@@ -477,6 +529,16 @@ let sourceIdCounters = {
     pic: 0,
     doc: 0
 };
+
+const _MD5_SINE_TABLE = Array.from({ length: 64 }, (_, i) =>
+    Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0
+);
+const _MD5_SHIFTS = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+];
 
 function main_calculate_md5(bytes) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -491,15 +553,8 @@ function main_calculate_md5(bytes) {
         buffer[padded_len - 8 + i] = Math.floor(bit_len / Math.pow(256, i)) & 0xff;
     }
 
-    const shifts = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
-    ];
-    const table = Array.from({ length: 64 }, (_, i) =>
-        Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0
-    );
+    const shifts = _MD5_SHIFTS;
+    const table = _MD5_SINE_TABLE;
 
     let a0 = 0x67452301;
     let b0 = 0xefcdab89;
@@ -658,19 +713,6 @@ function main_load_source_data(sourceId) {
     currentSourceId = sourceId;
 }
 
-// 切换到新源：保存当前源 → 加载目标源 → 重绘 → 刷新UI
-async function main_update_source(newSourceId) {
-    main_save_current_source_data();
-    main_load_source_data(newSourceId);
-    main_delete_draw_canvas();
-    if (state.strokeHistory.length > 0) {
-        await main_render_all_strokes();
-    }
-    main_update_move_bound();
-    main_update_canvas_position();
-    main_update_canvas_transform();
-    main_update_history_button_status();
-}
 
 let dom = {};  // DOM 元素引用缓存
 
@@ -685,7 +727,6 @@ const historyCompactor = createHistoryCompactor({
     releaseOffscreenCanvas: (c) => main_release_offscreen_canvas(c),
     renderAllStrokes: (bounds) => main_render_all_strokes(bounds),
     loadBaseImage: (url) => main_load_base_image(url),
-    safeScaleFn: main_fetch_safe_scale,
     penManager: () => realPenManager,
     historyValidateCompact: history_validate_compact,
     historyFetchUndoStack: history_fetch_undo_stack,
@@ -695,10 +736,22 @@ const historyCompactor = createHistoryCompactor({
 });
 
 let cachedCanvasRect = null;
+
+// 依赖画布几何的缓存。
+//
+// 可见域与移动边界都由「画布尺寸 + 屏幕尺寸」决定，而命中判定此前只看视图
+// 状态（scale / canvasX / canvasY）—— 几何变化被完全漏掉：窗口 resize 后
+// 可见域塌缩/停留在旧尺寸（它决定哪些瓦片参与 DPR 升降与 idle 回收）、
+// 平移夹取范围也停在旧尺寸。用一个几何版本号把它们与几何绑死，
+// 比在每条改动几何的路径上记得手动清缓存可靠。
+let main_geometry_version = 0;
 let cachedVisibleRect = null;
 let cachedVisibleRectScale = null;
 let cachedVisibleRectX = null;
 let cachedVisibleRectY = null;
+let cachedVisibleRectVersion = null;
+let cachedMoveBoundScale = null;
+let cachedMoveBoundVersion = null;
 
 const OFFSCREEN_MAX_PHYSICAL = 3840;
 const OFFSCREEN_POOL_MAX = 2;
@@ -724,8 +777,13 @@ function main_schedule_offscreen_pool_evict() {
 
 function main_fetch_offscreen_canvas() {
     clearTimeout(_offscreenPoolTimer);
-    let w = DRAW_CONFIG.canvasW * DRAW_CONFIG.dpr;
-    let h = DRAW_CONFIG.canvasH * DRAW_CONFIG.dpr;
+    // 离屏画布与瓦片同为**内容空间**（逻辑尺寸 canvasW×canvasH），
+    // 故分辨率须走瓦片档而非静态倍率——放大时静态倍率会让合成结果发虚。
+    const dpr = window.ResolutionController
+        ? window.ResolutionController.calc_tile_dpr(state.scale || 1)
+        : (DRAW_CONFIG.dpr || 1);
+    let w = DRAW_CONFIG.canvasW * dpr;
+    let h = DRAW_CONFIG.canvasH * dpr;
     if (w > OFFSCREEN_MAX_PHYSICAL || h > OFFSCREEN_MAX_PHYSICAL) {
         const s = OFFSCREEN_MAX_PHYSICAL / Math.max(w, h);
         w = Math.round(w * s);
@@ -763,12 +821,6 @@ function main_delete_cached_rect() {
     cachedCanvasRect = null;
 }
 
-function main_fetch_cached_canvas_rect() {
-    if (!cachedCanvasRect) {
-        cachedCanvasRect = dom.canvasContainer.getBoundingClientRect();
-    }
-    return cachedCanvasRect;
-}
 
 // 监听系统关联打开的PDF文件
 function main_setup_pdf_file_open() {
@@ -835,66 +887,76 @@ function main_setup_pdf_file_open() {
         const settings = event.payload;
         console.log('收到设置更改通知:', settings);
         
-        if (settings.dynamicDprEnabled !== undefined) {
-            DRAW_CONFIG.dynamicDprEnabled = settings.dynamicDprEnabled;
-        }
-        if (settings.dprMin !== undefined) {
-            DRAW_CONFIG.dprMin = settings.dprMin;
-        }
-        if (settings.dprMax !== undefined) {
-            DRAW_CONFIG.dprMax = settings.dprMax;
-        }
-        if (settings.dprStep !== undefined) {
-            DRAW_CONFIG.dprStep = settings.dprStep;
-        }
-        if (settings.overlayDpr !== undefined) {
-            DRAW_CONFIG.overlayDpr = settings.overlayDpr;
-        }
-        if (settings.dynamicDprEnabled !== undefined || settings.dprMin !== undefined ||
-            settings.dprMax !== undefined || settings.dprStep !== undefined ||
-            settings.overlayDpr !== undefined) {
-            if (window.tileRenderer) {
-                window.tileRenderer.update_visible_tile_dpr(state.scale, true, true);
-            }
-            if (window.batchDrawManager) {
-                window.batchDrawManager.update_overlay_dpr(state.scale, true);
-            }
-            // 同步阅读器和黑板
-            window.sync_all_overlay_dpr?.();
+        // 动态分辨率相关设置统一经 ResolutionController 写入（含 dprLimit——
+        // 此前遗漏该键，"画面精度"保存后既不进 DRAW_CONFIG 也无从生效），
+        // 再由已注册的渲染上下文（主画布 / 阅读器 / 黑板）各自刷新。
+        // 控制器内部会在 dprLimit/baseDpr 变更时自动重算静态倍率 DRAW_CONFIG.dpr。
+        const dpr_changed = window.ResolutionController
+            ? window.ResolutionController.update_settings(settings)
+            : [];
+        if (dpr_changed.length > 0) {
+            window.ResolutionController?.refresh_all(true);
         }
 
         if (settings.penColors && Array.isArray(settings.penColors)) {
-            DRAW_CONFIG.penColors = settings.penColors.map(color => {
-                if (typeof color === 'object' && color.r !== undefined) {
-                    return main_calc_rgb_to_hex(color.r, color.g, color.b);
-                }
-                return color;
-            });
+            DRAW_CONFIG.penColors = settings.penColors
+                .filter(color => {
+                    if (typeof color === 'object' && color !== null) return typeof color.r === 'number';
+                    return typeof color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color);
+                })
+                .map(color => {
+                    if (typeof color === 'object' && color.r !== undefined) {
+                        return main_calc_rgb_to_hex(color.r, color.g, color.b);
+                    }
+                    return color;
+                });
+            if (DRAW_CONFIG.penColors.length === 0) {
+                DRAW_CONFIG.penColors = ['#3498db', '#2ecc71', '#e74c3c', '#f39c12', '#9b59b6'];
+            }
+            if (!DRAW_CONFIG.penColors.includes(DRAW_CONFIG.penColor)) {
+                DRAW_CONFIG.penColor = DRAW_CONFIG.penColors[0] || null;
+            }
+            const colorContainer = document.querySelector('.pen-control-panel .pen-color-buttons');
+            if (colorContainer) colorContainer.replaceChildren();
             main_update_color_buttons();
             console.log('画笔颜色已更改:', DRAW_CONFIG.penColors);
         }
         
         if (settings.penWidth !== undefined) {
             DRAW_CONFIG.penWidth = settings.penWidth;
+            main_update_color_buttons();
         }
         if (settings.eraserSize !== undefined) {
             DRAW_CONFIG.eraserSize = settings.eraserSize;
+            main_update_color_buttons();
             if (window.blackboardManager?.drawing_engine) {
                 window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
             }
         }
         
         if (settings.penSizePresets && Array.isArray(settings.penSizePresets)) {
-            DRAW_CONFIG.penSizePresets = settings.penSizePresets;
-            console.log('画笔预设已更改:', settings.penSizePresets);
+            DRAW_CONFIG.penSizePresets = settings.penSizePresets
+                .filter(n => typeof n === 'number' && n > 0 && n <= 100);
+            if (DRAW_CONFIG.penSizePresets.length === 0) {
+                DRAW_CONFIG.penSizePresets = [2, 5, 10, 15, 21];
+            }
+            const panel = document.querySelector('.pen-control-panel');
+            if (panel?.dataset.mode === 'comment') panel.querySelector('.pen-size-presets')?.replaceChildren();
+            console.log('画笔预设已更改:', DRAW_CONFIG.penSizePresets);
         }
         
         if (settings.eraserSizePresets && Array.isArray(settings.eraserSizePresets)) {
-            DRAW_CONFIG.eraserSizePresets = settings.eraserSizePresets;
+            DRAW_CONFIG.eraserSizePresets = settings.eraserSizePresets
+                .filter(n => typeof n === 'number' && n > 0 && n <= 200);
+            if (DRAW_CONFIG.eraserSizePresets.length === 0) {
+                DRAW_CONFIG.eraserSizePresets = [5, 15, 25, 38, 50];
+            }
+            const panel = document.querySelector('.pen-control-panel');
+            if (panel?.dataset.mode === 'eraser') panel.querySelector('.pen-size-presets')?.replaceChildren();
             if (window.blackboardManager?.drawing_engine) {
                 window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
             }
-            console.log('橡皮擦预设已更改:', settings.eraserSizePresets);
+            console.log('橡皮擦预设已更改:', DRAW_CONFIG.eraserSizePresets);
         }
         
         if (settings.theme !== undefined) {
@@ -907,9 +969,6 @@ function main_setup_pdf_file_open() {
             });
         }
 
-        if (settings.blurEnabled !== undefined) {
-            document.body.classList.toggle('blur-enabled', settings.blurEnabled === true);
-        }
 
         if (settings.penMinWidthRatio !== undefined && DRAW_CONFIG.developerMode) {
             DRAW_CONFIG.penMinWidthRatio = settings.penMinWidthRatio;
@@ -921,39 +980,12 @@ function main_setup_pdf_file_open() {
             DRAW_CONFIG.gestureFrameDelta = settings.gestureFrameDelta;
         }
 
-        // 性能监视器动态开关（仅在开发者模式下生效）
-        if (settings.perfMonitorEnabled !== undefined && DRAW_CONFIG.developerMode) {
-            DRAW_CONFIG.perfMonitorEnabled = settings.perfMonitorEnabled;
-            const interval = settings.perfMonitorInterval || 200;
-            if (settings.perfMonitorEnabled) {
-                if (!window.perfMonitor) {
-                    import('./modules/developer/perf-monitor.js').then(mod => {
-                        window.perfMonitor = mod;
-                        mod.perf_monitor_init(interval);
-                    }).catch(e => {
-                        console.error('动态加载 perf monitor 失败:', e);
-                    });
-                } else {
-                    window.perfMonitor.perf_monitor_set_enabled(true, interval);
-                }
-            } else {
-                if (window.perfMonitor) {
-                    window.perfMonitor.perf_monitor_set_enabled(false);
-                }
-            }
-        } else if (settings.perfMonitorInterval !== undefined && DRAW_CONFIG.developerMode && window.perfMonitor) {
-            // 仅更新频率（不改变开关状态）
-            window.perfMonitor.perf_monitor_set_interval(settings.perfMonitorInterval);
-        }
-    }).catch(err => {
+        }).catch(err => {
         console.error('settings-changed 事件监听失败:', err);
     });
     
 }
 
-async function main_render_pdf_pages_lazy(pdf, totalPages, initialPages = 3, docNumber = null) {
-    return DocLoader.render_pdf_pages_lazy(pdf, totalPages, initialPages, docNumber);
-}
 
 const PDF_INITIAL_RENDER_PAGES = 20;
 
@@ -966,6 +998,56 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
     
     const fileName_lower = filePath.toLowerCase();
     const isWord = fileName_lower.endsWith('.docx') || fileName_lower.endsWith('.doc');
+    
+    // 占位标签索引：autoOpen 时立即建标签并进入阅读器视图，
+    // 加载动画显示在标签（阅读器区域）内，而非盖在首页的全屏遮罩上
+    let _importIdx = -1;
+    if (autoOpen) {
+        state._loadingPaths = state._loadingPaths || new Set();
+        // 同一路径正在导入则跳过，避免重复占位标签
+        if (state._loadingPaths.has(filePath)) return;
+        const fileName = filePath.split(/[\\/]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
+        const placeholder = {
+            name: fileName,
+            pages: [],
+            is_loading: true,
+            isPdf: !isWord,
+            totalPages: 0,
+            docNumber: -1,
+            fileMd5: null,
+            filePath: filePath,
+            reloadPath: filePath,
+            _last_used: Date.now()
+        };
+        state.fileList.push(placeholder);
+        _importIdx = state.fileList.length - 1;
+        state._loadingPaths.add(filePath);
+        main_reveal_reader_view(_importIdx);
+        main_update_tabs();
+        main_update_ui_state();
+    }
+
+    // 导入期的加载指示：autoOpen 直接切入阅读器（不再显示加载层），否则退回原全屏遮罩（行为不变）
+    function main_show_loading_overlay(msg) {
+        if (_importIdx < 0) DocLoader.show_loading_overlay(msg);
+    }
+    function main_hide_loading_overlay() {
+        if (_importIdx >= 0) main_cancel_import_view(_importIdx);
+        else DocLoader.hide_loading_overlay();
+    }
+
+    // 检查是否已打开
+    function main_check_file_open(md5) {
+        const found = state.fileList.findIndex(f => f && f.fileMd5 === md5);
+        if (found !== -1) {
+            console.log('文件已打开，切换到已有标签:', found);
+            if (autoOpen) {
+                main_switch_to_tab(found);
+            }
+            return true;
+        }
+        return false;
+    }
     
     if (isWord) {
         main_show_loading_overlay(window.i18n?.format_translate('loading.detectingOffice') || '正在检测 Office 软件...');
@@ -1022,6 +1104,13 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('文件大小:', uint8Array.length, '字节');
         const fileMd5 = main_calculate_md5(uint8Array);
+        // 与 PDF 路径一致：加载中去重，避免同一 Word 文件并发打开产生重复标签
+        if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
+            main_hide_loading_overlay();
+            uint8Array = null;
+            return;
+        }
+        state.loadingPdfMd5.add(fileMd5);
         
         main_update_loading_progress(window.i18n?.format_translate('loading.processingWord') || '正在处理 Word 文档...');
         
@@ -1034,7 +1123,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         try {
             pdfPath = await invoke('office_convert_docx_to_pdf_bytes', {
                 fileData: fileDataForConvert,
-                fileName: fileName
+                fileName: fileName,
+                fileMd5: fileMd5
             });
             console.log('Word 文档已转换为 PDF:', pdfPath);
         } catch (convertError) {
@@ -1058,8 +1148,9 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             return;
         }
         
-        main_update_loading_progress(window.i18n?.format_translate('loading.renderingPage') || '正在渲染页面...');
+        main_update_loading_progress(window.i18n?.format_translate('loading.renderingPage') || '正在加载页面...');
         
+        let wordPdfDoc = null;
         try {
             const pdfReady = await main_wait_pdfjs();
             if (!pdfReady) {
@@ -1075,63 +1166,73 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             
             let pdfBytes = await fs.readFile(pdfPath);
             let pdfArrayBuffer = pdfBytes.buffer;
-            const pdf = await pdfjsLib.getDocument({
+            wordPdfDoc = await pdfjsLib.getDocument({
                 data: pdfArrayBuffer,
                 enableXfa: false,
                 useSystemFonts: false,
-                isEvalSupported: false
+                isEvalSupported: false,
+                standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+                cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+                cMapPacked: true,
+                // 仅报告错误级日志（getDocument 只认参数里的 verbosity，全局赋值无效），
+                // 抑制 PDF 内嵌字体触发的 "TT: undefined function" 等噪音警告
+                verbosity: pdfjsLib.VerbosityLevel?.ERRORS ?? 0
             }).promise;
             pdfBytes = null;
             pdfArrayBuffer = null;
-            console.log('PDF加载成功，页数:', pdf.numPages);
+            console.log('PDF加载成功，页数:', wordPdfDoc.numPages);
             
-            const totalPages = pdf.numPages;
+            const totalPages = wordPdfDoc.numPages;
             const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
             const docNumber = sourceIdCounters.doc++;
             
+            // 并行优化：仅读取首页真实尺寸，其余按首页估算；首屏即时渲染，剩余尺寸后台并行回填
+            const firstInfo = await get_pdf_page_info(wordPdfDoc, 1, docNumber);
+            const pages = new Array(totalPages);
+            pages[0] = firstInfo;
+            for (let i = 1; i < totalPages; i++) {
+                pages[i] = {
+                    full: null,
+                    thumbnail: null,
+                    pageNum: i + 1,
+                    sourceId: docNumber !== null ? `doc-${docNumber}-${i + 1}` : null,
+                    loaded: false,
+                    width: firstInfo.width,
+                    height: firstInfo.height,
+                    renderMode: 'pdfjs'
+                };
+            }
+
             const folder = {
                 name: fileName,
-                pages: [],
+                pages: pages,
                 isPdf: true,
-                pdfDoc: pdf,
+                pdfDoc: wordPdfDoc,
                 totalPages: totalPages,
                 docNumber: docNumber,
-                fileMd5: fileMd5
+                fileMd5: fileMd5,
+                // 来源与重载信息：Word 转换产物可能被缓存清理，不做后台卸载
+                fromWord: true,
+                filePath: filePath,
+                _pages_estimated: true,
+                _last_used: Date.now()
             };
-            
-            if (state.pdfDocuments.size >= MAX_PDF_CACHE) {
-                const firstKey = state.pdfDocuments.keys().next().value;
-                main_delete_pdf_blob_urls(firstKey);
-                state.pdfDocuments.delete(firstKey);
-                console.log(`[PDF缓存] 缓存已满,移除文档: ${firstKey}`);
-            }
-            
-            state.pdfDocuments.set(docNumber, pdf);
-            
-            const processedPages = await main_render_pdf_pages_lazy(pdf, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
-            folder.pages = processedPages;
-            
-            state.fileList.push(folder);
-            
-            main_hide_loading_overlay();
-            console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
 
+            wordPdfDoc = null;
+            
             // 保存到最近打开文件列表
             window.main_add_recent_file?.(filePath);
             
-            if (autoOpen && window.documentReaderManager) {
-                const fileIndex = state.fileList.length - 1;
-                window.documentReaderManager.open(fileIndex);
-            }
+            // 导入完成：填充占位标签并打开（首屏立即渲染；剩余页尺寸后台并行回填）
+            main_finish_import_view(_importIdx, folder, autoOpen);
             
-
             
-            try {
-                await fs.remove(pdfPath);
-            } catch (e) {
-                console.log('清理转换的 PDF 失败:', e);
-            }
+            
         } catch (error) {
+            if (wordPdfDoc) {
+                try { wordPdfDoc.destroy(); } catch (_) {}
+                wordPdfDoc = null;
+            }
             main_hide_loading_overlay();
             console.error('文件导入失败:', error);
             main_show_error_dialog(
@@ -1139,12 +1240,16 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
                 window.i18n?.format_translate('errors.importFailedDesc') || '文件导入失败，请确保文件格式正确'
             );
 
+        } finally {
+            state.loadingPdfMd5.delete(fileMd5);
         }
-        
+
         return;
     }
     
     main_show_loading_overlay(window.i18n?.format_translate('loading.importingFile') || '正在导入文件...');
+    let loadingPdfMd5 = null;
+    let loadedPdfDoc = null;
     
     try {
         const pdfReady = await main_wait_pdfjs();
@@ -1187,97 +1292,262 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('PDF数据大小:', uint8Array.length);
 
-        // PDF 解析（Worker 线程）与 MD5（主线程）并发执行
-        const pdfPromise = pdfjsLib.getDocument({
+        const fileMd5 = main_calculate_md5(uint8Array);
+        if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
+            fileData = null;
+            uint8Array = null;
+            main_hide_loading_overlay();
+            return;
+        }
+        state.loadingPdfMd5.add(fileMd5);
+        loadingPdfMd5 = fileMd5;
+        loadedPdfDoc = await pdfjsLib.getDocument({
             data: uint8Array,
             enableXfa: false,
             useSystemFonts: false,
-            isEvalSupported: false
+            isEvalSupported: false,
+            standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+            cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+            cMapPacked: true
         }).promise;
-        const fileMd5 = main_calculate_md5(uint8Array);
-        const pdf = await pdfPromise;
         fileData = null;
         uint8Array = null;
-        console.log('PDF加载成功，页数:', pdf.numPages);
+        console.log('PDF加载成功，页数:', loadedPdfDoc.numPages);
         
-        const totalPages = pdf.numPages;
+        const totalPages = loadedPdfDoc.numPages;
         const fileName = filePath.split(/[/\\]/).pop().replace(/\.(pdf|docx|doc)$/i, '');
         const docNumber = sourceIdCounters.doc++;
         
+        // 并行优化：仅读取首页真实尺寸（1 次 getPage，极快），其余页按首页尺寸估算；
+        // reader.open 立即用真实首页尺寸渲染首屏，剩余真实尺寸由 reader 在后台并行回填。
+        const firstInfo = await get_pdf_page_info(loadedPdfDoc, 1, docNumber);
+        const pages = new Array(totalPages);
+        pages[0] = firstInfo;
+        for (let i = 1; i < totalPages; i++) {
+            pages[i] = {
+                full: null,
+                thumbnail: null,
+                pageNum: i + 1,
+                sourceId: docNumber !== null ? `doc-${docNumber}-${i + 1}` : null,
+                loaded: false,
+                width: firstInfo.width,
+                height: firstInfo.height,
+                renderMode: 'pdfjs'
+            };
+        }
+
         const folder = {
             name: fileName,
-            pages: [],
+            pages: pages,
             isWord: false,
-            pdfDoc: pdf,
+            pdfDoc: loadedPdfDoc,
             totalPages: totalPages,
             docNumber: docNumber,
-            fileMd5: fileMd5
+            fileMd5: fileMd5,
+            // 后台 LRU 卸载后可按此路径重新加载
+            filePath: filePath,
+            reloadPath: filePath,
+            _pages_estimated: true,
+            _last_used: Date.now()
         };
         
-        const processedPages = await main_render_pdf_pages_lazy(pdf, totalPages, PDF_INITIAL_RENDER_PAGES, docNumber);
-        folder.pages = processedPages;
+        loadedPdfDoc = null;
         
-        state.fileList.push(folder);
-        
-        main_hide_loading_overlay();
-        console.log(`文件已导入: ${folder.name}，共${folder.pages.length}页`);
-
         // 保存到最近打开文件列表
         window.main_add_recent_file?.(filePath);
         
-        if (autoOpen && window.documentReaderManager) {
-            const fileIndex = state.fileList.length - 1;
-            window.documentReaderManager.open(fileIndex);
-        }
+        // 导入完成：填充占位标签并打开（首屏立即渲染；剩余页尺寸后台并行回填）
+        main_finish_import_view(_importIdx, folder, autoOpen);
     } catch (error) {
+        if (loadedPdfDoc) {
+            try { loadedPdfDoc.destroy(); } catch (_) {}
+            loadedPdfDoc = null;
+        }
         main_hide_loading_overlay();
         console.error('文件导入失败:', error);
         main_show_error_dialog(
             window.i18n?.format_translate('errors.importFailed') || '导入失败',
             window.i18n?.format_translate('errors.importFailedDesc') || '文件导入失败，请确保文件格式正确'
         );
+    } finally {
+        if (loadingPdfMd5) state.loadingPdfMd5.delete(loadingPdfMd5);
     }
 }
 
-// 处理窗口大小变化（防抖 150ms）
-let resizeTimeout = null;
+// ===== 窗口尺寸响应 =====
+//
+// 主画布几何基准（DRAW_CONFIG.screenW/screenH/canvasW/canvasH）的唯一写入处。
+//
+// 这套逻辑原先只挂在 main_handle_resize 上，而它自首次提交起就没有任何调用者
+// —— 于是 screenW/screenH 恒为 0：可见域塌缩到 21x21（瓦片分辨率与显存回收
+// 全部失准）、移动边界恒为「画布任意拖动」、#canvasWrapper 从不写
+// width/height（CSS 里它是 contain: paint，零盒尺寸会把整块内容裁掉）。
+// 现由「启动首帧几何对齐 + resize 事件」两条路径共同驱动。
 
+const RESIZE_DEBOUNCE_MS = 150;
+let resizeTimeout = null;
+let resizeRetryTimer = null;
+/**
+ * 拖拽期间逐帧做「轻量几何对齐」，瓦片网格重建仍旧防抖。此闩记录「还有一次
+ * 重建没做」：轻量对齐已经把 DRAW_CONFIG.screenW/H 推到最终值，防抖到点时
+ * `main_sync_screen_size()` 会据此判定「尺寸没变」而直接 return —— 网格就永远
+ * 不会按新尺寸重建（实测表现：几何 lag 归零、但画布重分配 0 次，旧尺寸网格
+ * 一直被沿用）。所以重建入口必须看这个闩，而不是看屏幕尺寸是否变化。
+ */
+let _resize_needs_rebuild = false;
+let _resize_light_raf = null;
+
+/**
+ * 窗口尺寸变化入口：轻量几何逐帧跟、完整重建防抖合并；
+ * 最大化/还原过渡期延后重试而非丢弃。
+ */
 function main_handle_resize() {
     main_delete_cached_rect();
+    // 逐帧（rAF 合并）把几何对齐到当前窗口尺寸，让画布 / 图像层 / 视图变换
+    // 在拖拽期间跟着窗口走。此前是「整体防抖」，代价是画布在整个拖拽期间完全
+    // 不动 —— 实测「容器宽 − 已应用屏幕宽」一路涨到 420px，读起来就是
+    // 「窗口在动、内容僵住」。几何对齐不含瓦片重建，是纯样式/变换写入，很便宜。
+    _resize_needs_rebuild = true;
+    main_schedule_light_geometry();
+
     if (resizeTimeout) clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(() => {
         resizeTimeout = null;
-        const container = dom.canvasContainer;
-    const newScreenW = Math.max(1, container.clientWidth);
-    const newScreenH = Math.max(1, container.clientHeight);
-        
-        if (newScreenW !== DRAW_CONFIG.screenW || newScreenH !== DRAW_CONFIG.screenH) {
-            main_update_canvas_size(newScreenW, newScreenH);
+        // 过渡（~300ms 动画）期间读到的是中间尺寸，此时重排会按错误尺寸重建
+        // 一次。与阅读器 / 小黑板同一策略：跳过并延后重试，过渡结束后必定补
+        // 一次对齐。原实现在过渡期直接 return —— 若之后不再有 resize 事件
+        // 送达，就会永久停在中间尺寸。
+        if (_windowTransitioning) {
+            if (resizeRetryTimer) clearTimeout(resizeRetryTimer);
+            resizeRetryTimer = setTimeout(() => {
+                resizeRetryTimer = null;
+                main_handle_resize();
+            }, 250);
+            return;
         }
-    }, 150);
+        // 顺手核对基准 DPR：显示器缩放比变化（跨屏拖动 / 系统缩放）常伴随窗口
+        // 尺寸变化，而 matchMedia 的 resolution 查询并非在所有环境都派发 change
+        // —— 只依赖它会让「尺寸变了但基准倍率没跟」，瓦片层按旧密度栅格化
+        window.ResolutionController?.refresh_display_dpr();
+        main_flush_resize_rebuild();
+    }, RESIZE_DEBOUNCE_MS);
 }
 
-// 调整画布大小
-async function main_update_canvas_size(newScreenW, newScreenH) {
-    const oldScale = state.scale;
-    const oldCanvasX = state.canvasX;
-    const oldCanvasY = state.canvasY;
-    
-    if (window.tileRenderer) {
-        window.tileRenderer.destroy_all();
+/** 拖拽期间的轻量几何对齐（rAF 合并，一帧最多一次）。 */
+function main_schedule_light_geometry() {
+    if (_resize_light_raf !== null) return;
+    _resize_light_raf = requestAnimationFrame(() => {
+        _resize_light_raf = null;
+        // 最大化/还原过渡期读到的是中间尺寸；过渡结束后由防抖那条路径补一次对齐
+        if (_windowTransitioning) return;
+        main_sync_screen_size({ light: true });
+    });
+}
+
+/**
+ * 防抖到点后的「完整重建」入口。
+ * 这里刻意不复用 `main_sync_screen_size()`：拖拽期间的轻量几何对齐已经把
+ * `DRAW_CONFIG.screenW/H` 推到最终尺寸，那个函数会据此判定「尺寸没变」而
+ * 直接 return，瓦片网格再也不会按新尺寸重建。所以判据换成 `_resize_needs_rebuild`。
+ */
+function main_flush_resize_rebuild() {
+    const container = dom.canvasContainer;
+    if (!container) return;
+    const w = Math.max(1, container.clientWidth || window.innerWidth);
+    const h = Math.max(1, container.clientHeight || window.innerHeight);
+    const sizeChanged = w !== DRAW_CONFIG.screenW || h !== DRAW_CONFIG.screenH;
+    if (!_resize_needs_rebuild && !sizeChanged) return;
+    _resize_needs_rebuild = false;
+    main_update_canvas_size(w, h);
+}
+
+/**
+ * 注册尺寸响应。
+ * DOM resize 覆盖窗口尺寸变化；Tauri 的 onResized 额外覆盖显示器缩放比变化
+ * （跨屏拖动 / 系统缩放调整）这类不一定产生 DOM resize 的情形。
+ * 末尾补一次首帧几何对齐：启动期没有内容，只对齐几何不建瓦片（省显存）。
+ */
+function main_setup_resize_handling() {
+    window.addEventListener('resize', main_handle_resize, { passive: true });
+    try {
+        const tw = window.__TAURI__?.window;
+        if (tw?.getCurrentWindow) {
+            const win = tw.getCurrentWindow();
+            if (typeof win?.onResized === 'function') {
+                const p = win.onResized(() => main_handle_resize());
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+            }
+        }
+    } catch (_) {}
+    main_sync_screen_size({ light: true });
+}
+
+/**
+ * 以容器实尺寸为准与 DRAW_CONFIG 对齐。
+ * @param {{light?: boolean}} [opts] light=true 只对齐几何基准，不做重建
+ *   （首帧用：此时没有内容，建瓦片纯属空占显存）
+ *
+ * 注意：**resize 路径已不再走这里的默认分支**。它在拖拽期间已经用 light 把几何
+ * 推到最终尺寸，走到这里时 `w === screenW` 会命中上面那行 return，重活就永远不会做。
+ * 防抖到点后的重建入口是 `main_flush_resize_rebuild()`（判据是 `_resize_needs_rebuild`
+ * 闩，而不是尺寸是否变化）。保留默认分支只为兼容外部（Tauri 注入侧）的直接调用。
+ */
+function main_sync_screen_size(opts = {}) {
+    const container = dom.canvasContainer;
+    if (!container) return false;
+    const w = Math.max(1, container.clientWidth || window.innerWidth);
+    const h = Math.max(1, container.clientHeight || window.innerHeight);
+    if (w === DRAW_CONFIG.screenW && h === DRAW_CONFIG.screenH) return false;
+    if (opts.light) main_apply_canvas_geometry(w, h);
+    else main_update_canvas_size(w, h);
+    return true;
+}
+
+/** 几何相关缓存统一失效（版本号推进即让它们全部落空）。 */
+function main_invalidate_geometry_caches() {
+    main_geometry_version++;
+    cachedCanvasRect = null;
+}
+
+/**
+ * 几何基准对齐，不含瓦片 / 笔画重建：
+ * 屏幕尺寸 → 画布尺寸 → 派生静态倍率 → 包装器与图片层盒尺寸 →
+ * 几何缓存失效 → 移动边界 / 位置 / 变换。
+ * @returns {boolean} 几何是否发生变化
+ */
+function main_apply_canvas_geometry(newScreenW, newScreenH) {
+    const w = Math.max(1, Math.floor(newScreenW));
+    const h = Math.max(1, Math.floor(newScreenH));
+    const oldW = DRAW_CONFIG.screenW;
+    const oldH = DRAW_CONFIG.screenH;
+    if (w === oldW && h === oldH) return false;
+
+    DRAW_CONFIG.screenW = w;
+    DRAW_CONFIG.screenH = h;
+    DRAW_CONFIG.canvasW = Math.max(1, Math.floor(w * 2));
+    DRAW_CONFIG.canvasH = Math.max(1, Math.floor(h * 2));
+
+    // 静态倍率由控制器派生（动态分辨率关闭时瓦片/页面均取它）
+    main_sync_static_dpr();
+
+    // 视图保持：画布尺寸与屏幕同比例变化，把平移量按同比例缩放即可保持
+    // 「视野内是画布的同一相对区域」。这里不能套用阅读器 / 小黑板那条
+    // 「视口中心的内容点不动」规则 —— 它们的画布尺寸固定、视口在画布内移动；
+    // 主画布的画布尺寸随屏幕一起变大，保持内容点不动会让画布边缘移进视野、
+    // 露出容器底色。首帧对齐无旧值可比，保持原样。
+    if (oldW > 0 && oldH > 0) {
+        state.canvasX *= w / oldW;
+        state.canvasY *= h / oldH;
     }
-    
-    DRAW_CONFIG.screenW = Math.max(1, newScreenW);
-    DRAW_CONFIG.screenH = Math.max(1, newScreenH);
-    
-    DRAW_CONFIG.canvasW = Math.max(1, Math.floor(newScreenW * 2));
-    DRAW_CONFIG.canvasH = Math.max(1, Math.floor(newScreenH * 2));
-    
-    DRAW_CONFIG.dpr = window.main_calc_capped_dpr(DRAW_CONFIG.baseDpr, DRAW_CONFIG.dprLimit);
-    
-    main_update_move_bound();
-    
-    if (dom.imageElement) {
+
+    // 图像层的盒尺寸是「按屏幕尺寸等比放入画布再居中」的派生量，不能在这里
+    // 直接写成 canvasW×canvasH —— 那会让图像被拉伸成 2 倍、同时丢掉居中
+    // （left/top 还是旧的），而批注层瓦片是随几何正常重建的：两层几何就此
+    // 不同步。有图时交给图像层自己的布局函数按新屏幕尺寸重算，无图时保持
+    // 满画布的空盒（导出合成等路径按此判定）。
+    if (state.currentImage) {
+        main_render_image_centered(state.currentImage);
+    } else if (dom.imageElement) {
         dom.imageElement.style.width = DRAW_CONFIG.canvasW + 'px';
         dom.imageElement.style.height = DRAW_CONFIG.canvasH + 'px';
     }
@@ -1285,32 +1555,65 @@ async function main_update_canvas_size(newScreenW, newScreenH) {
         dom.canvasWrapper.style.width = DRAW_CONFIG.canvasW + 'px';
         dom.canvasWrapper.style.height = DRAW_CONFIG.canvasH + 'px';
     }
-    
-    // 初始化瓦片渲染器
-    if (window.tileRenderer && dom.canvasWrapper) {
-        window.tileRenderer.init_tiles(dom.canvasWrapper);
-    }
-    
-    if (window.batchDrawManager) {
-        window.batchDrawManager.resize_overlay(newScreenW, newScreenH, DRAW_CONFIG.dpr);
-    }
-    
-    if (state.currentImage) {
-        main_render_image_centered(state.currentImage);
-    }
-    
-    if (state.strokeHistory.length > 0 || state.baseImageObj) {
-        await main_render_all_strokes();
-    }
-    
-    state.scale = oldScale;
-    state.canvasX = oldCanvasX;
-    state.canvasY = oldCanvasY;
-    
+
+    main_invalidate_geometry_caches();
     main_update_move_bound();
     main_update_canvas_position();
     main_update_canvas_transform();
-    
+    return true;
+}
+
+// 重入守卫：完整重建含 await（重绘笔画），窗口连续变化时若并发执行，
+// 两次的 destroy / init_tiles 会与对方的重绘交错
+let _canvas_size_rebuilding = false;
+let _canvas_size_pending = null;
+
+async function main_update_canvas_size(newScreenW, newScreenH) {
+    if (_canvas_size_rebuilding) {
+        _canvas_size_pending = [newScreenW, newScreenH];
+        return;
+    }
+    _canvas_size_rebuilding = true;
+    try {
+        let target = [newScreenW, newScreenH];
+        while (target) {
+            _canvas_size_pending = null;
+            await main_rebuild_canvas_for_size(target[0], target[1]);
+            target = _canvas_size_pending;
+        }
+    } finally {
+        _canvas_size_rebuilding = false;
+    }
+}
+
+/** 几何对齐 + 重内容（瓦片网格重建 / 图片重排 / 笔画重绘）。 */
+async function main_rebuild_canvas_for_size(newScreenW, newScreenH) {
+    main_apply_canvas_geometry(newScreenW, newScreenH);
+
+    // 瓦片网格尺寸在构造时固定，画布尺寸变化后必须重建，
+    // 否则新区域的笔画落在网格之外（提交后不可见）
+    if (window.tileRenderer) {
+        window.tileRenderer.destroy_all();
+        if (dom.canvasWrapper) window.tileRenderer.init_tiles(dom.canvasWrapper);
+    }
+
+    // 注：主画布没有实时预览覆盖层（笔迹直接落瓦片层），窗口尺寸变化时不需
+    // 同步任何覆盖层。将来若接入，在此处对主画布的 OverlayManager 调 resize。
+
+    // 图像层布局已由 main_apply_canvas_geometry（几何唯一写入者）按新屏幕
+    // 尺寸重算，此处不再重复调用，避免同一几何被两处各自写一遍。
+
+    // 不保存 / 恢复 state.scale/canvasX/canvasY：这段区间（瓦片重建 + 笔画
+    // 重绘）不写视图状态，而 await 期间用户若平移/缩放，恢复旧值会把刚做的
+    // 操作回滚。几何对齐里已按同比例缩放平移量，正是应有的结果。
+    if (state.strokeHistory.length > 0 || state.baseImageObj) {
+        await main_render_all_strokes();
+    }
+
+    main_update_move_bound();
+    main_update_canvas_position();
+    main_update_canvas_transform();
+
     console.log(`窗口调整: 屏幕 ${newScreenW}x${newScreenH}, 画布 ${DRAW_CONFIG.canvasW}x${DRAW_CONFIG.canvasH}, DPR ${DRAW_CONFIG.dpr.toFixed(2)}`);
 }
 
@@ -1324,13 +1627,14 @@ function main_update_canvas_bg_color(color) {
     }
 }
 
-let cachedMoveBoundScale = null;
-
 function main_update_move_bound() {
-    if (cachedMoveBoundScale === state.scale) {
+    // 命中判定必须同时覆盖几何版本：边界由画布尺寸与屏幕尺寸共同决定，
+    // 只看 scale 会让窗口 resize 后仍沿用旧尺寸算出的夹取范围
+    if (cachedMoveBoundScale === state.scale && cachedMoveBoundVersion === main_geometry_version) {
         return;
     }
     cachedMoveBoundScale = state.scale;
+    cachedMoveBoundVersion = main_geometry_version;
     
     const screenW = DRAW_CONFIG.screenW;
     const screenH = DRAW_CONFIG.screenH;
@@ -1361,16 +1665,20 @@ function main_update_canvas_position() {
 }
 
 function main_fetch_visible_rect() {
-    if (cachedVisibleRectScale === state.scale && 
-        cachedVisibleRectX === state.canvasX && 
-        cachedVisibleRectY === state.canvasY && 
+    // 命中判定覆盖几何版本：可见域由画布尺寸与屏幕尺寸共同决定，
+    // 只看视图状态会让窗口 resize 后仍返回旧尺寸算出的可见域
+    if (cachedVisibleRectScale === state.scale &&
+        cachedVisibleRectX === state.canvasX &&
+        cachedVisibleRectY === state.canvasY &&
+        cachedVisibleRectVersion === main_geometry_version &&
         cachedVisibleRect) {
         return cachedVisibleRect;
     }
-    
+
     cachedVisibleRectScale = state.scale;
     cachedVisibleRectX = state.canvasX;
     cachedVisibleRectY = state.canvasY;
+    cachedVisibleRectVersion = main_geometry_version;
     
     // 确保缩放系数 > 0，防止除以零
     const scale = Math.max(0.01, state.scale || 1);
@@ -1449,6 +1757,8 @@ function main_show_pen_control_panel(triggerBtn, mode) {
                     }
                     clearSlider.value = '0';
                     clearSlider.style.setProperty('--fill', '0%');
+                    // 清空完成后自动收纳面板（此前需手动点图标收回）
+                    panel.classList.remove('visible');
                 }
             });
             clearSlider.addEventListener('pointerup', () => {
@@ -1484,53 +1794,64 @@ function main_show_pen_control_panel(triggerBtn, mode) {
 
     if (mode === 'comment') {
         colorContainer.style.display = '';
-        colorContainer.innerHTML = '';
-        const colors = DRAW_CONFIG.penColors || [];
-        colors.forEach((color) => {
-            const btn = document.createElement('button');
-            btn.className = 'pen-color-btn';
-            btn.dataset.color = color;
-            btn.style.background = color;
-            btn.classList.toggle('active', color === DRAW_CONFIG.penColor);
-            const isLight = color.toLowerCase() === '#ffffff' || color.toLowerCase() === '#fff';
-            btn.classList.add(isLight ? 'light-color' : 'dark-color');
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                DRAW_CONFIG.penColor = color;
-                main_update_color_buttons();
-                panel.classList.remove('visible');
+        // 首次构建颜色按钮，之后仅切换 active 状态
+        if (!colorContainer.children.length) {
+            const colors = DRAW_CONFIG.penColors || [];
+            colors.forEach((color) => {
+                const btn = document.createElement('button');
+                btn.className = 'pen-color-btn';
+                btn.dataset.color = color;
+                btn.style.background = color;
+                const isLight = color.toLowerCase() === '#ffffff' || color.toLowerCase() === '#fff';
+                btn.classList.add(isLight ? 'light-color' : 'dark-color');
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    DRAW_CONFIG.penColor = color;
+                    main_update_color_buttons();
+                    panel.classList.remove('visible');
+                });
+                colorContainer.appendChild(btn);
             });
-            colorContainer.appendChild(btn);
+        }
+        // 仅切换 active 状态，不重建 DOM
+        colorContainer.querySelectorAll('.pen-color-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.color === DRAW_CONFIG.penColor);
         });
     } else {
         colorContainer.style.display = 'none';
     }
 
-    sizeContainer.innerHTML = '';
-    const presets = mode === 'eraser' ? DRAW_CONFIG.eraserSizePresets : DRAW_CONFIG.penSizePresets;
-    const currentSize = mode === 'eraser' ? DRAW_CONFIG.eraserSize : DRAW_CONFIG.penWidth;
-    presets.forEach((size) => {
-        const btn = document.createElement('button');
-        btn.className = 'size-preset-btn';
-        btn.dataset.size = size;
-        btn.style.setProperty('--dot-size', Math.max(4, Math.min(size * 1.2, 24)) + 'px');
-        const dotColor = mode === 'eraser' ? 'var(--color-muted)' : (DRAW_CONFIG.penColor || '#888');
-        btn.style.setProperty('--dot-color', dotColor);
-        btn.classList.toggle('active', size === currentSize);
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (mode === 'eraser') {
-                DRAW_CONFIG.eraserSize = size;
-                if (window.blackboardManager?.drawing_engine) {
-                    window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
+    // 尺寸按钮同理：首次构建，之后切换 active
+    if (!sizeContainer.children.length || sizeContainer._lastMode !== mode) {
+        sizeContainer.innerHTML = '';
+        sizeContainer._lastMode = mode;
+        const presets = mode === 'eraser' ? DRAW_CONFIG.eraserSizePresets : DRAW_CONFIG.penSizePresets;
+        presets.forEach((size) => {
+            const btn = document.createElement('button');
+            btn.className = 'size-preset-btn';
+            btn.dataset.size = size;
+            btn.style.setProperty('--dot-size', Math.max(4, Math.min(size * 1.2, 24)) + 'px');
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (mode === 'eraser') {
+                    DRAW_CONFIG.eraserSize = size;
+                    if (window.blackboardManager?.drawing_engine) {
+                        window.blackboardManager.drawing_engine.refresh_eraser_hint_size();
+                    }
+                } else {
+                    DRAW_CONFIG.penWidth = size;
                 }
-            } else {
-                DRAW_CONFIG.penWidth = size;
-            }
-            main_update_color_buttons();
-            panel.classList.remove('visible');
+                main_update_color_buttons();
+                panel.classList.remove('visible');
+            });
+            sizeContainer.appendChild(btn);
         });
-        sizeContainer.appendChild(btn);
+    }
+    const currentSize = mode === 'eraser' ? DRAW_CONFIG.eraserSize : DRAW_CONFIG.penWidth;
+    sizeContainer.querySelectorAll('.size-preset-btn').forEach(btn => {
+        const sz = parseInt(btn.dataset.size);
+        btn.classList.toggle('active', sz === currentSize);
+        btn.style.setProperty('--dot-color', mode === 'eraser' ? 'var(--color-muted)' : (DRAW_CONFIG.penColor || '#888'));
     });
 
     sizeLabel.textContent = currentSize + 'px';
@@ -1560,14 +1881,239 @@ function main_show_pen_control_panel(triggerBtn, mode) {
     panel.style.top = top + 'px';
 }
 
+/** 收起笔工具面板（选色/尺寸/清屏滑条）。书写起笔时调用，
+ *  因 InputSource 的 pointerdown 会 preventDefault 抑制兼容 mousedown，
+ *  面板自带的"点击外部关闭"在触屏/手写笔下不生效。 */
+window.main_hide_pen_control_panel = function () {
+    const panel = document.querySelector('.pen-control-panel');
+    if (panel) panel.classList.remove('visible');
+};
+
 function main_update_ui_state() {
     const startupScreen = document.getElementById('startupScreen');
     if (startupScreen) {
+        const reader = window.documentReaderManager;
         const hasOpenDoc = window.state?.fileList?.length > 0 &&
-            window.documentReaderManager?.is_open === true;
+            (reader?.is_open === true || !!reader?._switching ||
+             window.state.fileList.some(f => f && f.is_loading));
         startupScreen.style.display = hasOpenDoc ? 'none' : 'flex';
     }
     main_update_tabs();
+}
+
+// ====== 导入期直接切入阅读器（替代覆盖首页的全屏遮罩）======
+// 点击打开文档时立即创建占位标签并滑入阅读器面板，直接进入阅读器视图，
+// PDF 在原位渲染（不再在阅读器内显示加载层）。导入完成后再填充占位标签并 open()。
+
+function main_reveal_reader_view(idx) {
+    const reader = window.documentReaderManager;
+    const panel = document.getElementById('documentReaderPanel');
+    if (panel && !panel.classList.contains('active')) panel.classList.add('active');
+    const startup = document.getElementById('startupScreen');
+    if (startup) startup.style.display = 'none';
+    if (reader && idx >= 0) reader._loading_index = idx;
+    // 导入期即显示阅读器内加载层（覆盖首页/解析/首屏渲染，直至首屏 DOM 渲染完成）
+    if (reader && !document.getElementById('loadingOverlay')) reader._show_reader_loading();
+}
+
+function main_cancel_import_view(idx) {
+    const reader = window.documentReaderManager;
+    const folder = (idx >= 0) ? state.fileList[idx] : null;
+    if (folder && folder.is_loading) {
+        const p = folder.filePath;
+        state.fileList.splice(idx, 1);
+        if (reader && reader.folder_index > idx) reader.folder_index--;
+        if (state._loadingPaths && p) state._loadingPaths.delete(p);
+    }
+    if (reader) {
+        reader._loading_index = null;
+        reader._hide_reader_loading();
+        // 没有其他已打开文档时才收起阅读器面板、回到首页
+        if (!reader.is_open) {
+            const panel = document.getElementById('documentReaderPanel');
+            if (panel) panel.classList.remove('active');
+        }
+    }
+    main_update_tabs();
+    main_update_ui_state();
+}
+
+function main_finish_import_view(idx, folder, autoOpen) {
+    const reader = window.documentReaderManager;
+    if (idx >= 0 && state.fileList[idx]) {
+        // 导入完成：用真实数据填充占位标签，再打开（避免重复标签）
+        const ph = state.fileList[idx];
+        Object.assign(ph, folder);
+        ph.is_loading = false;
+        if (state._loadingPaths && ph.filePath) state._loadingPaths.delete(ph.filePath);
+        if (reader) {
+            reader._loading_index = null;
+            reader.open(idx);
+        }
+    } else {
+        // 非 autoOpen：沿用原行为（仅入列，autoOpen 才打开）；
+        // 退回全屏遮罩时必须在此收起，否则遮罩残留
+        DocLoader.hide_loading_overlay();
+        state.fileList.push(folder);
+        if (autoOpen && reader) reader.open(state.fileList.length - 1);
+    }
+}
+
+// ====== 标签栏交互增强（快捷键 / 中键 / 右键菜单 / 横向滚轮） ======
+
+/** 关闭标签右键菜单 */
+function main_hide_tab_context_menu() {
+    const existing = document.getElementById('titlebarTabContextMenu');
+    if (!existing) return;
+    if (existing._dismiss_handler) {
+        document.removeEventListener('mousedown', existing._dismiss_handler, true);
+        existing._dismiss_handler = null;
+    }
+    existing.remove();
+}
+
+/**
+ * 标签右键菜单：关闭 / 关闭其他 / 关闭右侧。
+ * 批量关闭从末尾向前逐个执行，避免 splice 导致索引位移。
+ */
+function main_show_tab_context_menu(event, tabIndex) {
+    main_hide_tab_context_menu();
+    const file_list = state.fileList || [];
+    const translate = (key, fallback) => window.i18n?.format_translate(key) || fallback;
+
+    const items = [
+        { label: translate('tabs.close', '关闭标签'), action: () => main_close_tab(tabIndex) }
+    ];
+    if (file_list.length > 1) {
+        items.push({
+            label: translate('tabs.closeOthers', '关闭其他标签'),
+            action: async () => {
+                for (let i = file_list.length - 1; i >= 0; i--) {
+                    if (i !== tabIndex) await main_close_tab(i);
+                }
+            }
+        });
+    }
+    if (tabIndex >= 0 && tabIndex < file_list.length - 1) {
+        items.push({
+            label: translate('tabs.closeRight', '关闭右侧标签'),
+            action: async () => {
+                for (let i = file_list.length - 1; i > tabIndex; i--) {
+                    await main_close_tab(i);
+                }
+            }
+        });
+    }
+
+    const menu = document.createElement('div');
+    menu.id = 'titlebarTabContextMenu';
+    menu.className = 'tab-context-menu';
+    for (const item of items) {
+        const btn = document.createElement('button');
+        btn.className = 'tab-context-menu-item';
+        btn.textContent = item.label;
+        btn.addEventListener('click', () => {
+            main_hide_tab_context_menu();
+            item.action();
+        });
+        menu.appendChild(btn);
+    }
+    document.body.appendChild(menu);
+
+    // 视口内钳制，避免菜单溢出屏幕
+    const rect = menu.getBoundingClientRect();
+    const x = Math.max(4, Math.min(event.clientX, window.innerWidth - rect.width - 8));
+    const y = Math.max(4, Math.min(event.clientY, window.innerHeight - rect.height - 8));
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+
+    // 点击菜单外任意位置即关闭
+    const dismiss = (e) => {
+        if (!menu.contains(e.target)) main_hide_tab_context_menu();
+    };
+    menu._dismiss_handler = dismiss;
+    setTimeout(() => document.addEventListener('mousedown', dismiss, true), 0);
+}
+
+/** 全局标签快捷键：Esc 关右键菜单/设置、Ctrl+W 关当前文档标签、Ctrl+Tab 循环切换 */
+function main_setup_tab_hotkeys() {
+    if (window.__tabHotkeysBound) return;
+    window.__tabHotkeysBound = true;
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+
+        if (e.key === 'Escape') {
+            // 右键菜单打开时：仅关闭菜单并阻断阅读器的 Esc（避免误关底层文档）
+            if (document.getElementById('titlebarTabContextMenu')) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                main_hide_tab_context_menu();
+                return;
+            }
+            const panel = document.getElementById('settingsPanel');
+            if (state.settingsOpen && panel && panel.style.display === 'flex') {
+                e.preventDefault();
+                // 阻断传播：否则关闭设置后阅读器 keydown 里的面板守卫已失效，
+                // 同一次 Esc 会继续把底层文档也关掉
+                e.stopImmediatePropagation();
+                main_close_settings();
+            }
+            return;
+        }
+
+        if (!(e.ctrlKey || e.metaKey)) return;
+
+        // Ctrl+W：关闭当前激活的文档标签
+        if (e.key === 'w' || e.key === 'W') {
+            e.preventDefault();
+            const reader = window.documentReaderManager;
+            if (reader?.is_open === true && reader.folder_index >= 0) {
+                main_close_tab(reader.folder_index);
+            }
+            return;
+        }
+
+        // Ctrl+Tab / Ctrl+Shift+Tab：在文档标签间循环切换
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const reader = window.documentReaderManager;
+            if (!reader || reader.is_open !== true) return;
+            const len = state.fileList.length;
+            if (len < 2) return;
+            const next = e.shiftKey
+                ? (reader.folder_index - 1 + len) % len
+                : (reader.folder_index + 1) % len;
+            main_switch_to_tab(next);
+        }
+    });
+}
+
+/** 标签栏纵向滚轮映射为横向滚动（标签过多溢出时可用滚轮浏览） */
+function main_setup_tabs_wheel() {
+    const el = document.getElementById('titlebarTabs');
+    if (!el || el._wheel_mapped) return;
+    el._wheel_mapped = true;
+    el.addEventListener('wheel', (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            el.scrollLeft += e.deltaY;
+            e.preventDefault();
+        }
+    }, { passive: false });
+    // 滚动/尺寸变化时同步两侧渐隐提示
+    el.addEventListener('scroll', main_update_tabs_scroll_fade, { passive: true });
+    window.addEventListener('resize', main_update_tabs_scroll_fade);
+    main_update_tabs_scroll_fade();
+}
+
+/** 依据滚动位置切换标签栏两侧渐隐（fade-left / fade-right 类） */
+function main_update_tabs_scroll_fade() {
+    const el = document.getElementById('titlebarTabs');
+    if (!el) return;
+    const max_scroll = el.scrollWidth - el.clientWidth;
+    const scrollable = max_scroll > 4;
+    el.classList.toggle('fade-left', scrollable && el.scrollLeft > 2);
+    el.classList.toggle('fade-right', scrollable && el.scrollLeft < max_scroll - 2);
 }
 
 function main_update_tabs() {
@@ -1581,9 +2127,13 @@ function main_update_tabs() {
 
     tabsContainer.innerHTML = '';
 
+    const settingsPanel = document.getElementById('settingsPanel');
+    const settingsVisible = settingsPanel && settingsPanel.style.display === 'flex';
+
+    // 主页标签（固定第一位，不可拖拽）
     const homeTab = document.createElement('button');
     homeTab.className = 'titlebar-tab';
-    if (!isReaderOpen && !state.settingsOpen) homeTab.classList.add('active');
+    if (!isReaderOpen && !settingsVisible && !window.documentReaderManager?._switching) homeTab.classList.add('active');
     const homeLabel = document.createElement('span');
     homeLabel.className = 'tab-label';
     homeLabel.textContent = window.i18n?.format_translate('toolbar.home') || '主页';
@@ -1591,13 +2141,14 @@ function main_update_tabs() {
     homeTab.addEventListener('click', () => main_switch_home());
     tabsContainer.appendChild(homeTab);
 
-    // 设置标签
+    // 设置标签（可拖拽）
     if (state.settingsOpen) {
         const settingsTab = document.createElement('button');
-        settingsTab.className = 'titlebar-tab active';
+        settingsTab.className = settingsVisible ? 'titlebar-tab active' : 'titlebar-tab';
+        settingsTab.dataset.tabType = 'settings';
         const settingsLabel = document.createElement('span');
         settingsLabel.className = 'tab-label';
-        settingsLabel.textContent = '设置';
+        settingsLabel.textContent = window.i18n?.format_translate('settings.title') || '设置';
         settingsTab.appendChild(settingsLabel);
         const close = document.createElement('span');
         close.className = 'tab-close';
@@ -1607,56 +2158,280 @@ function main_update_tabs() {
             main_close_settings();
         });
         settingsTab.appendChild(close);
+        // 中键点击关闭设置伪标签
+        settingsTab.addEventListener('auxclick', (e) => {
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                main_close_settings();
+            }
+        });
         settingsTab.addEventListener('click', () => {
-            if (!state.settingsOpen) main_show_settings_window();
+            if (settingsTab._dragJustHappened) { settingsTab._dragJustHappened = false; return; }
+            const panel = document.getElementById('settingsPanel');
+            if (!state.settingsOpen) {
+                main_show_settings_window();
+            } else if (panel && panel.style.display !== 'flex') {
+                const drToolbar = document.getElementById('drToolbar');
+                if (drToolbar) drToolbar.style.display = 'none';
+                panel.style.display = 'flex';
+                main_update_tabs();
+            }
         });
         tabsContainer.appendChild(settingsTab);
     }
 
+    // 文档标签（可拖拽）
     fileList.forEach((folder, index) => {
         const tab = document.createElement('button');
         tab.className = 'titlebar-tab';
         tab.dataset.index = index;
-        if (isReaderOpen && window.documentReaderManager?.folder_index === index) {
+        tab.dataset.tabType = 'doc';
+        // 防御性判断：仅在阅读器打开或正在切往该标签时高亮，
+        // 否则 folder_index 残留时会出现主页与文档标签同时高亮；
+        // 切换进行中也高亮目标标签，保证大文档加载期间有明确的视觉反馈；
+        // 导入占位标签（is_loading）同样高亮，加载动画期间标签即处于激活态
+        const reader_mgr = window.documentReaderManager;
+        const isActiveDoc = reader_mgr && !settingsVisible &&
+            (reader_mgr.is_open === true || !!reader_mgr._switching ||
+             reader_mgr._loading_index === index) &&
+            reader_mgr.folder_index === index;
+        const isLoadingThis = reader_mgr && reader_mgr._loading_index === index && !settingsVisible;
+        if (isActiveDoc || isLoadingThis) {
             tab.classList.add('active');
         }
 
         const label = document.createElement('span');
         label.className = 'tab-label';
-        label.textContent = folder.name || '文档';
+        label.textContent = folder.name || window.i18n?.format_translate('tabs.document') || '文档';
         tab.appendChild(label);
+        tab.title = folder.name || '';
 
         const close = document.createElement('span');
         close.className = 'tab-close';
         close.textContent = '×';
         close.addEventListener('click', (e) => {
             e.stopPropagation();
-            main_close_tab(index);
+            main_close_tab(parseInt(tab.dataset.index));
         });
         tab.appendChild(close);
 
-        tab.addEventListener('click', () => main_switch_to_tab(index));
+        tab.addEventListener('click', () => {
+            if (tab._dragJustHappened) { tab._dragJustHappened = false; return; }
+            main_switch_to_tab(parseInt(tab.dataset.index));
+        });
+
+        // 中键点击直接关闭该标签
+        tab.addEventListener('auxclick', (e) => {
+            if (e.button !== 1) return;
+            e.preventDefault();
+            e.stopPropagation();
+            main_close_tab(parseInt(tab.dataset.index));
+        });
+
+        // 右键菜单：关闭 / 关闭其他 / 关闭右侧
+        tab.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            main_show_tab_context_menu(e, parseInt(tab.dataset.index));
+        });
+
+        _enable_tab_drag(tab, tabsContainer);
         tabsContainer.appendChild(tab);
+    });
+
+    // 任务栏窗口标题跟随当前文档（缓存上次值，变化才发 IPC）
+    let win_title = 'ViewPDF';
+    const active_reader = window.documentReaderManager;
+    if (active_reader?.is_open === true && active_reader.folder_index >= 0 &&
+        state.fileList[active_reader.folder_index]) {
+        win_title = `${state.fileList[active_reader.folder_index].name} - ViewPDF`;
+    }
+    if (win_title !== window.__lastWinTitle) {
+        window.__lastWinTitle = win_title;
+        try {
+            const p = window.__TAURI__?.window?.getCurrentWindow()?.setTitle(win_title);
+            p?.catch?.(() => {});
+        } catch (_) {}
+    }
+
+    // 标签重建后同步滚动渐隐状态（布局在下一帧才稳定）
+    requestAnimationFrame(main_update_tabs_scroll_fade);
+}
+
+/** 给标签绑定拖拽排序（绕过 Tauri drag-region 拦截） */
+function _enable_tab_drag(tab, tabsContainer) {
+    tab.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (e.target.closest('.tab-close')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const tabRect = tab.getBoundingClientRect();
+        const offsetX = e.clientX - tabRect.left;
+            let clone = null;
+            let dragging = false;
+            let currentOverPos = -1;
+            let currentHalf = 'right';
+            let cachedTabs = [];
+            let cachedTabRects = [];
+
+        const onMouseMove = (e2) => {
+            const dx = e2.clientX - startX;
+            const dy = e2.clientY - startY;
+            if (!dragging && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+                dragging = true;
+                tab.classList.add('dragging');
+                clone = tab.cloneNode(true);
+                clone.className = 'titlebar-tab tab-drag-clone';
+                clone.style.position = 'fixed';
+                clone.style.zIndex = '9999';
+                clone.style.pointerEvents = 'none';
+                clone.style.width = tabRect.width + 'px';
+                clone.style.height = tabRect.height + 'px';
+                clone.style.left = (e.clientX - offsetX) + 'px';
+                clone.style.top = tabRect.top + 'px';
+                clone.style.transition = 'none';
+                document.body.appendChild(clone);
+                // 缓存标签列表，拖拽期间不会变化
+                cachedTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+                cachedTabRects = cachedTabs.map(t => t.getBoundingClientRect());
+            }
+            if (!dragging) return;
+            if (clone) clone.style.left = (e2.clientX - offsetX) + 'px';
+            // 检测悬停目标
+            const allTabs = cachedTabs;
+            const myPos = allTabs.indexOf(tab);
+            let foundPos = myPos;
+            let foundHalf = 'right';
+            for (let i = 0; i < allTabs.length; i++) {
+                if (allTabs[i] === tab) continue;
+                const r = cachedTabRects[i];
+                if (e2.clientX >= r.left && e2.clientX <= r.right) {
+                    foundPos = i;
+                    foundHalf = e2.clientX < r.left + r.width / 2 ? 'left' : 'right';
+                    break;
+                }
+            }
+            // 超出最后标签右侧
+            if (allTabs.length > 0 && allTabs[allTabs.length - 1] !== tab && e2.clientX > cachedTabRects[allTabs.length - 1].right) {
+                foundPos = allTabs.length - 1;
+                foundHalf = 'right';
+            }
+            if (foundPos !== currentOverPos || foundHalf !== currentHalf) {
+                currentOverPos = foundPos;
+                currentHalf = foundHalf;
+                allTabs.forEach(t => t.classList.remove('drag-over-left', 'drag-over-right'));
+                const target = allTabs[foundPos];
+                if (target && target !== tab) {
+                    target.classList.add(foundHalf === 'left' ? 'drag-over-left' : 'drag-over-right');
+                }
+            }
+        };
+
+        const onMouseUp = () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            tab.classList.remove('dragging');
+            if (clone) { clone.remove(); clone = null; }
+            tabsContainer.querySelectorAll('.titlebar-tab').forEach(t => {
+                t.classList.remove('drag-over-left', 'drag-over-right');
+            });
+            if (!dragging) return;
+            // 计算插入位置
+            const allTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+            const fromPos = allTabs.indexOf(tab);
+            let toPos = currentOverPos;
+            if (currentHalf === 'right') toPos++;
+            // 主页标签固定第一位，不允许把文档/设置标签插到它左侧
+            if (toPos < 1) toPos = 1;
+            if (fromPos === toPos || fromPos === toPos - 1) return;
+            // 在 DOM 中移动标签
+            if (toPos > fromPos) {
+                tabsContainer.insertBefore(tab, allTabs[toPos]?.nextSibling || null);
+            } else {
+                tabsContainer.insertBefore(tab, allTabs[toPos]);
+            }
+            // 根据新的 DOM 顺序重建 fileList
+            _sync_tabs_from_dom(tabsContainer);
+            tab._dragJustHappened = true;
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    });
+}
+
+/** 从 DOM 标签顺序同步 fileList 和 folder_index */
+function _sync_tabs_from_dom(tabsContainer) {
+    const allTabs = Array.from(tabsContainer.querySelectorAll('.titlebar-tab'));
+    const oldFileList = [...state.fileList];
+    const newFileList = [];
+    let oldFolderIndex = window.documentReaderManager?.folder_index ?? -1;
+    let newFolderIndex = -1;
+
+    for (const t of allTabs) {
+        const type = t.dataset.tabType;
+        if (type === 'settings') continue; // 设置标签跳过
+        const oldIdx = parseInt(t.dataset.index);
+        if (type === 'doc' && !isNaN(oldIdx) && oldFileList[oldIdx]) {
+            if (oldIdx === oldFolderIndex) newFolderIndex = newFileList.length;
+            newFileList.push(oldFileList[oldIdx]);
+        }
+    }
+    state.fileList = newFileList;
+    if (newFolderIndex >= 0) {
+        window.documentReaderManager.folder_index = newFolderIndex;
+    }
+    allTabs.forEach(t => {
+        if (t.dataset.tabType === 'doc') {
+            const folder = oldFileList[parseInt(t.dataset.index)];
+            t.dataset.index = state.fileList.indexOf(folder);
+        }
     });
 }
 
 async function main_switch_home() {
-    if (state.settingsOpen) main_close_settings();
+    if (state.settingsOpen) main_hide_settings();
     if (window.documentReaderManager?.is_open) {
         await window.documentReaderManager.close();
+        window.documentReaderManager.folder_index = -1;
     }
     main_update_tabs();
     main_update_ui_state();
 }
 
+function main_hide_settings() {
+    const panel = document.getElementById('settingsPanel');
+    if (panel) panel.style.display = 'none';
+    // 如果阅读器还开着，恢复其工具栏
+    if (window.documentReaderManager?.is_open) {
+        const drToolbar = document.getElementById('drToolbar');
+        if (drToolbar) drToolbar.style.display = '';
+    }
+}
+
 async function main_switch_to_tab(index) {
-    if (state.settingsOpen) main_close_settings();
+    if (state.settingsOpen) main_hide_settings();
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
-    const isReaderOpen = window.documentReaderManager?.is_open === true;
-    if (isReaderOpen && window.documentReaderManager?.folder_index === index) return;
-    if (window.documentReaderManager) {
-        await window.documentReaderManager.open(index);
+    // 导入占位标签尚未就绪，忽略切换/点击（避免打开空页）
+    if (fileList[index]?.is_loading) return;
+    const reader = window.documentReaderManager;
+    if (!reader) return;
+    if (reader.is_open && reader.folder_index === index) {
+        main_update_tabs();
+        return;
+    }
+    // 计数器而非布尔值：并发切换（快速连点标签）时，
+    // 先完成的切换不会提前解除保护（pdfDoc.destroy 守卫依赖它）
+    reader._switching = (reader._switching || 0) + 1;
+    main_update_tabs();
+    try {
+        await reader.switch_to(index);
+    } finally {
+        reader._switching = Math.max(0, (reader._switching || 0) - 1);
     }
     main_update_tabs();
     main_update_ui_state();
@@ -1665,22 +2440,65 @@ async function main_switch_to_tab(index) {
 async function main_close_tab(index) {
     const fileList = state.fileList || [];
     if (index < 0 || index >= fileList.length) return;
-    const isReaderOpen = window.documentReaderManager?.is_open === true;
-    if (isReaderOpen && window.documentReaderManager?.folder_index === index) {
-        await window.documentReaderManager.close();
+    // 导入中的占位标签不允许关闭（后台导入仍在写入该标签，关闭会导致索引错位/数据串写）
+    if (fileList[index]?.is_loading) return;
+    const reader = window.documentReaderManager;
+    // 正在打开的目标标签不允许此时关闭：open() 尚未完成，
+    // 提前移除会 revoke 其页面 blob URL 并使索引错位、批注缓存串写
+    if (reader?._switching && fileList[index] === reader?._active_folder) {
+        console.log('[tabs] 切换进行中，跳过对目标标签的关闭');
+        return;
+    }
+    const isReaderOpen = reader?.is_open === true;
+    if (isReaderOpen && reader?.folder_index === index) {
+        await reader.close();
+        reader.folder_index = -1;
     }
     const folder = fileList[index];
+    if (state.fileList[index] !== folder) return;
+    // 视图常驻：若关闭的是非活动（已 detach 保活）标签，显式丢弃其 detached DOM，
+    // 释放 GPU 内存，避免 _tab_views 按 folder 对象持有引用导致泄漏
+    if (reader?.discard_tab_view) reader.discard_tab_view(folder);
     if (folder?.docNumber !== undefined) {
         main_delete_pdf_blob_urls(folder.docNumber);
-        state.pdfDocuments.delete(folder.docNumber);
+    }
+    if (folder?.pdfDoc?.destroy && !reader?._switching) {
+        try {
+            await folder.pdfDoc.destroy();
+        } catch (error) {
+            console.error('PDF 资源释放失败:', error);
+        }
     }
     state.fileList.splice(index, 1);
+    if (isReaderOpen && reader && reader.folder_index > index) {
+        reader.folder_index--;
+    } else if (reader && reader.folder_index >= state.fileList.length) {
+        reader.folder_index = -1;
+    }
     main_update_tabs();
     main_update_ui_state();
 }
 
+let _windowTransitioning = false;
+let _windowTransitionTimer = null;
+
+function main_set_window_transitioning() {
+    _windowTransitioning = true;
+    if (_windowTransitionTimer) clearTimeout(_windowTransitionTimer);
+    // 400ms 覆盖最大化动画时间（~300ms），确保动画结束后才恢复 resize 处理
+    _windowTransitionTimer = setTimeout(() => {
+        _windowTransitioning = false;
+        _windowTransitionTimer = null;
+    }, 400);
+}
+
+function main_is_window_transitioning() {
+    return _windowTransitioning;
+}
+
 function main_hide_window() {
     if (window.__TAURI__) {
+        main_set_window_transitioning();
         const { getCurrentWindow } = window.__TAURI__.window;
         getCurrentWindow().minimize().catch(() => {});
     }
@@ -1688,9 +2506,42 @@ function main_hide_window() {
 
 function main_toggle_maximize() {
     if (window.__TAURI__) {
+        main_set_window_transitioning();
         const { getCurrentWindow } = window.__TAURI__.window;
         getCurrentWindow().toggleMaximize().catch(() => {});
     }
+}
+
+// 切换标题栏窗口控件样式：macOS 红绿灯（左置）/ Windows 经典（右置 ─ ▢ ✕）
+// 两套控件组独立存在于 DOM，靠 #titlebar.macos-mode 类二选一显示
+function main_apply_titlebar_style(macos_style) {
+    document.getElementById('titlebar')?.classList.toggle('macos-mode', !!macos_style);
+}
+
+// 跟踪窗口最大化状态：驱动 Windows 样式最大化按钮 ▢/❐ 图标与提示文字切换
+function main_setup_maximize_state_sync() {
+    if (!window.__TAURI__) return;
+    const { getCurrentWindow } = window.__TAURI__.window;
+    const titlebar = document.getElementById('titlebar');
+    const maxButtons = ['btnTitleMaximizeWin', 'btnTitleMaximizeMac']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+    let syncing = false;
+    const sync = async () => {
+        if (syncing) return;
+        syncing = true;
+        try {
+            const maximized = await getCurrentWindow().isMaximized();
+            titlebar?.classList.toggle('is-maximized', maximized);
+            for (const btn of maxButtons) {
+                btn.title = maximized ? '还原' : '最大化';
+            }
+        } catch (_) {} finally {
+            syncing = false;
+        }
+    };
+    getCurrentWindow().onResized(() => { sync(); }).catch(() => {});
+    sync();
 }
 
 function main_submit_close_window() {
@@ -1702,11 +2553,70 @@ function main_submit_close_window() {
 
 // 绑定所有事件
 function main_setup_all_events() {
-    // 标题栏按钮
-    if (dom.btnTitleMinimize) dom.btnTitleMinimize.addEventListener('click', main_hide_window);
-    if (dom.btnTitleMaximize) dom.btnTitleMaximize.addEventListener('click', main_toggle_maximize);
-    if (dom.btnTitleClose) dom.btnTitleClose.addEventListener('click', main_submit_close_window);
+    // 标题栏按钮（mac/win 两套控件组共用同一处理器）
+    const titleButtonBindings = [
+        ['btnTitleMinimizeWin', main_hide_window],
+        ['btnTitleMinimizeMac', main_hide_window],
+        ['btnTitleMaximizeWin', main_toggle_maximize],
+        ['btnTitleMaximizeMac', main_toggle_maximize],
+        ['btnTitleCloseWin', main_submit_close_window],
+        ['btnTitleCloseMac', main_submit_close_window],
+    ];
+    for (const [btnId, handler] of titleButtonBindings) {
+        document.getElementById(btnId)?.addEventListener('click', handler);
+    }
+    main_setup_maximize_state_sync();
+    main_setup_undo_keyboard();
     main_update_tabs();
+
+    // 标签栏交互增强：快捷键 + 横向滚轮（一次性注册）
+    main_setup_tab_hotkeys();
+    main_setup_tabs_wheel();
+
+    // 主画布滚轮：Ctrl+滚轮=缩放，普通滚轮=上下平移
+    if (dom.canvasContainer) {
+        dom.canvasContainer.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                const max_scale = DRAW_CONFIG.maxScaleImage || 3;
+                const min_scale = DRAW_CONFIG.minScale || 0.5;
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                const new_scale = Math.max(min_scale, Math.min(max_scale, state.scale + delta));
+
+                if (new_scale !== state.scale) {
+                    const rect = dom.canvasContainer.getBoundingClientRect();
+                    const mouse_x = e.clientX - rect.left;
+                    const mouse_y = e.clientY - rect.top;
+
+                    const old_scale = state.scale;
+                    const ratio = new_scale / old_scale;
+                    state.canvasX = mouse_x - (mouse_x - state.canvasX) * ratio;
+                    state.canvasY = mouse_y - (mouse_y - state.canvasY) * ratio;
+                    state.scale = new_scale;
+
+                    main_update_move_bound();
+                    main_update_canvas_transform();
+                }
+            } else {
+                // 普通滚轮 = 上下平移
+                e.preventDefault();
+                const scroll_speed = 2;
+                state.canvasY -= e.deltaY * scroll_speed;
+
+                // 仅在画布超出屏幕时 clamp 边界
+                const screenH = DRAW_CONFIG.screenH || window.innerHeight;
+                const scaledH = DRAW_CONFIG.canvasH * state.scale;
+                if (scaledH > screenH) {
+                    state.canvasY = Math.max(-(scaledH - screenH), Math.min(0, state.canvasY));
+                }
+
+                main_update_canvas_transform();
+            }
+        }, { passive: false });
+    }
+
+    // 窗口尺寸响应：主画布几何基准 + 启动首帧对齐
+    main_setup_resize_handling();
 }
 
 // 设置笔触样式
@@ -1714,9 +2624,6 @@ function main_update_pen_style() {
     main_reset_context_state();
 }
 
-function main_update_eraser_style() {
-    main_reset_context_state();
-}
 
 function main_update_canvas_transform() {
     if (last_canvas_transform.x === state.canvasX && 
@@ -1729,142 +2636,36 @@ function main_update_canvas_transform() {
     last_canvas_transform.x = state.canvasX;
     last_canvas_transform.y = state.canvasY;
     last_canvas_transform.scale = state.scale;
-    
+
+    // 仅缩放标记交互：手势冻结的目的是"目标 DPR 每帧都在变，重建完立刻作废"，
+    // 纯平移不改变目标，冻结反而让平移中新进入视野的低分辨率瓦片
+    // 被按不可见块对待、整段平移期间发糊。平移期间按可见块立即补齐。
+    if (scaleChanged) {
+        window.ResolutionController?.mark_interaction();
+    }
+
     dom.canvasWrapper.style.transform = 'translate3d(' + state.canvasX + 'px, ' + state.canvasY + 'px, 0) scale(' + state.scale + ')';
 
-    // 仅 scale 变化时更新 tile DPR（平移/惯性期间跳过冗余调用）
-    if (scaleChanged && window.tileRenderer) {
+    // 平移也做轻量 DPR 检查：新进入视野的瓦片若分辨率不足（或缩小后
+    // 需降级），手势冻结会顺延到停止后渐进处理。内部仅 16 块扫描，开销可忽略。
+    if (window.tileRenderer) {
         window.tileRenderer.update_visible_tile_dpr(state.scale, false, true);
     }
-    if (window.batchDrawManager) {
-        window.batchDrawManager.update_overlay_dpr(state.scale);
-    }
 }
 
-// 撤销功能 - 混合方案：路径记录 + ImageData 压缩
-function main_start_stroke(type, eraserShape) {
-    const invScale = 1 / main_fetch_safe_scale();
-    const baseEraserSize = DRAW_CONFIG.eraserSize * invScale;
-    state.currentStroke = {
-        type: type,
-        points: [],
-        color: type === 'draw' ? DRAW_CONFIG.penColor : '#000000',
-        lineWidth: (type === 'draw' ? DRAW_CONFIG.penWidth : DRAW_CONFIG.eraserSize) * invScale,
-        eraserSize: baseEraserSize,
-        eraserSizeRaw: DRAW_CONFIG.eraserSize,
-        eraserShape: eraserShape || 'square',
-        ...(window.__eraserSpeed ? window.__eraserSpeed.eraser_speed_build_config(DRAW_CONFIG, invScale) : { eraserSpeedEnabled: false }),
-        scale: state.scale,
-        bounds: {
-            minX: Infinity,
-            minY: Infinity,
-            maxX: -Infinity,
-            maxY: -Infinity
-        },
-        variableWidths: []
-    };
-    
-    state.currentPressure = 0.5;
-    state.currentLineWidth = DRAW_CONFIG.penWidth * invScale;
-    state.lastLineWidth = DRAW_CONFIG.penWidth * invScale;
-    
-    state.cachedDrawType = type;
-    state.cachedDrawColor = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
-    const startScale = main_fetch_safe_scale();
-    state.cachedDrawLineWidth = type === 'draw' ? DRAW_CONFIG.penWidth / startScale : DRAW_CONFIG.eraserSize / startScale;
-    
-    state.eraserSpeedState = window.__eraserSpeed?.eraser_speed_create_state() ?? null;
-    
-    batchDrawManager.eraserShape = state.currentStroke.eraserShape;
-    batchDrawManager.batch_draw_init_start();
-}
-
-function main_save_stroke_point(fromX, fromY, toX, toY, pressure = 0.5) {
-    const stroke = state.currentStroke;
-    if (!stroke) return;
-    
-    const bounds = stroke.bounds;
-    if (fromX < bounds.minX) bounds.minX = fromX;
-    if (toX < bounds.minX) bounds.minX = toX;
-    if (fromY < bounds.minY) bounds.minY = fromY;
-    if (toY < bounds.minY) bounds.minY = toY;
-    if (fromX > bounds.maxX) bounds.maxX = fromX;
-    if (toX > bounds.maxX) bounds.maxX = toX;
-    if (fromY > bounds.maxY) bounds.maxY = fromY;
-    if (toY > bounds.maxY) bounds.maxY = toY;
-    
-    let currentWidth = stroke.lineWidth;
-    const currentScale = main_fetch_safe_scale();
-    
-    if (stroke.type === 'draw') {
-        state.currentPressure = pressure;
-        state.lastLineWidth = state.currentLineWidth;
-        currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
-        state.currentLineWidth = currentWidth;
-        state.cachedDrawLineWidth = DRAW_CONFIG.penWidth / currentScale;
-    } else if (stroke.type === 'erase' && stroke.eraserSpeedEnabled) {
-        currentWidth = window.__eraserSpeed.eraser_speed_update(state.eraserSpeedState, stroke, toX, toY);
-        state.cachedDrawLineWidth = currentWidth;
-    } else if (stroke.type === 'erase') {
-        state.cachedDrawLineWidth = DRAW_CONFIG.eraserSize / currentScale;
-    }
-    
-    stroke.variableWidths.push(currentWidth);
-    
-    const points = stroke.points;
-    points.push({ fromX, fromY, toX, toY });
-}
-
+/**
+ * 收尾主画布挂起的绘制状态。
+ *
+ * 主画布**没有实时预览覆盖层**：笔迹直接落到瓦片层，不存在"把当前笔画提交为
+ * DrawCommand"的路径。历史上那套 main_start_stroke / main_save_stroke_point
+ * 随覆盖层一起失去调用者，已删除。
+ * 阅读器与小黑板在切入各自模式前会调用本函数，目的是确保共享的
+ * batchDrawManager 不留挂起命令。
+ *
+ * 注意：batch_draw_handle_end() 内部已包含 flush，此处无需重复调用。
+ */
 async function main_submit_stroke() {
-    if (state.currentStroke && state.currentStroke.points.length > 0) {
-        // 强制刷新待处理命令，确保 _storedWidths 包含所有段的线宽
-        batchDrawManager.batch_draw_handle_flush();
-        // limited 模式：末尾添加收尾渐变
-        const penMode = window.get_pen_effect_mode ? window.get_pen_effect_mode() : 'off';
-        if (penMode === 'limited' && batchDrawManager._storedWidths.length > 0) {
-            const baseW = state.currentStroke.lineWidth || DRAW_CONFIG.penWidth || 5;
-            batchDrawManager._apply_speed_taper(batchDrawManager._storedWidths, state.currentStroke.points, baseW);
-        }
-        // 捕获实时绘制的逐段宽度，确保离线渲染与实时预览一致
-        const storedWidths = batchDrawManager._storedWidths;
-        if (storedWidths && storedWidths.length === state.currentStroke.points.length) {
-            state.currentStroke.storedWidths = [...storedWidths];
-        }
-        
-        const halfWidth = Math.max(state.currentStroke.lineWidth || 5, state.currentStroke.eraserSize || 5) / 2;
-        const strokeBounds = state.currentStroke && state.currentStroke.bounds
-            ? {
-                minX: state.currentStroke.bounds.minX - halfWidth,
-                minY: state.currentStroke.bounds.minY - halfWidth,
-                maxX: state.currentStroke.bounds.maxX + halfWidth,
-                maxY: state.currentStroke.bounds.maxY + halfWidth
-            } : null;
-        
-        const cmd = new DrawCommand({
-            stroke: state.currentStroke,
-            strokeHistoryRef: state.strokeHistory,
-            redrawFn: () => main_render_all_strokes(strokeBounds)
-        });
-        await history_execute_command(cmd, false);
-
-        if (state.currentStroke.type === 'erase') {
-            if (window.tileRenderer) {
-                await main_render_all_strokes(strokeBounds);
-            }
-        } else {
-            if (window.tileRenderer) {
-                await window.tileRenderer.add_stroke(state.currentStroke);
-            }
-        }
-
-        if (history_validate_compact()) {
-            main_init_compact();
-        }
-    }
-    state.currentStroke = null;
-
     await batchDrawManager.batch_draw_handle_end();
-
     batchDrawManager.batch_draw_delete_all();
 }
 
@@ -1915,27 +2716,87 @@ function main_update_context_state(ctx, s) { updateContextState(ctx, s); }
 window.main_update_context_state = main_update_context_state;
 
 /**
+ * 作废全部「按笔画对象缓存」的渲染几何缓存（笔锋细分 + 常量宽度 Path2D）。
+ *
+ * ⚠️ 这是**唯一入口**。这些缓存都以笔画对象标识作键、看不到对象内部的变化，
+ * 因此任何对已有 stroke.points / lineWidth 的**原地改写**都必须调用本函数，
+ * 否则渲染会继续沿用改写前的几何 —— 表现为批注画在旧位置，位移大到越出
+ * 所属瓦片时整块瓦片空白（reader 缩放窗口/页内缩放后批注消失即此因）。
+ *
+ * 现有调用点：
+ *  - document_reader._scale_page_annotations（窗口尺寸变化后缩放批注坐标）
+ *  - main_handle_undo（撤销会换上克隆出的笔画对象）
+ *  - settings 切笔锋模式（penEffectMode 决定走哪条渲染分支）
+ */
+function main_invalidate_stroke_geometry_caches() {
+    realPenManager.invalidate_cache();
+    invalidate_stroke_path_cache();
+}
+window.main_invalidate_stroke_geometry_caches = main_invalidate_stroke_geometry_caches;
+
+/**
  * 按原始顺序逐个绘制笔画：draw/comment 用 source-over，erase 用 destination-out
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array} strokes - 笔画数组
  */
 async function main_render_strokes_to_context(ctx, strokes) {
     return renderStrokesToContext(ctx, strokes, {
-        renderScale: main_fetch_safe_scale(),
         penManager: realPenManager
     });
 }
 window.main_render_strokes_to_context = main_render_strokes_to_context;
 
-function main_init_compact() { historyCompactor.initCompaction(); }
-
 async function main_handle_undo() {
     historyCompactor.cancelCompaction();
     state.baseImageLoadId++;
     state.compactSnapshotId = (state.compactSnapshotId || 0) + 1;
-    realPenManager.invalidate_cache();
+    main_invalidate_stroke_geometry_caches();
     await history_handle_undo();
+    historyCompactor.initCompaction();
     console.log('撤销操作');
+}
+
+async function main_handle_redo() {
+    historyCompactor.cancelCompaction();
+    state.baseImageLoadId++;
+    state.compactSnapshotId = (state.compactSnapshotId || 0) + 1;
+    main_invalidate_stroke_geometry_caches();
+    await history_handle_redo();
+    historyCompactor.initCompaction();
+    console.log('重做操作');
+}
+window.main_handle_undo = main_handle_undo;
+window.main_handle_redo = main_handle_redo;
+
+/**
+ * 主画布全局撤销/重做快捷键（Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z）。
+ * 黑板与阅读器各自有同款快捷键与专属历史，打开时让位；
+ * 输入框聚焦、设置面板覆盖时不劫持。
+ */
+function main_setup_undo_keyboard() {
+    document.addEventListener('keydown', (e) => {
+        const target = document.activeElement;
+        const tag = target?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+        if (window.blackboardManager?.is_open) return;
+        if (window.documentReaderManager?.is_open) return;
+        const sp = document.getElementById('settingsPanel');
+        if (sp && sp.style.display === 'flex') return;
+
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            if (e.shiftKey) {
+                if (history_validate_redo()) main_handle_redo();
+            } else if (history_validate_undo()) {
+                main_handle_undo();
+            }
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+            e.preventDefault();
+            if (history_validate_redo()) main_handle_redo();
+        }
+    });
 }
 
 function main_update_history_button_status() {
@@ -1947,9 +2808,6 @@ function main_delete_draw_canvas() {
     if (window.tileRenderer) {
         window.tileRenderer.destroy_all();
         window.tileRenderer.init_tiles(dom.canvasWrapper);
-    }
-    if (window.batchDrawManager) {
-        window.batchDrawManager.clear_overlay();
     }
     main_reset_context_state();
 }
@@ -1981,13 +2839,16 @@ async function main_delete_all_drawings() {
         loadBaseImageFn: (url) => main_load_base_image(url)
     });
     await history_execute_command(cmd);
-    
+
     main_delete_draw_canvas();
-    
+
     if (currentSourceId) {
         main_save_current_source_data();
     }
-    
+
+    // 清空后检查是否需要后台压缩（超过 MAX_HISTORY_STEPS 时 idle 期合并命令）
+    historyCompactor.initCompaction();
+
     if (state.drawMode === 'eraser') {
         main_update_mode('comment');
     }
@@ -2016,10 +2877,6 @@ function main_load_base_image(url) {
     img.src = url;
 }
 
-// 保存画布截图
-function main_save_photo() {
-    main_save_merged_canvas();
-}
 
 function main_save_merged_canvas() {
     console.log('执行拍照功能');
@@ -2060,44 +2917,82 @@ function main_save_merged_canvas() {
     main_release_offscreen_canvas(offscreen);
 }
 
-function main_show_settings_window() {
-    if (state.settingsOpen) {
+// ===== 设置面板懒加载 =====
+// 面板标记与样式不再随 index.html 启动加载（减小初始 DOM/CSSOM 开销），
+// 首次打开时注入：<link> 样式一次 + 面板标记一次，此后常驻隐藏复用。
+let _settings_ensure_promise = null;
+
+function settings_ensure_dom() {
+    if (document.getElementById('settingsPanel')) return Promise.resolve();
+    if (_settings_ensure_promise) return _settings_ensure_promise;
+    _settings_ensure_promise = (async () => {
+        // 懒加载样式表（仅首次）
+        if (!document.getElementById('settingsLazyStyle')) {
+            const link = document.createElement('link');
+            link.id = 'settingsLazyStyle';
+            link.rel = 'stylesheet';
+            link.href = 'modules/settings/settings.css';
+            document.head.appendChild(link);
+        }
+        // 懒加载面板标记（仅首次，走 ES Module 缓存）
+        const { SETTINGS_PANEL_HTML } = await import('./modules/settings/settings-panel.js');
+        const tpl = document.createElement('template');
+        tpl.innerHTML = SETTINGS_PANEL_HTML;
+        const injected = tpl.content.firstElementChild;
+        if (!injected || injected.id !== 'settingsPanel') throw new Error('设置面板标记格式异常');
+        // 与原静态位置同级：挂在 .main-function 下（canvas / 阅读器面板的兄弟节点）
+        const host = document.querySelector('.main-function')
+            || document.querySelector('.container')
+            || document.body;
+        host.appendChild(injected);
+        // 注入前 i18n 扫描与主题图标扫描都覆盖不到该子树，这里补一次
+        window.i18n?.render_page_texts?.();
+        window.ThemeManager?.theme_load_icons?.();
+    })().catch(err => {
+        _settings_ensure_promise = null; // 失败允许下次重试
+        throw err;
+    });
+    return _settings_ensure_promise;
+}
+
+async function main_show_settings_window() {
+    const panel = document.getElementById('settingsPanel');
+    if (state.settingsOpen && panel?.style.display === 'flex') {
         main_close_settings();
         return;
     }
     state.settingsOpen = true;
     const startup = document.getElementById('startupScreen');
     if (startup) startup.style.display = 'none';
-    
-    const existing = document.getElementById('settingsPanel');
-    if (existing) existing.remove();
-    
-    const panel = document.createElement('div');
-    panel.id = 'settingsPanel';
-    panel.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0;';
-    
-    const frame = document.createElement('iframe');
-    frame.id = 'settingsFrame';
-    frame.src = 'settings.html';
-    frame.style.cssText = 'flex:1;width:100%;border:none;background:var(--color-canvas);';
-    // 允许同源脚本访问父窗口 __TAURI__
-    frame.setAttribute('allow', 'same-origin');
-    panel.appendChild(frame);
-    
-    const parent = document.querySelector('.main-function');
-    if (parent) parent.appendChild(panel);
-    
-    frame.addEventListener('load', () => {
-        try {
-            if (frame.contentWindow && window.__TAURI__) {
-                Object.defineProperty(frame.contentWindow, '__TAURI__', {
-                    value: window.__TAURI__,
-                    writable: false,
-                    configurable: true
-                });
-            }
-        } catch (e) { console.warn('settings __TAURI__ passthrough:', e); }
-    });
+
+    // 隐藏阅读器工具栏
+    const drToolbar = document.getElementById('drToolbar');
+    if (drToolbar) drToolbar.style.display = 'none';
+
+    main_update_tabs();
+
+    try {
+        await settings_ensure_dom();
+    } catch (err) {
+        console.error('设置面板 DOM 加载失败:', err);
+        state.settingsOpen = false;
+        const st = document.getElementById('startupScreen');
+        if (st && !window.documentReaderManager?.is_open) st.style.removeProperty('display');
+        main_update_tabs();
+        return;
+    }
+
+    // 加载期间可能已被切走（切主页/打开文档）
+    if (!state.settingsOpen) return;
+    const loaded = document.getElementById('settingsPanel');
+    if (!loaded) return;
+    loaded.style.display = 'flex';
+
+    // 动态加载设置模块（ES Module 缓存保证仅初始化一次）
+    import('./modules/settings/settings.js')
+        .then(m => m.init_settings_panel())
+        .catch(err => console.error('设置模块加载失败:', err));
+
     main_update_tabs();
 }
 
@@ -2105,7 +3000,12 @@ function main_close_settings() {
     if (!state.settingsOpen) return;
     state.settingsOpen = false;
     const panel = document.getElementById('settingsPanel');
-    panel?.remove();
+    if (panel) panel.style.display = 'none';
+    // 如果阅读器还开着，恢复其工具栏
+    if (window.documentReaderManager?.is_open) {
+        const drToolbar = document.getElementById('drToolbar');
+        if (drToolbar) drToolbar.style.display = '';
+    }
     const startup = document.getElementById('startupScreen');
     if (startup) startup.style.removeProperty('display');
     main_update_tabs();
@@ -2130,46 +3030,6 @@ async function main_open_folder() {
     }
 }
 
-async function main_update_image_rotation(direction) {
-    if (!state.currentImage) {
-        console.log('没有图片可旋转');
-        return;
-    }
-    
-    let rotatedDataUrl;
-    
-    if (window.__TAURI__) {
-        try {
-            const { invoke } = window.__TAURI__.core;
-            rotatedDataUrl = await invoke('image_update_rotation', { 
-                imageData: state.currentImage.src, 
-                direction: direction 
-            });
-            console.log('Rust 图片旋转完成');
-        } catch (error) {
-            console.error('Rust 图片旋转失败，使用前端降级方案:', error);
-            rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
-        }
-    } else {
-        rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
-    }
-    
-    const rotatedImg = new Image();
-    rotatedImg.onload = async () => {
-        state.currentImage = rotatedImg;
-        
-        if (state.currentImageIndex >= 0 && state.currentImageIndex < state.imageList.length) {
-            state.imageList[state.currentImageIndex].full = rotatedImg.src;
-            state.imageList[state.currentImageIndex].thumbnail = rotatedImg.src;
-            state.imageList[state.currentImageIndex].width = rotatedImg.width;
-            state.imageList[state.currentImageIndex].height = rotatedImg.height;
-        }
-        
-        main_render_image_centered(rotatedImg);
-        console.log(`图片已向${direction === 'left' ? '左' : '右'}旋转`);
-    };
-    rotatedImg.src = rotatedDataUrl;
-}
 
 function main_update_image_rotation_fallback(img, direction) {
     const canvas = document.createElement('canvas');
@@ -2241,113 +3101,6 @@ function main_show_error_dialog(title, message, retryCallback = null) {
 // === 图像导入功能 ===
 // 图片导入、拍照保存、PDF处理
 
-/**
- * 导入图片文件（支持多选，批量导入时用 Rust 并行生成缩略图）
- */
-async function main_load_image() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.multiple = true;
-    
-    input.onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
-        
-        // 保存当前源数据，确保切换前批注不丢失
-        if (currentSourceId) {
-            main_save_current_source_data();
-        }
-        
-        const hasLargeImage = files.some(file => file.size > 2.5 * 1024 * 1024);
-        
-        // 如果有大图片或者多个文件，显示加载动画
-        if (files.length > 1 || hasLargeImage) {
-            main_show_loading_overlay(window.i18n?.format_translate('loading.readingImages') || '正在读取图片...');
-        }
-        
-        const imageDataList = [];
-        
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            
-            if (files.length > 1 || file.size > 2.5 * 1024 * 1024) {
-                main_update_loading_progress(window.i18n?.format_translate('loading.readingImage', { current: i + 1, total: files.length }) || `正在读取图片 ${i + 1}/${files.length}...`);
-            }
-            
-            const blobUrl = URL.createObjectURL(file);
-            
-            const imageName = file.name || window.i18n?.format_translate('sidebar.imageAlt', { n: state.imageList.length + imageDataList.length + 1 }) || `图片${state.imageList.length + imageDataList.length + 1}`;
-            imageDataList.push({
-                data: blobUrl,
-                blob: file,
-                name: imageName
-            });
-        }
-        
-        for (let i = 0; i < imageDataList.length; i++) {
-            const imgData = imageDataList[i];
-            const isLast = (i === imageDataList.length - 1);
-            
-            const img = new Image();
-            await new Promise((resolve) => {
-                img.onload = () => resolve();
-                img.onerror = () => {
-                    console.error(`加载图片失败: ${imgData.name}`);
-                    resolve();
-                };
-                img.src = imgData.data;
-            });
-            
-            const newImgData = {
-                full: imgData.data,
-                thumbnail: imgData.data,
-                name: imgData.name,
-                width: img.width,
-                height: img.height,
-                strokeHistory: [],
-                baseImageURL: null,
-                viewState: {
-                    scale: 1,
-                    canvasX: -(DRAW_CONFIG.canvasW - DRAW_CONFIG.screenW) / 2,
-                    canvasY: -(DRAW_CONFIG.canvasH - DRAW_CONFIG.screenH) / 2
-                },
-                sourceId: main_create_source_id('pic')
-            };
-            
-            state.imageList.push(newImgData);
-            state.currentImageIndex = state.imageList.length - 1;
-            state.currentImage = img;
-            state.currentFolderIndex = -1;
-            state.currentFolderPageIndex = -1;
-            
-            main_delete_draw_canvas();
-            state.strokeHistory = [];
-            state.baseImageURL = null;
-            state.baseImageObj = null;
-            history_delete_all();
-            state.scale = 1;
-            state.canvasX = -(DRAW_CONFIG.canvasW - DRAW_CONFIG.screenW) / 2;
-            state.canvasY = -(DRAW_CONFIG.canvasH - DRAW_CONFIG.screenH) / 2;
-            main_update_move_bound();
-            main_update_canvas_transform();
-            main_update_history_button_status();
-            
-            if (isLast) {
-                main_render_image_centered(img);
-            }
-        }
-        
-        // 如果显示了加载动画，无论文件数量多少，都需要隐藏
-        if (files.length > 1 || hasLargeImage) {
-            main_hide_loading_overlay();
-        }
-        
-        console.log(`已导入 ${imageDataList.length} 张图片`);
-    };
-    
-    input.click();
-}
 
 async function main_save_image_to_list_no_highlight(img, name, captureFilter) {
     const blob = await fetch(img.src).then(r => r.blob());
@@ -2438,6 +3191,71 @@ function main_delete_all_pdf_blob_urls() {
     DocLoader.revoke_all_document_blob_urls();
 }
 
+// ====== 后台文档内存管理（LRU 卸载 + 懒重载） ======
+
+// 同时保持解析态（pdfDoc）的最大文档数；超出时卸载最久未使用的后台文档。
+// 卸载仅销毁 pdfDoc（内存大头），pages 元数据与批注保留，切回时按 reloadPath 懒重载。
+const MAX_LOADED_DOCS = 6;
+
+/**
+ * 确保文件夹的 pdfDoc 处于已加载状态；后台被卸载的文档在此处重新加载。
+ * @returns {Promise<boolean>} 是否可用（加载失败返回 false，调用方放弃打开）
+ */
+async function main_ensure_folder_doc(folder) {
+    if (!folder) return false;
+    if (folder.pdfDoc) return true;
+    if (!folder.reloadPath) {
+        console.warn('[tabs] 文档缺少重载路径，无法恢复:', folder.name);
+        return false;
+    }
+    try {
+        const ready = await main_wait_pdfjs();
+        if (!ready) return false;
+        const { fs } = window.__TAURI__;
+        let data = await fs.readFile(folder.reloadPath);
+        if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+        const doc = await pdfjsLib.getDocument({
+            data: data,
+            enableXfa: false,
+            useSystemFonts: false,
+            isEvalSupported: false,
+            standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
+            cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
+            cMapPacked: true
+        }).promise;
+        folder.pdfDoc = doc;
+        folder.totalPages = doc.numPages;
+        console.log('[tabs] 已重新加载后台文档:', folder.name);
+        return true;
+    } catch (e) {
+        console.error('[tabs] 后台文档重载失败:', folder?.name, e);
+        return false;
+    }
+}
+
+/**
+ * 卸载最久未使用的后台文档 pdfDoc，控制多标签场景的常驻内存。
+ * 仅处理 PDF 来源标签（Word 转换产物可能被缓存清理，标记 fromWord 的跳过）。
+ */
+function main_evict_background_docs(activeFolder = window.documentReaderManager?._active_folder) {
+    const loaded = state.fileList.filter(f => f?.pdfDoc);
+    if (loaded.length <= MAX_LOADED_DOCS) return;
+    const candidates = loaded
+        .filter(f => f !== activeFolder && !f.fromWord)
+        .sort((a, b) => (a._last_used || 0) - (b._last_used || 0));
+    let excess = loaded.length - MAX_LOADED_DOCS;
+    for (const f of candidates) {
+        if (excess <= 0) break;
+        excess--;
+        const doc = f.pdfDoc;
+        f.pdfDoc = null;
+        try { doc.destroy(); } catch (e) {
+            console.error('[tabs] 卸载后台文档失败:', f.name, e);
+        }
+        console.log('[tabs] 内存优化：已卸载后台文档', f.name);
+    }
+}
+
 // ===== 最近打开文件 =====
 const RECENT_FILES_KEY = 'viewstage_recent_files';
 const MAX_RECENT_FILES = 20;
@@ -2491,6 +3309,8 @@ window.main_setup_all_events = main_setup_all_events;
 window.main_setup_pdf_file_open = main_setup_pdf_file_open;
 window.main_show_error_dialog = main_show_error_dialog;
 window.main_handle_resize = main_handle_resize;
+window.main_sync_screen_size = main_sync_screen_size;
+window.main_apply_canvas_geometry = main_apply_canvas_geometry;
 window.main_submit_stroke = main_submit_stroke;
 window.main_update_mode = main_update_mode;
 window.main_update_canvas_bg_color = main_update_canvas_bg_color;
@@ -2511,7 +3331,9 @@ window.main_update_canvas_transform = main_update_canvas_transform;
 window.main_init_pdfjs = main_init_pdfjs;
 window.main_hide_window = main_hide_window;
 window.main_toggle_maximize = main_toggle_maximize;
+window.main_apply_titlebar_style = main_apply_titlebar_style;
 window.main_submit_close_window = main_submit_close_window;
+window.main_is_window_transitioning = main_is_window_transitioning;
 window.main_add_recent_file = main_add_recent_file;
 window.main_load_recent_files = main_load_recent_files;
 window.main_wait_pdfjs = main_wait_pdfjs;
@@ -2522,6 +3344,8 @@ window.main_update_tabs = main_update_tabs;
 window.main_switch_home = main_switch_home;
 window.main_switch_to_tab = main_switch_to_tab;
 window.main_close_tab = main_close_tab;
+window.main_ensure_folder_doc = main_ensure_folder_doc;
+window.main_evict_background_docs = main_evict_background_docs;
 window.StrokeQuadTree = StrokeQuadTree;
 
 if (document.readyState === 'loading') {
@@ -2531,35 +3355,3 @@ if (document.readyState === 'loading') {
 } else {
     setTimeout(main_update_tabs, 100);
 }
-
-/** 同步所有 overlay DPR（主界面 + 阅读器 + 黑板） */
-window.sync_all_overlay_dpr = function () {
-    const dpr = window.DRAW_CONFIG?.overlayDpr;
-    if (dpr == null || dpr <= 0) return;
-    // 主界面
-    if (window.batchDrawManager) {
-        window.batchDrawManager.resize_overlay(
-            DRAW_CONFIG.screenW || 800,
-            DRAW_CONFIG.screenH || 600
-        );
-    }
-    // 阅读器
-    const reader = window.documentReaderManager;
-    if (reader?.batch_draw?._overlayCanvas) {
-        const overlay = reader.batch_draw._overlayCanvas;
-        reader.batch_draw._overlayDpr = dpr;
-        overlay.width = Math.ceil(window.innerWidth * dpr);
-        overlay.height = Math.ceil(window.innerHeight * dpr);
-        overlay.style.width = window.innerWidth + 'px';
-        overlay.style.height = window.innerHeight + 'px';
-    }
-    // 黑板
-    const bb = window.blackboardManager;
-    if (bb?.overlay_canvas && bb.drawing_engine?.batch_draw) {
-        bb.drawing_engine.batch_draw._overlayDpr = dpr;
-        bb.overlay_canvas.width = Math.ceil(bb.screen_w * dpr);
-        bb.overlay_canvas.height = Math.ceil(bb.screen_h * dpr);
-        bb.overlay_canvas.style.width = bb.screen_w + 'px';
-        bb.overlay_canvas.style.height = bb.screen_h + 'px';
-    }
-};

@@ -1,4 +1,4 @@
-// lib.rs — ViewStage Rust 后端
+// lib.rs — ViewPDF Rust 后端
 // Tauri IPC 命令注册入口，集成了图像处理、设置管理、文件转换、更新检测等核心模块
 
 use tauri::{Manager, Emitter};
@@ -70,6 +70,98 @@ fn dir_fetch_cache(app: tauri::AppHandle) -> Result<String, String> {
     Ok(paths.cache_dir.to_string_lossy().to_string())
 }
 
+/// Tauri IPC 命令：获取 Word 转换缓存目录总字节数
+#[tauri::command]
+fn word_cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    
+    if !word_cache.exists() {
+        return Ok(0);
+    }
+    
+    Ok(directory_calc_size(&word_cache))
+}
+
+/// Tauri IPC 命令：清空 Word 转换缓存
+#[tauri::command]
+fn word_cache_delete_all(app: tauri::AppHandle) -> Result<String, String> {
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    
+    if !word_cache.exists() {
+        return Ok("Word 转换缓存目录不存在".to_string());
+    }
+    
+    let (cleared_size, cleared_files) = directory_delete_contents(&word_cache);
+    let _ = std::fs::remove_dir(&word_cache);
+    
+    log::info!("清除 Word 转换缓存: {} 字节, {} 个文件", cleared_size, cleared_files);
+    
+    Ok(format!("已清除 {} 个 Word 转换缓存文件，共 {:.2} MB", cleared_files, cleared_size as f64 / 1024.0 / 1024.0))
+}
+
+/// Tauri IPC 命令：以天为单位格式化当前日期（供 JS 比较自动清理间隔）
+#[tauri::command]
+fn word_cache_last_clear(app: tauri::AppHandle) -> Result<(String, u64), String> {
+    let paths = AppPaths::new(&app)?;
+    let config_file = &paths.config_path;
+    
+    if !config_file.exists() {
+        return Ok(("".to_string(), 0));
+    }
+    
+    let config_content = std::fs::read_to_string(config_file).map_err(|e| e.to_string())?;
+    let config: serde_json::Value = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    let days = config.get("wordCacheClearDays").and_then(|v| v.as_u64()).unwrap_or(0);
+    let last = config.get("lastWordCacheClearDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    
+    Ok((last, days))
+}
+
+/// 递归计算目录总大小（字节）
+fn directory_calc_size(path: &std::path::Path) -> u64 {
+    let mut size = 0;
+    if path.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    size += directory_calc_size(&path);
+                } else {
+                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+    }
+    size
+}
+
+/// 递归清空目录内容（不删除目录本身）
+fn directory_delete_contents(path: &std::path::Path) -> (u64, u32) {
+    let mut size = 0u64;
+    let mut count = 0u32;
+    
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                let (s, c) = directory_delete_contents(&entry_path);
+                size += s;
+                count += c;
+                let _ = std::fs::remove_dir(&entry_path);
+            } else {
+                size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(&entry_path).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    (size, count)
+}
+
 /// Tauri IPC 命令：获取缓存目录总字节数
 #[tauri::command]
 fn cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
@@ -77,23 +169,6 @@ fn cache_fetch_size(app: tauri::AppHandle) -> Result<u64, String> {
     
     if !paths.cache_dir.exists() {
         return Ok(0);
-    }
-    
-    fn directory_calc_size(path: &std::path::Path) -> u64 {
-        let mut size = 0;
-        if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        size += directory_calc_size(&path);
-                    } else {
-                        size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    }
-                }
-            }
-        }
-        size
     }
     
     Ok(directory_calc_size(&paths.cache_dir))
@@ -106,29 +181,6 @@ fn cache_delete_all(app: tauri::AppHandle) -> Result<String, String> {
     
     if !paths.cache_dir.exists() {
         return Ok("缓存目录不存在".to_string());
-    }
-    
-    fn directory_delete_contents(path: &std::path::Path) -> (u64, u32) {
-        let mut size = 0u64;
-        let mut count = 0u32;
-        
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    let (s, c) = directory_delete_contents(&entry_path);
-                    size += s;
-                    count += c;
-                    let _ = std::fs::remove_dir(&entry_path);
-                } else {
-                    size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    if std::fs::remove_file(&entry_path).is_ok() {
-                        count += 1;
-                    }
-                }
-            }
-        }
-        (size, count)
     }
     
     let (cleared_size, cleared_files) = directory_delete_contents(&paths.cache_dir);
@@ -157,11 +209,10 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if name.starts_with("doc_annotations_") && name.ends_with(".json") {
-                    if std::fs::remove_file(&path).is_ok() {
+                if name.starts_with("doc_annotations_") && name.ends_with(".json")
+                    && std::fs::remove_file(&path).is_ok() {
                         deleted += 1;
                     }
-                }
             }
         }
     }
@@ -177,11 +228,10 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if name.starts_with("doc_annotations_") && name.ends_with(".json") {
-                    if std::fs::remove_file(&path).is_ok() {
+                if name.starts_with("doc_annotations_") && name.ends_with(".json")
+                    && std::fs::remove_file(&path).is_ok() {
                         deleted += 1;
                     }
-                }
             }
         }
     }
@@ -190,9 +240,22 @@ fn cache_delete_doc_annotations(app: tauri::AppHandle) -> Result<String, String>
     Ok(format!("已清除 {} 个文档批注缓存文件", deleted))
 }
 
+/// Tauri IPC 命令：前端完成退出前的保存（批注/阅读位置）后调用，
+/// 置位确认标志并关闭主窗口（放行 on_window_event 中的拦截）
+#[tauri::command]
+fn app_confirm_close(app: tauri::AppHandle) {
+    CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.close();
+    }
+}
+
 /// Tauri IPC 命令：检查是否达到自动清理缓存的间隔，若达到则执行清理
 #[tauri::command]
 fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
+    // 与 settings_save_all 共用配置锁：本函数会「读配置 → 写 lastCacheClearDate」，
+    // 不加锁会与设置保存互相覆盖
+    let _config_guard = config_lock();
     let paths = AppPaths::new(&app)?;
     let config_file = &paths.config_path;
     
@@ -200,7 +263,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
     
-    let config_content = match std::fs::read_to_string(&config_file) {
+    let config_content = match std::fs::read_to_string(config_file) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("cache_validate_auto_clear 读取配置文件失败: {}，跳过自动清除", e);
@@ -240,7 +303,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         let mut updated_config = config.clone();
         updated_config["lastCacheClearDate"] = serde_json::json!(today);
         let temp_path = config_file.with_extension("json.tmp");
-        write_atomic(&temp_path, &config_file, &updated_config)?;
+        write_atomic(&temp_path, config_file, &updated_config)?;
         log::info!("首次设置自动清除缓存日期");
         return Ok(false);
     }
@@ -271,7 +334,7 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
                     }
                 }
             }
-            directory_delete_contents(&cache_dir);
+            directory_delete_contents(cache_dir);
         }
         
         // 清理 config_dir/doc_state 中超过 15 天未打开的文档状态
@@ -334,9 +397,92 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
         }
         
         let temp_path = config_file.with_extension("json.tmp");
-        write_atomic(&temp_path, &config_file, &updated_config)?;
+        write_atomic(&temp_path, config_file, &updated_config)?;
         
         log::info!("自动清除缓存完成");
+        return Ok(true);
+    }
+    
+    Ok(false)
+}
+
+/// Tauri IPC 命令：检查是否达到自动清除 Word 转换缓存的间隔，若达到则执行清理
+#[tauri::command]
+fn word_cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
+    // 同 cache_validate_auto_clear：与设置保存共用配置锁
+    let _config_guard = config_lock();
+    let paths = AppPaths::new(&app)?;
+    let config_file = &paths.config_path;
+    
+    if !config_file.exists() {
+        return Ok(false);
+    }
+    
+    let config_content = match std::fs::read_to_string(config_file) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("word_cache_validate_auto_clear 读取配置文件失败: {}，跳过自动清除", e);
+            return Ok(false);
+        }
+    };
+    
+    let config: serde_json::Value = match serde_json::from_str(&config_content) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("word_cache_validate_auto_clear 解析配置文件失败: {}，跳过自动清除", e);
+            return Ok(false);
+        }
+    };
+    
+    let auto_clear_days = config.get("wordCacheClearDays")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    
+    if auto_clear_days == 0 {
+        log::info!("自动清除 Word 转换缓存已关闭");
+        return Ok(false);
+    }
+    
+    let last_clear_date = config.get("lastWordCacheClearDate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    
+    if last_clear_date == today {
+        log::info!("今日已执行过自动清除 Word 转换缓存");
+        return Ok(false);
+    }
+    
+    if last_clear_date.is_empty() {
+        let mut updated_config = config.clone();
+        updated_config["lastWordCacheClearDate"] = serde_json::json!(today);
+        let temp_path = config_file.with_extension("json.tmp");
+        write_atomic(&temp_path, config_file, &updated_config)?;
+        log::info!("首次设置自动清除 Word 转换缓存日期");
+        return Ok(false);
+    }
+    
+    let last_date = chrono::NaiveDate::parse_from_str(last_clear_date, "%Y-%m-%d")
+        .map_err(|e| format!("Failed to parse last word cache clear date: {}", e))?;
+    let today_date = chrono::Local::now().date_naive();
+    
+    let days_since_last_clear = (today_date - last_date).num_days();
+    
+    if days_since_last_clear >= auto_clear_days as i64 {
+        log::info!("执行自动清除 Word 转换缓存，距上次清除 {} 天", days_since_last_clear);
+        
+        let word_cache = paths.cache_dir.join("word-cache");
+        if word_cache.exists() {
+            directory_delete_contents(&word_cache);
+            log::info!("自动清除 Word 转换缓存完成");
+        }
+        
+        let mut updated_config = config.clone();
+        updated_config["lastWordCacheClearDate"] = serde_json::json!(today);
+        let temp_path = config_file.with_extension("json.tmp");
+        write_atomic(&temp_path, config_file, &updated_config)?;
+        
         return Ok(true);
     }
     
@@ -405,7 +551,7 @@ fn theme_list_user(app: tauri::AppHandle) -> Result<Vec<ThemeInfo>, String> {
     }
 
     let mut themes = Vec::new();
-    let entries = std::fs::read_dir(&theme_dir)
+    let entries = std::fs::read_dir(theme_dir)
         .map_err(|e| format!("Failed to read theme dir: {}", e))?;
 
     for entry in entries {
@@ -512,7 +658,7 @@ fn theme_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let theme_base = &paths.themes_dir;
 
     // 规范化路径防止路径遍历
-    let theme_base_canonical = std::fs::canonicalize(&theme_base)
+    let theme_base_canonical = std::fs::canonicalize(theme_base)
         .map_err(|_| "Themes directory not found".to_string())?;
     let theme_dir = theme_base.join(&name);
     let theme_dir_canonical = std::fs::canonicalize(&theme_dir)
@@ -534,6 +680,64 @@ fn theme_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 极简 base64 编码（仅用于主题预览图内嵌 data URL，避免为此引入依赖）
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Tauri IPC 命令：读取用户主题的预览图，返回 data URL（前端直接塞进 <img src>）
+#[tauri::command]
+fn theme_get_preview(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("Theme name cannot be empty".to_string());
+    }
+
+    let paths = AppPaths::new(&app)?;
+    let theme_base = &paths.themes_dir;
+    let theme_base_canonical = std::fs::canonicalize(theme_base)
+        .map_err(|_| "Themes directory not found".to_string())?;
+    let theme_dir = theme_base.join(&name);
+    let theme_dir_canonical = std::fs::canonicalize(&theme_dir)
+        .map_err(|_| format!("Theme '{}' not found", name))?;
+    if !theme_dir_canonical.starts_with(&theme_base_canonical) {
+        return Err("Invalid theme name".to_string());
+    }
+
+    const CANDIDATES: [(&str, &str); 5] = [
+        ("preview.png", "image/png"),
+        ("preview.jpg", "image/jpeg"),
+        ("preview.jpeg", "image/jpeg"),
+        ("preview.webp", "image/webp"),
+        ("preview.gif", "image/gif"),
+    ];
+    for (file, mime) in CANDIDATES {
+        let p = theme_dir_canonical.join(file);
+        if p.is_file() {
+            let data = std::fs::read(&p)
+                .map_err(|e| format!("Failed to read preview: {}", e))?;
+            // 预览图限 4MB，防止异常包撑爆 IPC
+            if data.len() > 4 * 1024 * 1024 {
+                return Err("Preview image too large (>4MB)".to_string());
+            }
+            return Ok(format!("data:{};base64,{}", mime, base64_encode(&data)));
+        }
+    }
+
+    Err(format!("Theme '{}' has no preview image", name))
+}
+
 /// 在 ZIP 中按文件名模糊匹配条目索引（忽略路径前缀差异）
 fn zip_find_entry(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Option<usize> {
     for i in 0..archive.len() {
@@ -547,16 +751,61 @@ fn zip_find_entry(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Opti
     None
 }
 
-/// 从 ZIP 中读取指定文件名的文本内容
+/// 从 ZIP 中读取指定文件名的文本内容（限长，防超大条目撑爆内存）
 fn zip_read_text(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Result<String, String> {
     let idx = zip_find_entry(archive, target)
         .ok_or_else(|| format!("Missing {} in .vst file", target))?;
     let mut entry = archive.by_index(idx)
         .map_err(|e| format!("Failed to read {}: {}", target, e))?;
     let mut content = String::new();
-    entry.read_to_string(&mut content)
+    entry.by_ref().take(MAX_THEME_TEXT_BYTES + 1).read_to_string(&mut content)
         .map_err(|e| format!("Failed to read {}: {}", target, e))?;
+    if content.len() as u64 > MAX_THEME_TEXT_BYTES {
+        return Err(format!("{} in .vst file is too large (limit {} bytes)", target, MAX_THEME_TEXT_BYTES));
+    }
     Ok(content)
+}
+
+/// 主题包单条目解压上限（32 MiB）——正常主题只含 json/css/svg，远小于此值
+const MAX_THEME_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+/// 主题包解压总量上限（256 MiB）——防 zip bomb 撑爆内存/磁盘
+const MAX_THEME_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+/// 主题元数据（config.json / theme.json）读取上限（1 MiB）
+const MAX_THEME_TEXT_BYTES: u64 = 1024 * 1024;
+
+/// 把 ZIP 条目名规范化为可安全 join 到 target_dir 的相对路径。
+///
+/// 返回 `None` 表示该条目必须被丢弃。拒绝：
+/// * 绝对路径（`/etc/x`、`C:/x`、`C:\x`）—— 任何形式都会逃出 target_dir；
+/// * 任何 `..` 片段（Zip Slip 的经典载荷）；
+/// * 空片段（`a//b`）与 `.` 片段 —— 说明条目名不规范且可能被不同层解释成不同路径；
+/// * 含 NUL、`:` 的片段 —— NUL 截断与 NTFS 数据流。
+fn zip_entry_relative_path(entry_name: &str) -> Option<String> {
+    let normalized = entry_name.replace('\\', "/");
+
+    if normalized.starts_with('/') {
+        return None;
+    }
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return None;
+    }
+
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in normalized.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return None;
+        }
+        if seg.contains('\0') || seg.contains(':') {
+            return None;
+        }
+        segments.push(seg);
+    }
+    if segments.is_empty() {
+        return None;
+    }
+
+    Some(segments.join("/"))
 }
 
 /// Tauri IPC 命令：从 .vst 文件导入主题
@@ -584,7 +833,7 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
     let theme_base = &paths.themes_dir;
 
     if !theme_base.exists() {
-        std::fs::create_dir_all(&theme_base)
+        std::fs::create_dir_all(theme_base)
             .map_err(|e| format!("Failed to create theme dir: {}", e))?;
     }
 
@@ -711,6 +960,7 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
     }
 
     let prefix_len = common_prefix.len();
+    let mut total_bytes: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)
             .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
@@ -720,11 +970,41 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
         }
 
         let entry_name = entry.name().replace('\\', "/");
-        let relative = if prefix_len > 0 && entry_name.starts_with(&common_prefix) {
-            entry_name[prefix_len..].to_string()
-        } else {
-            entry_name.clone()
+
+        // Zip Slip 防护：条目名必须是可安全落到 target_dir 内的相对路径
+        let Some(validated) = zip_entry_relative_path(&entry_name) else {
+            log::warn!("Skipping unsafe zip entry (absolute or contains '..'): {:?}", entry_name);
+            continue;
         };
+
+        let relative = if prefix_len > 0 && validated.starts_with(&common_prefix) {
+            let stripped = validated[prefix_len..].to_string();
+            match zip_entry_relative_path(&stripped) {
+                Some(r) => r,
+                None => {
+                    log::warn!("Skipping unsafe zip entry after prefix strip: {:?}", entry_name);
+                    continue;
+                }
+            }
+        } else {
+            validated
+        };
+
+        // 解压体积上限（单条目 + 总量），防 zip bomb
+        let entry_size = entry.size();
+        if entry_size > MAX_THEME_ENTRY_BYTES {
+            return Err(format!(
+                "Entry '{}' is too large ({} bytes, limit {})",
+                entry_name, entry_size, MAX_THEME_ENTRY_BYTES
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(entry_size);
+        if total_bytes > MAX_THEME_TOTAL_BYTES {
+            return Err(format!(
+                "Theme archive unpacks to more than {} bytes",
+                MAX_THEME_TOTAL_BYTES
+            ));
+        }
 
         let target_path = target_dir.join(&relative);
 
@@ -734,8 +1014,14 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
         }
 
         let mut buffer = Vec::new();
-        entry.read_to_end(&mut buffer)
+        entry.by_ref().take(MAX_THEME_ENTRY_BYTES + 1).read_to_end(&mut buffer)
             .map_err(|e| format!("Failed to read entry '{}': {}", entry_name, e))?;
+        if buffer.len() as u64 > MAX_THEME_ENTRY_BYTES {
+            return Err(format!(
+                "Entry '{}' exceeds the {} byte limit while reading",
+                entry_name, MAX_THEME_ENTRY_BYTES
+            ));
+        }
 
         let mut out_file = std::fs::File::create(&target_path)
             .map_err(|e| format!("Failed to create file {:?}: {}", target_path, e))?;
@@ -758,41 +1044,25 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static MIRROR_STATE: AtomicBool = AtomicBool::new(false);
 static OOBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MAIN_SCRIPT_LOADED: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+/// 主窗口关闭确认标志：前端保存批注/位置完成后由 app_confirm_close 置位，
+/// on_window_event 据此放行 CloseRequested（否则拦截并通知前端先保存）
+static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// config.json 读-改-写互斥锁。
+/// `settings_save_all` 与 `cache_validate_auto_clear` / `word_cache_validate_auto_clear`
+/// 都会「读配置 → 改一个字段 → 原子写回」，并发时后写者会拿旧快照覆盖前写者，
+/// 静默丢掉用户设置。所有读写 config.json 的命令都必须持此锁。
+static CONFIG_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 获取配置锁；`panic = "abort"` 下不会有中毒状态，这里仍容错取值
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ==================== 设置窗口 ====================
-
-/// Tauri IPC 命令：打开或聚焦设置窗口（600×600，无边框，置顶）
-#[tauri::command]
-async fn window_show_settings(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
-    
-    if let Some(window) = app.get_webview_window("settings") {
-        window.set_focus().map_err(|e| format!("Failed to focus settings window: {}", e))?;
-        return Ok(());
-    }
-    
-    let window = WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        tauri::WebviewUrl::App("settings.html".into())
-    )
-    .title("设置")
-    .inner_size(960.0, 540.0)
-    .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .center()
-    .build()
-    .map_err(|e| format!("Failed to create settings window: {}", e))?;
-
-    window.set_focus().map_err(|e| format!("Failed to focus new settings window: {}", e))?;
-
-    Ok(())
-}
 
 /// Tauri IPC 命令：切换窗口最大化/还原状态
 #[tauri::command]
@@ -805,20 +1075,6 @@ async fn window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
         window.maximize().map_err(|e| format!("Failed to maximize: {}", e))?;
     }
     Ok(())
-}
-
-/// Tauri IPC 命令：更新镜像状态并通知前端
-#[tauri::command]
-async fn mirror_update_state(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
-    MIRROR_STATE.store(enabled, Ordering::SeqCst);
-    let _ = app.emit("mirror-changed", enabled);
-    Ok(())
-}
-
-/// Tauri IPC 命令：获取当前镜像状态
-#[tauri::command]
-async fn mirror_fetch_state() -> Result<bool, String> {
-    Ok(MIRROR_STATE.load(Ordering::SeqCst))
 }
 
 /// Tauri IPC 命令：获取应用版本号（编译时注入）
@@ -856,46 +1112,6 @@ struct GitHubRelease {
     assets: Vec<GitHubAsset>,
 }
 
-/// SECTL latest-tag API 响应
-#[derive(Debug, Deserialize)]
-struct SectlLatestTagResponse {
-    #[allow(dead_code)]
-    success: bool,
-    #[allow(dead_code)]
-    project: Option<SectlProject>,
-    latest: Option<SectlLatestRelease>,
-    tag: Option<String>,
-    #[allow(dead_code)]
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct SectlProject {
-    id: String,
-    name: String,
-    slug: String,
-    repo: String,
-    cached_latest_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SectlLatestRelease {
-    #[allow(dead_code)]
-    tag: String,
-    name: Option<String>,
-    #[allow(dead_code)]
-    source: Option<String>,
-    html_url: Option<String>,
-    #[allow(dead_code)]
-    published_at: Option<String>,
-    #[allow(dead_code)]
-    prerelease: Option<bool>,
-    #[allow(dead_code)]
-    draft: Option<bool>,
-}
-
 /// 版本检测结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UpdateCheckResult {
@@ -931,11 +1147,10 @@ fn version_validate_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// 校验 URL 是否为合法的 GitHub 域名，支持 gh-proxy.com / ghproxy.sectl.cn 等镜像前缀
+/// 校验 URL 是否为合法的 GitHub 域名，支持 gh-proxy.com 等通用镜像前缀
 fn url_validate_github(url: &str) -> Result<(), String> {
     let known_mirror_prefixes = [
         "https://gh-proxy.com/",
-        "https://ghproxy.sectl.cn/",
     ];
 
     for prefix in &known_mirror_prefixes {
@@ -963,95 +1178,137 @@ fn url_validate_github(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 把前端/用户提供的文件名清洗为可安全 join 的单一文件名。
+///
+/// 只取最后一段并拒绝 `..`/`.`/空/含 `:`/含 NUL 的名字 ——
+/// 否则 `..\..\x.exe` 这类名字会把文件写到目标目录之外。
+fn sanitize_file_name(raw: &str) -> Result<String, String> {
+    let normalized = raw.replace('\\', "/");
+    let base = normalized.rsplit('/').next().unwrap_or("");
+    if base.is_empty() || base == "." || base == ".." {
+        return Err(format!("Invalid file name: {}", raw));
+    }
+    if base.contains(':') || base.contains('\0') {
+        return Err(format!("Invalid file name: {}", raw));
+    }
+    Ok(base.to_string())
+}
+
+/// 遥测出口域名白名单：POST 走自建 Appwrite，GET 走 ipapi.co 查 IP 归属地。
+///
+/// 两个命令都直接接受前端传入的 URL，若不做域名限制，页面内任意脚本
+/// 都能拿它当 SSRF 跳板访问内网。
+const TELEMETRY_ALLOWED_HOSTS: [&str; 2] = ["appwrite.sectl.cn", "ipapi.co"];
+
+fn url_validate_telemetry(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("Invalid telemetry URL scheme: {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if !TELEMETRY_ALLOWED_HOSTS.contains(&host) {
+        return Err(format!("Telemetry URL host not allowed: {}", host));
+    }
+    Ok(())
+}
+
+/// 校验 MD5 十六进制串（前端 `main_calculate_md5` 产出 32 位小写十六进制）。
+///
+/// 该值会被直接拼进缓存文件名，不校验即可用 `../../x` 穿越目录。
+fn validate_hex_md5(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.len() != 32 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("Invalid file hash: {}", raw));
+    }
+    Ok(normalized)
+}
+
 /// Tauri IPC 命令：检查是否有新版本
 ///
-/// 通过 SECTL API 获取最新 Tag 并与当前编译版本比较，
-/// 有更新时再从 GitHub 拉取具体 Release 数据（已确认版本，非匿名探测）
+/// 直接通过 GitHub Releases API 获取最新发布（tag/说明/资产），
+/// 与当前编译版本比较决定是否提示更新
 #[tauri::command]
 async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION");
-    
+
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
         .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
-    
-    // 1. 通过 SECTL 获取最新 Tag
-    let response = client
-        .get("https://appwrite.sectl.cn/api/software/latest-tag?projectSlug=ViewStage")
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
-    
-    if !response.status().is_success() {
-        return Err(format!("SECTL API error: {}", response.status()));
+
+    // 候选地址：直连优先，失败回退公共镜像（国内网络常无法直连 GitHub）
+    let latest_candidates = [
+        "https://api.github.com/repos/SECTL/ViewPDF/releases/latest".to_string(),
+        "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/latest"
+            .to_string(),
+    ];
+
+    let mut latest_release: Option<GitHubRelease> = None;
+    let mut last_err = String::from("未知错误");
+    for url in &latest_candidates {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    last_err = format!("GitHub API error: {}", resp.status());
+                    continue;
     }
-    
-    let sectl: SectlLatestTagResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse SECTL response: {}", e))?;
-    
-    if !sectl.success {
-        let desc = sectl.error_description.unwrap_or_default();
-        return Err(format!("SECTL API error: {}", desc));
-    }
-    
-    let latest_tag = sectl.tag.ok_or("Missing tag in SECTL response")?;
-    if latest_tag.is_empty() {
-        return Err("Invalid SECTL response: empty tag".to_string());
-    }
-    
-    let latest_version = latest_tag.trim_start_matches('v');
-    let has_update = version_validate_newer(current_version, latest_version);
-    
-    // 2. 有更新时获取该 Release 的详细数据（GitHub，已知版本）
-    let release = if has_update {
-        let github_url = format!(
-            "https://api.github.com/repos/ospneam/ViewStage/releases/tags/{}",
-            latest_tag
-        );
-        match client.get(&github_url).send().await {
-            Ok(resp) if resp.status().is_success() => resp.json::<GitHubRelease>().await.ok(),
-            _ => {
-                // 降级：用 SECTL 数据构建最小 release
-                let sectl_latest = sectl.latest.as_ref();
-                Some(GitHubRelease {
-                    tag_name: latest_tag.clone(),
-                    name: sectl_latest.and_then(|l| l.name.clone()),
-                    html_url: sectl_latest
-                        .and_then(|l| l.html_url.clone())
-                        .unwrap_or_default(),
-                    body: None,
-                    assets: vec![],
-                })
+                match resp.json::<GitHubRelease>().await {
+                    Ok(r) => {
+                        latest_release = Some(r);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("解析 GitHub 响应失败: {}", e);
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("网络错误: {}", e);
+                continue;
             }
         }
-    } else {
-        None
-    };
-    
-    // 3. 尝试获取当前版本的 Release 信息（GitHub，已知版本）
+    }
+    let latest_release =
+        latest_release.ok_or_else(|| format!("无法获取最新版本（已尝试直连与镜像）: {}", last_err))?;
+
+    let latest_version = latest_release.tag_name.trim_start_matches('v').to_string();
+    if latest_version.is_empty() {
+        return Err("Invalid GitHub response: empty tag_name".to_string());
+    }
+    let has_update = version_validate_newer(current_version, &latest_version);
+
+    // 2. 当前版本的 Release 信息（"已是最新"时展示对应说明，缺失不影响流程）
     let current_tag = format!("v{}", current_version);
-    let current_release = match client
-        .get(&format!(
-            "https://api.github.com/repos/ospneam/ViewStage/releases/tags/{}",
+    let current_candidates = [
+        format!(
+            "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
             current_tag
-        ))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => resp.json::<GitHubRelease>().await.ok(),
-        _ => None,
-    };
-    
+        ),
+        format!(
+            "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
+            current_tag
+        ),
+    ];
+    let mut current_release: Option<GitHubRelease> = None;
+    for url in &current_candidates {
+        if let Ok(resp) = client.get(url).send().await {
+            if resp.status().is_success() {
+                if let Ok(r) = resp.json::<GitHubRelease>().await {
+                    current_release = Some(r);
+                    break;
+                }
+            }
+        }
+    }
+
     Ok(UpdateCheckResult {
         has_update,
         current_version: current_version.to_string(),
-        latest_version: latest_version.to_string(),
-        release,
+        latest_version,
+        release: if has_update { Some(latest_release) } else { None },
         current_release,
     })
 }
@@ -1059,8 +1316,10 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
 /// 遥测 HTTP POST 请求（绕过 CORS）
 #[tauri::command]
 async fn telemetry_http_post(url: String, body: String) -> Result<String, String> {
+    url_validate_telemetry(&url)?;
+
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1090,8 +1349,10 @@ async fn telemetry_http_post(url: String, body: String) -> Result<String, String
 /// 遥测 HTTP GET 请求（绕过 CORS）
 #[tauri::command]
 async fn telemetry_http_get(url: String) -> Result<String, String> {
+    url_validate_telemetry(&url)?;
+
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1208,14 +1469,16 @@ fn config_fetch_default() -> serde_json::Value {
         "autoClearCacheDays": 15,
         "lastCacheClearDate": "",
         "theme": "com.viewstage.theme.simplify",
-        "eraserSpeedEnabled": false,
+        "macosTitleBar": true,
+        "showToolbarText": false,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
+        "wordCacheClearDays": 30,
+        "lastWordCacheClearDate": "",
         "developerMode": false,
         "penMinWidthRatio": 0.2,
         "lastOpenDoc": null,
-        "restoreLastDoc": true,
-        "blurEnabled": false
+        "restoreLastDoc": true
     })
 }
 
@@ -1246,7 +1509,10 @@ fn config_validate_and_merge(
         
         for (key, value) in existing_obj {
             if let Some(default_val) = defaults_obj.get(key) {
-                if json_type_name(value) == json_type_name(default_val) {
+                // 默认值为 null 的字段（如 lastOpenDoc）是可空字段，运行期可为任意类型
+                if default_val.is_null()
+                    || json_type_name(value) == json_type_name(default_val)
+                {
                     if !config_sanitize_value(key, value) {
                         log::warn!(
                             "配置项 '{}' 数值异常 ({}), 已恢复默认值",
@@ -1278,37 +1544,35 @@ fn config_validate_and_merge(
 fn config_sanitize_value(key: &str, value: &serde_json::Value) -> bool {
     match key {
         "dprLimit" | "dprMin" | "dprMax" => {
-            value.as_f64().is_some_and(|n| n >= 0.5 && n <= 16.0)
+            value.as_f64().is_some_and(|n| (0.5..=16.0).contains(&n))
         }
         "dprStep" => {
-            value.as_f64().is_some_and(|n| n >= 0.1 && n <= 4.0)
+            value.as_f64().is_some_and(|n| (0.1..=4.0).contains(&n))
         }
         "overlayDpr" => {
-            value.as_f64().is_some_and(|n| n >= 0.25 && n <= 8.0)
+            value.as_f64().is_some_and(|n| (0.25..=8.0).contains(&n))
         }
         "autoClearCacheDays" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 3650.0)
+            value.as_f64().is_some_and(|n| (0.0..=3650.0).contains(&n))
         }
         "penMinWidthRatio" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 1.0)
+            value.as_f64().is_some_and(|n| (0.0..=1.0).contains(&n))
         }
         "penWidth" | "eraserSize" => {
-            value.as_f64().is_some_and(|n| n >= 0.5 && n <= 500.0)
+            value.as_f64().is_some_and(|n| (0.5..=500.0).contains(&n))
         }
         "maxScaleImage" => {
-            value.as_f64().is_some_and(|n| n >= 1.0 && n <= 20.0)
+            value.as_f64().is_some_and(|n| (1.0..=20.0).contains(&n))
         }
         "gestureFrameDelta" => {
-            value.as_f64().is_some_and(|n| n >= 1.0 && n <= 500.0)
+            value.as_f64().is_some_and(|n| (1.0..=500.0).contains(&n))
         }
         "penTailDuration" => {
-            value.as_f64().is_some_and(|n| n >= 0.0 && n <= 2000.0)
+            value.as_f64().is_some_and(|n| (0.0..=2000.0).contains(&n))
         }
         _ => true,
     }
 }
-
-/// settings_fetch_all 命令的返回结构
 
 /// settings_fetch_all 命令的返回结构
 #[derive(Serialize)]
@@ -1341,11 +1605,11 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
         return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
     }
     
-    let config_content = match std::fs::read_to_string(&config_path) {
+    let config_content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) => {
             log::warn!("读取配置文件失败: {}，使用默认配置", e);
-            config_backup_corrupted(&config_path);
+            config_backup_corrupted(config_path);
             return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
         }
     };
@@ -1354,7 +1618,7 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
         Ok(v) => v,
         Err(e) => {
             log::warn!("解析配置文件失败: {}，使用默认配置", e);
-            config_backup_corrupted(&config_path);
+            config_backup_corrupted(config_path);
             return Ok(SettingsResult { settings: default_config, recovered: Vec::new() });
         }
     };
@@ -1365,7 +1629,7 @@ async fn settings_fetch_all(app: tauri::AppHandle) -> Result<SettingsResult, Str
     if merged_config != existing_config {
         let merged_str = serde_json::to_string_pretty(&merged_config)
             .map_err(|e| format!("序列化配置失败: {}", e))?;
-        std::fs::write(&config_path, merged_str)
+        std::fs::write(config_path, merged_str)
             .map_err(|e| format!("保存配置失败: {}", e))?;
     }
     
@@ -1404,6 +1668,9 @@ fn config_apply_settings_to_defaults(defaults: &serde_json::Value, settings: &se
 /// 配置文件损坏时备份并回退默认配置。
 #[tauri::command]
 async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    // 配置「读 → 改 → 原子写」必须与其它 config.json 写入者互斥，
+    // 否则并发保存会拿旧快照覆盖，静默丢设置（无 await，guard 不跨挂起点）
+    let _config_guard = config_lock();
     let paths = AppPaths::new(&app)?;
     
     if !paths.config_dir.exists() {
@@ -1415,7 +1682,7 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
     
     let default_config = config_fetch_default();
     
-    let existing_settings: serde_json::Value = match std::fs::read_to_string(&config_path) {
+    let existing_settings: serde_json::Value = match std::fs::read_to_string(config_path) {
         Ok(content) => {
             match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(mut existing) => {
@@ -1423,7 +1690,10 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
                         if let Some(new_obj) = settings.as_object() {
                             for (key, value) in new_obj {
                                 if let Some(default_val) = default_config.get(key) {
-                                    if json_type_name(value) == json_type_name(default_val) {
+                                    // 默认值为 null 的字段（如 lastOpenDoc）是可空字段，运行期可为任意类型
+                                    if default_val.is_null()
+                                        || json_type_name(value) == json_type_name(default_val)
+                                    {
                                         obj.insert(key.clone(), value.clone());
                                     } else {
                                         log::warn!(
@@ -1441,35 +1711,35 @@ async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -
                 }
                 Err(e) => {
                     log::warn!("保存时解析配置文件失败: {}，使用默认配置", e);
-                    config_backup_corrupted(&config_path);
-                    return write_atomic(&temp_path, &config_path, &config_apply_settings_to_defaults(&default_config, &settings));
+                    config_backup_corrupted(config_path);
+                    return write_atomic(&temp_path, config_path, &config_apply_settings_to_defaults(&default_config, &settings));
                 }
             }
         }
         Err(e) => {
             if config_path.exists() {
                 log::warn!("保存时读取配置文件失败: {}，使用默认配置", e);
-                config_backup_corrupted(&config_path);
+                config_backup_corrupted(config_path);
             }
-            return write_atomic(&temp_path, &config_path, &config_apply_settings_to_defaults(&default_config, &settings));
+            return write_atomic(&temp_path, config_path, &config_apply_settings_to_defaults(&default_config, &settings));
         }
     };
     
-    write_atomic(&temp_path, &config_path, &existing_settings)
+    write_atomic(&temp_path, config_path, &existing_settings)
 }
 
 /// 原子写入 JSON 到文件（临时文件 + rename）
 fn write_atomic(temp_path: &std::path::Path, config_path: &std::path::Path, value: &serde_json::Value) -> Result<(), String> {
     let config_str = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(&temp_path, &config_str).map_err(|e| e.to_string())?;
-    std::fs::rename(&temp_path, &config_path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp_path);
+    std::fs::write(temp_path, &config_str).map_err(|e| e.to_string())?;
+    std::fs::rename(temp_path, config_path).map_err(|e| {
+        let _ = std::fs::remove_file(temp_path);
         format!("Failed to rename config file: {}", e)
     })?;
     Ok(())
 }
 
-/// Tauri IPC 命令（Windows）：检测 ViewStage 是否已设为 PDF 默认打开程序
+/// Tauri IPC 命令（Windows）：检测 ViewStage/ViewPDF 是否已设为 PDF 默认打开程序
 ///
 /// 分别检查 HKCU UserChoice 和 HKCR 注册表路径
 #[cfg(target_os = "windows")]
@@ -1482,7 +1752,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     
     if let Ok(prog_id_key) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.pdf\\UserChoice") {
         if let Ok(prog_id) = prog_id_key.get_value::<String, _>("ProgId") {
-            if prog_id.contains("ViewStage") || prog_id.contains("viewstage") {
+            if prog_id.contains("ViewStage") || prog_id.contains("viewstage") || prog_id.contains("ViewPDF") || prog_id.contains("viewpdf") {
                 return Ok(true);
             }
         }
@@ -1491,7 +1761,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     if let Ok(pdf_key) = hkcr.open_subkey(".pdf") {
         if let Ok(default_prog) = pdf_key.get_value::<String, _>("") {
-            if default_prog.contains("ViewStage") || default_prog.contains("viewstage") {
+            if default_prog.contains("ViewStage") || default_prog.contains("viewstage") || default_prog.contains("ViewPDF") || default_prog.contains("viewpdf") {
                 return Ok(true);
             }
         }
@@ -1507,7 +1777,7 @@ async fn filetype_validate_pdf_default() -> Result<bool, String> {
     Ok(false)
 }
 
-/// Tauri IPC 命令（Windows）：检测 Word 文档（.docx/.doc）是否关联到 ViewStage
+/// Tauri IPC 命令（Windows）：检测 Word 文档（.docx/.doc）是否关联到 ViewStage/ViewPDF
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn filetype_validate_word_default() -> Result<bool, String> {
@@ -1518,7 +1788,7 @@ async fn filetype_validate_word_default() -> Result<bool, String> {
         let path = format!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{}\\UserChoice", ext);
         if let Ok(prog_id_key) = hkcu.open_subkey(&path) {
             if let Ok(prog_id) = prog_id_key.get_value::<String, _>("ProgId") {
-                if prog_id.contains("ViewStage") || prog_id.contains("viewstage") {
+                if prog_id.contains("ViewStage") || prog_id.contains("viewstage") || prog_id.contains("ViewPDF") || prog_id.contains("viewpdf") {
                     return Ok(true);
                 }
             }
@@ -1526,7 +1796,7 @@ async fn filetype_validate_word_default() -> Result<bool, String> {
         let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
         if let Ok(ext_key) = hkcr.open_subkey(ext) {
             if let Ok(default_prog) = ext_key.get_value::<String, _>("") {
-                if default_prog.contains("ViewStage") || default_prog.contains("viewstage") {
+                if default_prog.contains("ViewStage") || default_prog.contains("viewstage") || default_prog.contains("ViewPDF") || default_prog.contains("viewpdf") {
                     return Ok(true);
                 }
             }
@@ -1586,125 +1856,56 @@ async fn update_download_cancel() -> Result<(), String> {
     log::info!("已发送下载取消信号");
     Ok(())
 }
-
-/// 通过 SECTL 分发接口下载文件
-///
-/// 调用 /api/software/download 获取 302 跳转，然后下载目标文件。
-async fn download_from_sectl(
-    app: &tauri::AppHandle,
-    file_path: &std::path::Path,
-    tag: &str,
-    file_name: &str,
-) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
-        .timeout(std::time::Duration::from_secs(300))
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("Failed to build client: {}", e))?;
-
-    let params = [
-        ("projectSlug", "ViewStage"),
-        ("tag", tag),
-        ("fileName", file_name),
-        ("source", "server"),
-    ];
-    let sectl_url = url::Url::parse_with_params(
-        "https://appwrite.sectl.cn/api/software/download",
-        &params,
-    )
-    .map_err(|e| format!("Failed to build SECTL URL: {}", e))?
-    .to_string();
-    log::info!("SECTL 下载请求: {}", sectl_url);
-
-    let response = client
-        .get(&sectl_url)
-        .send()
-        .await
-        .map_err(|e| format!("SECTL request failed: {}", e))?;
-
-    let status = response.status();
-
-    if !status.is_success() && status != reqwest::StatusCode::FOUND
-        && status != reqwest::StatusCode::MOVED_PERMANENTLY
-    {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("SECTL download failed (HTTP {}): {}", status, body));
+/// 启动时清理历史更新安装包：updates 目录只保留最新一个安装包
+/// （保护"已下载待安装"的最新包不被误删），其余历史包全部删除。
+/// 安装器正在运行时文件被占用，删除会静默失败，不影响安装流程
+fn updates_cleanup_on_startup(app: &tauri::AppHandle) {
+    let paths = match AppPaths::new(app) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let updates_dir = &paths.updates_dir;
+    if !updates_dir.exists() {
+        return;
     }
 
-    let dl_url = if status == reqwest::StatusCode::FOUND
-        || status == reqwest::StatusCode::MOVED_PERMANENTLY
-    {
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| "SECTL 302 missing Location header".to_string())?
-            .to_string();
-        log::info!("SECTL 重定向到: {}", location);
-        location
-    } else {
-        log::info!("SECTL 直接返回文件内容 (HTTP {})", status);
-        sectl_url.clone()
-    };
-
-    let dl_response = if dl_url == sectl_url {
-        response
-    } else {
-        let download_client = reqwest::Client::builder()
-            .user_agent("ViewStage")
-            .timeout(std::time::Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("Failed to build download client: {}", e))?;
-        download_client
-            .get(&dl_url)
-            .send()
-            .await
-            .map_err(|e| format!("SECTL redirect download failed: {}", e))?
-    };
-
-    if !dl_response.status().is_success() {
-        return Err(format!(
-            "SECTL download HTTP {}",
-            dl_response.status()
-        ));
-    }
-
-    let total_size = dl_response.content_length().unwrap_or(0);
-    let mut file = std::fs::File::create(file_path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-
-    let mut downloaded: u64 = 0;
-    let mut stream = dl_response.bytes_stream();
-    use futures::stream::StreamExt;
-    let mut last_reported: u32 = 0;
-
-    while let Some(chunk) = stream.next().await {
-        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(file_path);
-            return Err("Download cancelled".to_string());
-        }
-        let data = chunk.map_err(|e| format!("Read chunk error: {}", e))?;
-        file.write_all(&data)
-            .map_err(|e| format!("Write file error: {}", e))?;
-        downloaded += data.len() as u64;
-        if total_size > 0 {
-            let pct = (downloaded as f64 / total_size as f64 * 100.0) as u32;
-            if pct != last_reported {
-                last_reported = pct;
-                let _ = app.emit("update-download-progress", pct);
+    // 收集 (路径, 修改时间, 大小)，仅处理文件
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(updates_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
             }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push((path, modified, meta.len()));
         }
     }
-
-    if total_size == 0 || last_reported < 100 {
-        let _ = app.emit("update-download-progress", 100);
+    if files.len() <= 1 {
+        return;
     }
 
-    file.flush().map_err(|e| format!("Flush file error: {}", e))?;
-    log::info!("SECTL 下载完成: {:?}", file_path);
-    Ok(())
+    // 按修改时间排序，保留最新一个，删除其余历史包
+    files.sort_by_key(|(_, mtime, _)| *mtime);
+    let mut removed_size: u64 = 0;
+    let mut removed_count: u32 = 0;
+    for (path, _, size) in files.iter().take(files.len() - 1) {
+        if std::fs::remove_file(path).is_ok() {
+            removed_size += size;
+            removed_count += 1;
+        }
+    }
+    if removed_count > 0 {
+        log::info!(
+            "启动清理：删除 {} 个历史更新安装包，释放 {:.2} MB",
+            removed_count,
+            removed_size as f64 / 1024.0 / 1024.0
+        );
+    }
 }
 
 /// Tauri IPC 命令：下载更新文件
@@ -1715,47 +1916,31 @@ async fn update_download_file(
     app: tauri::AppHandle,
     url: String,
     file_name: String,
-    mirror_url: Option<String>,
     version_tag: Option<String>,
 ) -> Result<String, String> {
     DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
-    log::info!("开始下载更新，文件: {}, 镜像: {:?}", file_name, mirror_url);
+    log::info!("开始下载更新，文件: {}", file_name);
 
     let paths = AppPaths::new(&app)?;
     let updates_dir = &paths.updates_dir;
     std::fs::create_dir_all(updates_dir)
         .map_err(|e| format!("Failed to create updates dir: {}", e))?;
 
-    let file_path = updates_dir.join(&file_name);
+    // 清洗文件名：只允许单一文件名，防 `..\..\x` 写到更新目录之外
+    let safe_file_name = sanitize_file_name(&file_name)?;
+    let file_path = updates_dir.join(&safe_file_name);
     log::info!("保存路径: {:?}", file_path);
 
-    // 1. 尝试 SECTL 分发下载
-    if let Some(tag) = &version_tag {
-        match download_from_sectl(&app, &file_path, tag, &file_name).await {
-            Ok(()) => return Ok(file_path.to_string_lossy().to_string()),
-            Err(e) => {
-                log::warn!("SECTL 下载失败，回退到 GitHub: {}", e);
-            }
-        }
-    }
+    // 更新源已切换为 GitHub Releases；version_tag 参数保留以兼容前端调用，不再使用
+    let _ = &version_tag;
 
-    // 2. 回退：GitHub 镜像加速
-    log::info!("使用 GitHub 镜像回退下载: {}", file_name);
+    // 只允许 GitHub 域（下载产物随后会被 update_install_release 执行，域名必须可信）
     url_validate_github(&url)?;
 
-    let use_mirror = mirror_url.as_ref().map_or(false, |m| !m.is_empty());
-    let fallback_urls: Vec<String> = if use_mirror {
-        let mirror = mirror_url.as_ref().unwrap();
-        let proxy_url = format!("{}/{}", mirror.trim_end_matches('/'), &url);
-        log::info!("镜像 URL: {}", proxy_url);
-        vec![proxy_url, url]
-    } else {
-        log::info!("使用原始地址下载: {}", url);
-        vec![url]
-    };
+    let fallback_urls: Vec<String> = vec![url];
 
     let client = reqwest::Client::builder()
-        .user_agent("ViewStage")
+        .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| {
@@ -1773,7 +1958,7 @@ async fn update_download_file(
         }
 
         if attempt_idx > 0 {
-            log::info!("镜像下载失败，尝试回退到原始地址: {}", download_url);
+            log::info!("重试下载: {}", download_url);
             app.emit("update-download-progress", 0).unwrap_or(());
         }
 
@@ -1879,12 +2064,24 @@ async fn update_download_file(
 /// 启动安装程序后自动退出当前应用，由安装程序接管后续流程
 #[tauri::command]
 async fn update_install_release(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
-    let path = std::path::Path::new(&file_path);
-    if !path.exists() {
-        log::error!("安装文件不存在: {}", file_path);
-        return Err(format!("安装文件不存在: {}", file_path));
+    let paths = AppPaths::new(&app)?;
+
+    // 只允许执行「更新目录内」的安装包：该命令会 spawn 一个可执行文件，
+    // 若不限制路径，页面内任意脚本都能借它执行任意程序。
+    std::fs::create_dir_all(&paths.updates_dir)
+        .map_err(|e| format!("Failed to create updates dir: {}", e))?;
+    let updates_dir = paths.updates_dir.canonicalize()
+        .map_err(|e| format!("更新目录不可用: {}", e))?;
+    let canonical = std::path::Path::new(&file_path).canonicalize().map_err(|e| {
+        log::error!("安装文件不存在或不可访问: {} ({})", file_path, e);
+        format!("安装文件不存在: {}", file_path)
+    })?;
+    if !canonical.starts_with(&updates_dir) {
+        log::error!("拒绝执行更新目录之外的文件: {:?}", canonical);
+        return Err(format!("安装文件路径不在更新目录内: {}", file_path));
     }
 
+    let path = canonical.as_path();
     log::info!("启动安装程序: {:?}", path);
 
     #[cfg(target_os = "windows")]
@@ -1920,19 +2117,6 @@ async fn update_install_release(app: tauri::AppHandle, file_path: String) -> Res
         app_clone.exit(0);
     });
 
-    Ok(())
-}
-
-/// Tauri IPC 命令：隐藏启动画面，显示并聚焦主窗口
-#[tauri::command]
-async fn window_hide_splashscreen(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(splashscreen) = app.get_webview_window("splashscreen") {
-        let _ = splashscreen.close();
-    }
-    if let Some(main_window) = app.get_webview_window("main") {
-        let _ = main_window.show();
-        let _ = main_window.set_focus();
-    }
     Ok(())
 }
 
@@ -2067,7 +2251,7 @@ fn device_collect_info() -> DeviceInfo {
         cpu_arch,
         gpu_name,
         gpu_driver_version: gpu_driver,
-        gpu_driver_date: gpu_driver_date,
+        gpu_driver_date,
         gpu_dedicated_memory_mb: gpu_mem,
         total_ram_mb,
         system_type,
@@ -2389,7 +2573,7 @@ fn device_detect_disk() -> (u64, String) {
             "Unknown".to_string()
         };
 
-        return (disk_size / (1024 * 1024 * 1024), disk_type);
+        (disk_size / (1024 * 1024 * 1024), disk_type)
     }
 
     #[cfg(target_os = "linux")]
@@ -2743,46 +2927,43 @@ fn office_convert_libreoffice(docx_path: &str, _pdf_path: &str, cache_dir: &std:
 
 /// Tauri IPC 命令：接收 docx 文件字节数据，转换为 PDF 后返回缓存路径
 ///
-/// 自动检测可用 Office 软件并按优先级尝试，使用临时缓存目录减少重复转换
+/// 使用 MD5 内容哈希实现缓存：已转换过的文件直接返回缓存的 PDF，避免重复转换
 #[tauri::command]
-async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String, app: tauri::AppHandle) -> Result<String, String> {
+async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String, file_md5: String, app: tauri::AppHandle) -> Result<String, String> {
     use std::fs;
     use std::io::Write;
 
     println!("收到文件数据: {} 字节", file_data.len());
     println!("文件名: {}", file_name);
+    println!("文件 MD5: {}", file_md5);
 
     if file_data.len() < 4 {
         return Err("文件数据太小，可能已损坏".to_string());
     }
 
-    let header: Vec<String> = file_data.iter().take(16).map(|b| format!("{:02x}", b)).collect();
-    println!("文件头: {}", header.join(" "));
+    // file_md5 直接拼进缓存文件名，必须先校验成 32 位十六进制；
+    // file_name 虽然只用于日志，也走一次清洗，避免将来被拼进路径时带分隔符
+    let file_md5 = validate_hex_md5(&file_md5)?;
+    sanitize_file_name(&file_name)?;
 
-    if file_data[0] == 0x50 && file_data[1] == 0x4B {
-        println!("检测到 ZIP 格式 (docx)");
-    } else if file_data[0] == 0xD0 && file_data[1] == 0xCF {
-        println!("检测到 OLE 格式 (doc)");
-    } else {
-        println!("未知文件格式");
+    let paths = AppPaths::new(&app)?;
+    let word_cache = paths.cache_dir.join("word-cache");
+    fs::create_dir_all(&word_cache).map_err(|e| e.to_string())?;
+
+    let cached_pdf_path = word_cache.join(format!("{}.pdf", file_md5));
+
+    // 缓存命中 — 直接返回
+    if cached_pdf_path.exists() {
+        println!("Word 转换缓存命中: {}", cached_pdf_path.display());
+        return Ok(cached_pdf_path.to_string_lossy().to_string());
     }
+
+    println!("Word 转换缓存未命中，开始转换...");
 
     let detection = office_detect_all();
     println!("推荐使用: {:?}", detection.recommended);
 
-    let paths = AppPaths::new(&app)?;
-    fs::create_dir_all(&paths.cache_dir).map_err(|e| e.to_string())?;
-
-    let folder_name = format!("document_{}", chrono::Local::now().format("%Y%m%d%H%M%S"));
-    let doc_cache_dir = paths.cache_dir.join(&folder_name);
-    fs::create_dir_all(&doc_cache_dir).map_err(|e| e.to_string())?;
-
-    let ext = std::path::Path::new(&file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("docx");
-    let temp_name = format!("temp_{}.{}", chrono::Local::now().format("%Y%m%d%H%M%S"), ext);
-    let temp_docx_path = doc_cache_dir.join(&temp_name);
+    let temp_docx_path = word_cache.join(format!("{}.docx", file_md5));
 
     {
         let mut file = fs::File::create(&temp_docx_path)
@@ -2793,15 +2974,8 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
             .map_err(|e| format!("同步文件失败: {}", e))?;
     }
 
-    let pdf_name = format!("{}.pdf", folder_name);
-    let pdf_path = doc_cache_dir.join(&pdf_name);
-
-    if pdf_path.exists() {
-        fs::remove_file(&pdf_path).map_err(|e| e.to_string())?;
-    }
-
     let docx_path_str = temp_docx_path.to_string_lossy().to_string();
-    let pdf_path_str = pdf_path.to_string_lossy().to_string();
+    let pdf_path_str = cached_pdf_path.to_string_lossy().to_string();
 
     println!("临时文件路径: {}", docx_path_str);
     println!("输出 PDF 路径: {}", pdf_path_str);
@@ -2816,7 +2990,7 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
                     office_convert_wps(&docx_path_str, &pdf_path_str)
                 } else if r.is_err() && detection.has_libreoffice {
                     println!("Word 转换失败，尝试 LibreOffice...");
-                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
                 } else {
                     r
                 }
@@ -2835,7 +3009,7 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
                     office_convert_word(&docx_path_str, &pdf_path_str)
                 } else if r.is_err() && detection.has_libreoffice {
                     println!("WPS 转换失败，尝试 LibreOffice...");
-                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+                    office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
                 } else {
                     r
                 }
@@ -2846,27 +3020,27 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
             }
         }
         OfficeSoftware::LibreOffice => {
-            office_convert_libreoffice(&docx_path_str, &pdf_path_str, &doc_cache_dir)
+            office_convert_libreoffice(&docx_path_str, &pdf_path_str, &word_cache)
         }
         OfficeSoftware::None => {
             Err("未检测到可用的 Office 软件，请安装 Microsoft Word、WPS Office 或 LibreOffice".to_string())
         }
     };
 
-    if let Err(e) = fs::remove_file(&temp_docx_path) {
-        println!("清理临时文件失败: {}", e);
-    }
+    // 清理临时 docx 文件
+    let _ = fs::remove_file(&temp_docx_path);
 
     result?;
 
     for _ in 0..10 {
-        if pdf_path.exists() {
+        if cached_pdf_path.exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    if pdf_path.exists() {
+    if cached_pdf_path.exists() {
+        println!("Word 转换成功，已缓存: {}", cached_pdf_path.display());
         Ok(pdf_path_str)
     } else {
         Err("PDF 文件生成失败".to_string())
@@ -3065,7 +3239,7 @@ fn office_convert_wps(docx_path: &str, pdf_path: &str) -> Result<(), String> {
 async fn filetype_set_icons(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return filetype_set_icons_windows(app).await;
+        filetype_set_icons_windows(app).await
     }
     #[cfg(target_os = "linux")]
     {
@@ -3075,7 +3249,7 @@ async fn filetype_set_icons(app: tauri::AppHandle) -> Result<(), String> {
     Err("此功能仅支持 Windows 和 Linux 系统".to_string())
 }
 
-/// Linux 平台：通过 XDG 规范注册 ViewStage 为 PDF/DOCX/DOC 默认程序
+/// Linux 平台：通过 XDG 规范注册 ViewPDF 为 PDF/DOCX/DOC 默认程序
 #[cfg(target_os = "linux")]
 fn filetype_set_icons_linux(app: &tauri::AppHandle) -> Result<(), String> {
     use std::process::Command;
@@ -3112,7 +3286,7 @@ fn filetype_set_icons_linux(app: &tauri::AppHandle) -> Result<(), String> {
     let desktop_entry = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=ViewStage\n\
+         Name=ViewPDF\n\
          Exec={} %f\n\
          MimeType=application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;\n\
          Icon=viewstage\n\
@@ -3184,7 +3358,7 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
         .map_err(|e| format!("获取可执行文件路径失败: {}", e))?;
     let exe_path_str = exe_path.display().to_string();
     
-    let app_id = "SECTL.ViewStage";
+    let app_id = "SECTL.ViewPDF";
     
     log::info!("开始设置文件关联");
     log::info!("可执行文件: {}", exe_path_str);
@@ -3230,9 +3404,9 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
         Ok(())
     }
     
-    filetype_create_progid(&classes_key, &format!("{}.pdf", app_id), &pdf_icon, &exe_path_str, "ViewStage PDF Document")?;
-    filetype_create_progid(&classes_key, &format!("{}.docx", app_id), &word_icon, &exe_path_str, "ViewStage Word Document")?;
-    filetype_create_progid(&classes_key, &format!("{}.doc", app_id), &word_icon, &exe_path_str, "ViewStage Word 97-2003 Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.pdf", app_id), &pdf_icon, &exe_path_str, "ViewPDF PDF Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.docx", app_id), &word_icon, &exe_path_str, "ViewPDF Word Document")?;
+    filetype_create_progid(&classes_key, &format!("{}.doc", app_id), &word_icon, &exe_path_str, "ViewPDF Word 97-2003 Document")?;
     
     /// 在扩展名下注册关联，设置默认值使图标生效
     fn filetype_create_association(classes_key: &RegKey, ext: &str, prog_id: &str) -> Result<(), String> {
@@ -3333,105 +3507,116 @@ async fn filetype_set_icons_windows(app: tauri::AppHandle) -> Result<(), String>
     }
 }
 
-/// 卸载时清理文件关联：删除注册的 ProgID、OpenWithProgids、UserChoice
-#[cfg(target_os = "windows")]
-pub fn filetype_delete_icons_windows_sync() -> Result<(), String> {
-    use winreg::RegKey;
-    use winreg::enums::*;
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let classes_path = "Software\\Classes";
-    let classes_key = hkcu.create_subkey(classes_path)
-        .map_err(|e| format!("打开 Classes 失败: {}", e))?.0;
-
-    let app_id = "SECTL.ViewStage";
-    let exts = [".pdf", ".docx", ".doc"];
-    let prog_ids: Vec<String> = exts.iter().map(|ext| format!("{}{}", app_id, ext)).collect();
-
-    // 删除 UserChoice (FileExts\.{ext}\UserChoice)
-    for ext in &exts {
-        let user_choice_path = format!(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{}\\UserChoice",
-            ext
-        );
-        match hkcu.delete_subkey_all(&user_choice_path) {
-            Ok(_) => log::info!("卸载清理: 已删除 {}\\UserChoice", ext),
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 删除 {}\\UserChoice 失败: {}", ext, e),
-        }
-    }
-
-    // 删除 ProgID 和 OpenWithProgids 条目
-    for (ext, prog_id) in exts.iter().zip(prog_ids.iter()) {
-        // 从 OpenWithProgids 中移除引用
-        let openwith_path = format!("{}{}\\OpenWithProgids", classes_path, ext);
-        match classes_key.open_subkey_with_flags(&openwith_path, KEY_SET_VALUE) {
-            Ok(key) => {
-                let _ = key.delete_value(prog_id);
-                log::info!("卸载清理: 已从 {}\\OpenWithProgids 移除 {}", ext, prog_id);
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 无法访问 {}\\OpenWithProgids: {}", ext, e),
-        }
-
-        // 删除 ProgID 本身
-        match hkcu.delete_subkey_all(&format!("{}\\{}", classes_path, prog_id)) {
-            Ok(_) => log::info!("卸载清理: 已删除 ProgID {}", prog_id),
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {},
-            Err(e) => log::warn!("卸载清理: 删除 ProgID {} 失败: {}", prog_id, e),
-        }
-    }
-
-    // 刷新图标缓存
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", r#"
-            Add-Type -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int,int,System.IntPtr,System.IntPtr);' -Name Shell -Namespace WinAPI
-            [WinAPI.Shell]::SHChangeNotify(0x8000000,0x1000,[IntPtr]::Zero,[IntPtr]::Zero)
-        "#])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-
-    log::info!("卸载清理: 文件关联清理完成");
-    Ok(())
-}
-
-/// 获取应用数据目录（%APPDATA%/SECTL/ViewStage）
-#[cfg(target_os = "windows")]
-fn dirs_data_dir() -> Option<std::path::PathBuf> {
-    std::env::var("APPDATA").ok().map(|a| {
-        let p = std::path::PathBuf::from(a).join("SECTL").join("ViewStage");
-        log::info!("应用数据目录: {}", p.display());
-        p
-    })
-}
 
 
 /// 应用入口函数
 ///
+use simplelog::LevelFilter;
+/// 本地时间戳文件日志器：simplelog 0.12 内部固定使用 UTC 且无本地时区配置，
+/// 用 chrono::Local 自绘时间戳，保证日志行时间与系统时间一致
+struct LocalTimeFileLogger {
+    file: std::sync::Mutex<std::fs::File>,
+    max_level: LevelFilter,
+}
+
+impl log::Log for LocalTimeFileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= self.max_level
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z");
+        let line = format!(
+            "{} {:<5} [{}] {}\n",
+            timestamp,
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = std::io::Write::write_all(&mut *file, line.as_bytes());
+    }
+
+    fn flush(&self) {
+        let mut file = self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = std::io::Write::flush(&mut *file);
+    }
+}
+
+impl simplelog::SharedLogger for LocalTimeFileLogger {
+    fn level(&self) -> LevelFilter {
+        self.max_level
+    }
+
+    fn config(&self) -> Option<&simplelog::Config> {
+        None
+    }
+
+    fn as_log(self: Box<Self>) -> Box<dyn log::Log> {
+        Box::new(*self)
+    }
+}
+
 /// 初始化日志、注册 Tauri 插件和 IPC 命令，配置 OOBE/主窗口启动流程。
 /// 首次运行打开 OOBE 引导窗口，非首次运行读取配置设置窗口尺寸并全屏显示。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn app_init_run() {
-    use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config, TermLogger, TerminalMode, ColorChoice};
+    use simplelog::{CombinedLogger, LevelFilter, Config};
     use std::fs::File;
-    
-    let config_dir = dirs::config_dir()
+
+    // 与 AppPaths / dir_fetch_log 使用同一根目录（tauri 标识符 SECTL.viewpdf），
+    // 避免"日志写入 A 目录、设置页打开 B 目录"的分裂
+    let log_root = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("SECTL.ViewStage");
-    let log_dir = config_dir.join("log");
-    
+        .join("SECTL.viewpdf");
+    let log_dir = log_root.join("log");
+
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         eprintln!("无法创建日志目录: {}", e);
     }
-    
+
     let log_file = log_dir.join(format!("viewstage_{}.log", chrono::Local::now().format("%Y%m%d")));
-    
+
     if let Ok(file) = File::create(&log_file) {
-        let _ = CombinedLogger::init(vec![
-            WriteLogger::new(LevelFilter::Info, Config::default(), file),
-            TermLogger::new(LevelFilter::Info, Config::default(), TerminalMode::Mixed, ColorChoice::Auto),
-        ]);
+        #[cfg(debug_assertions)]
+        let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
+            simplelog::TermLogger::new(LevelFilter::Info, Config::default(), simplelog::TerminalMode::Mixed, simplelog::ColorChoice::Auto),
+            Box::new(LocalTimeFileLogger {
+                file: std::sync::Mutex::new(file),
+                max_level: LevelFilter::Info,
+            }),
+        ];
+        #[cfg(not(debug_assertions))]
+        let loggers: Vec<Box<dyn simplelog::SharedLogger>> = vec![
+            Box::new(LocalTimeFileLogger {
+                file: std::sync::Mutex::new(file),
+                max_level: LevelFilter::Info,
+            }),
+        ];
+        let _ = CombinedLogger::init(loggers);
         log::info!("日志系统初始化成功");
+    }
+
+    // 【WebView2 虚拟桌面/遮挡黑屏修复】
+    // Chromium 的原生窗口遮挡检测（CalculateNativeWinOcclusion）在切换虚拟桌面、
+    // 多显示器休眠等场景会把窗口误判为"被完全遮挡"而挂起渲染器：
+    // 返回后窗口冻结在最后一帧（仅剩主题底色），前端无响应导致也无法关闭。
+    // 必须在 WebView2 创建前设置；合并而非覆盖用户已有的浏览器参数。
+    #[cfg(windows)]
+    {
+        const OCCLUSION_FLAG: &str = "--disable-features=CalculateNativeWinOcclusion";
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        if !existing.contains("CalculateNativeWinOcclusion") {
+            let merged = if existing.trim().is_empty() {
+                OCCLUSION_FLAG.to_string()
+            } else {
+                format!("{} {}", existing.trim(), OCCLUSION_FLAG)
+            };
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+        }
     }
 
     tauri::Builder::default()
@@ -3484,7 +3669,7 @@ pub fn app_init_run() {
                     "oobe",
                     tauri::WebviewUrl::App("oobe.html".into())
                 )
-                .title("欢迎使用 ViewStage")
+                .title("欢迎使用 ViewPDF")
                 .inner_size(960.0, 540.0)
                 .resizable(false)
                 .decorations(false)
@@ -3499,8 +3684,9 @@ pub fn app_init_run() {
                 
                 let _ = oobe_window.set_focus();
                 
-                if let Some(splashscreen) = app.get_webview_window("splashscreen") {
-                    let _ = splashscreen.close();
+                // 隐藏主窗口，确保 OOBE 界面独占显示
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
                 }
             } else {
                 let args: Vec<String> = std::env::args().collect();
@@ -3512,7 +3698,7 @@ pub fn app_init_run() {
                     
                     let app_handle = app.handle().clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         println!("发送文件打开事件: {}", file_path);
                         let _ = app_handle.emit("file-opened", file_path.clone());
                         println!("已发送文件打开事件: {}", file_path);
@@ -3520,8 +3706,66 @@ pub fn app_init_run() {
                 }
                 
             }
-            
+
+            // 启动清理（与缓存清理一并执行，不阻塞窗口启动）：
+            // 1) 历史更新安装包：updates 目录只保留最新一个
+            // 2) 触发缓存/Word 缓存自动清理（各自按配置间隔执行，未到期或
+            //    已关闭时自动跳过；此前 cache_validate_auto_clear 无调用方，
+            //    设置里的"自动清除缓存"实际从未生效，这里补上启动触发）
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    updates_cleanup_on_startup(&app_handle);
+                    match cache_validate_auto_clear(app_handle.clone()) {
+                        Ok(true) => log::info!("启动清理：已按间隔执行缓存自动清理"),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("启动清理：缓存自动清理失败: {}", e),
+                    }
+                    match word_cache_validate_auto_clear(app_handle.clone()) {
+                        Ok(true) => log::info!("启动清理：已按间隔执行 Word 缓存自动清理"),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("启动清理：Word 缓存自动清理失败: {}", e),
+                    }
+                });
+            }
+
             Ok(())
+        })
+        // 主窗口关闭拦截：先让前端保存批注/阅读位置，保存完成由 app_confirm_close 放行
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                if CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                    return; // 已确认，放行
+                }
+                api.prevent_close();
+                let _ = window.emit("app-close-requested", ());
+                // 兜底：前端无响应（脚本错误/监听缺失）时 6 秒后强制退出，避免无法关闭。
+                // 高负载下大文档的 JSON 序列化+写盘可能较慢，留足余量避免打断写盘造成缓存损坏
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                        log::warn!("app-close-requested 6 秒未确认，强制关闭主窗口");
+                        CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.close();
+                        }
+                        // 二级兜底：webview 完全冻结（如虚拟桌面渲染挂起）时 close 可能
+                        // 仍无法完成，再等 6 秒直接退出进程。此时前端本就无响应，
+                        // 磁盘状态为最近一次防抖保存的结果，强退不再造成额外损失
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(6));
+                            if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                                log::warn!("app-close 12 秒仍未确认，强制退出进程");
+                                std::process::exit(0);
+                            }
+                        });
+                    }
+                });
+            }
         })
         // 注册所有 Tauri IPC 命令
         .invoke_handler(tauri::generate_handler![
@@ -3530,16 +3774,17 @@ pub fn app_init_run() {
             cache_delete_all,
             cache_delete_doc_annotations,
             cache_validate_auto_clear,
+            word_cache_fetch_size,
+            word_cache_delete_all,
+            word_cache_last_clear,
+            word_cache_validate_auto_clear,
             dir_fetch_config, 
             dir_fetch_log,
             dir_fetch_theme,
             theme_list_user,
             theme_delete,
             theme_import_vst,
-            window_show_settings,
             window_toggle_maximize,
-            mirror_update_state,
-            mirror_fetch_state,
             app_fetch_version,
             app_fetch_platform,
             update_fetch_check,
@@ -3552,12 +3797,13 @@ pub fn app_init_run() {
             app_restart_process,
             filetype_validate_pdf_default,
             filetype_validate_word_default,
-            window_hide_splashscreen,
+            theme_get_preview,
             oobe_submit_complete,
             oobe_check_active,
             main_signal_loaded,
             main_check_loaded,
             app_submit_exit,
+            app_confirm_close,
             file_fetch_stat,
             office_detect_all,
             office_check_runtime,

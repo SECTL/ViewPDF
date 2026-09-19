@@ -1,4 +1,4 @@
-# ViewStage — Agent Instructions
+# ViewPDF — Agent Instructions
 
 ## Build & Run
 
@@ -13,11 +13,7 @@ cargo tauri dev
 ```
 Frontend lives in `src/` and is served directly (no bundler). No `package.json`.
 
-**memreduct-viewstage.exe** is a subprocess used by the memory clean feature (`memreduct/` is a separate C++ project). The exe is gitignored; to build it for dev:
-```
-.\memreduct\dev-memreduct.ps1
-```
-Requires Visual Studio 2022+ with "Desktop development with C++" workload. The exe is placed at `memreduct/bin/64/memreduct-viewstage.exe`.
+
 
 **CI** triggers on `v*` tags and manual dispatch. Requires `cargo install tauri-cli --locked` first.
 
@@ -26,15 +22,15 @@ Requires Visual Studio 2022+ with "Desktop development with C++" workload. The e
 - Lib crate is `viewstage_lib` (`_lib` suffix avoids Cargo issue #8519 on Windows, see `Cargo.toml:10-14`).
 - `main.rs` calls `viewstage_lib::run()`.
 - All Tauri commands registered in `lib.rs:2928-2971` — check there before adding new ones.
-- Logging: `simplelog` writes to `%APPDATA%/SECTL/ViewStage/log/viewstage_{date}.log`.
-- Config: `%APPDATA%/SECTL/ViewStage/config.json`, with a config version migration system (`migrate_config`/`get_migrations`).
-- Image save path: `~/Pictures/ViewStage/`.
+- Logging: `simplelog` writes to `%APPDATA%/SECTL/ViewPDF/log/viewpdf_{date}.log`.
+- Config: `%APPDATA%/SECTL/ViewPDF/config.json`, with a config version migration system (`migrate_config`/`get_migrations`).
+- Image save path: `~/Pictures/ViewPDF/`.
 
 ## Frontend (`src/`)
 
 - **Entrypoint**: `src/index.html` loads `JS/pdf.min.js`, `JS/pdf.worker.min.js`, `i18n.js`, then module scripts `themes/theme.js`, `main.js`, `init.js`.
 - **No bundler** — ES modules loaded directly; use `type="module"` for imports.
-- Init flow: `init.js` DOMContentLoaded → init i18n → initDOM → initCanvas → bindAllEvents → load settings → openCamera → close splashscreen.
+- Init flow: `init.js` DOMContentLoaded → init i18n → initDOM → initCanvas → bindAllEvents → load settings → openCamera.
 - Architecture: image layer (`<img>`) + annotation layer (`<canvas>`) in a `canvas-wrapper`.
 - `tauri.conf.json` enables `"withGlobalTauri": true` — access via `window.__TAURI__`.
 - State management: global `state` object + global `dom` cache on `window`.
@@ -43,9 +39,8 @@ Requires Visual Studio 2022+ with "Desktop development with C++" workload. The e
 
 ## Windows
 
-- `oobe.html` — first-run setup window (500×520, no decorations).
-- `splashscreen.html` — loading screen shown before main window.
-- `settings.html` — settings popup (600×600).
+- `oobe.html` — first-run setup window (960×540, no decorations).
+- Settings — lazy-loaded in-app panel `#settingsPanel` (markup exported as a template string from `src/modules/settings/settings-panel.js` + styles `src/modules/settings/settings.css`; injected on first open by `settings_ensure_dom()` in `main.js`). Logic lives in `src/modules/settings/settings.js`, dynamically imported once by `main_show_settings_window()`; cross-window sync via `settings-changed` event.
 - `doc-scan/index.html` — document scanning sub-app (fullscreen, undecorated).
 
 ## i18n
@@ -54,38 +49,37 @@ Locale files in `src/locales/{zh-CN,zh-TW,en-US}.json`. Setting stored in `confi
 
 ## Tests
 
-None found. No test framework is configured.
+No test framework / bundler / `package.json`. Verification is two-part:
+
+1. **Syntax**: `for f in $(git diff --name-only -- '*.js'); do node --check "$f"; done`
+2. **Logic + architecture invariants**: `.workbuddy/verify/dpr-harness.mjs`
+   ```
+   node .workbuddy/verify/dpr-harness.mjs   # exits non-zero on failure
+   ```
+   Stubs `window`/`document`/`performance` in a `node:vm` sandbox, then loads the **real**
+   `resolution-controller.js` + `overlay-manager.js` + `batch-draw.js` and runs assertions.
+   Its tail section scans `src/` (comments stripped) and asserts single-source invariants:
+   `devicePixelRatio` only in `resolution-controller.js`, `DRAW_CONFIG.dpr =` only there,
+   `_transform* =` only in `overlay-manager.js`, no retired overlay APIs left behind.
+   **When you change rendering/DPR/overlay code, extend this file rather than re-deriving
+   the audit by hand.**
+
+Also note: grep the whole repo **must** be scoped to `src/` — `src-tauri/` has ~25k files
+and will time out.
 
 ## Key Quirks
 
 - Office document conversion uses PowerShell COM interop (Word/WPS/LibreOffice) — **Windows only**.
 - `tauri.conf.json:bundle.targets` is `"all"` — produces both MSI and NSIS installers.
-- NSIS installer hooks at `installer-hooks.nsh` — runs `ViewStage.exe --uninstall-cleanup` on uninstall.
-- `model/` and `cache/` dirs are gitignored; ONNX model files go under `%APPDATA%/SECTL/ViewStage/models/`.
+- NSIS installer hooks at `installer-hooks.nsh` — runs `ViewPDF.exe --uninstall-cleanup` on uninstall.
+- `model/` and `cache/` dirs are gitignored; ONNX model files go under `%APPDATA%/SECTL/ViewPDF/models/`.
 - `gen/` under `src-tauri/` is generated by Tauri build (schema files).
 
-## Memory Clean (MEM Reduct integration)
 
-- **No separate binary.** Cleaning logic is embedded in the main binary via `mem_clean_perform()` in `lib.rs` (raw FFI to ntdll `NtSetSystemInformation`).
-- Triggered via `--mem-clean` flag: `ViewStage.exe --mem-clean` runs the cleaning routine and exits without initializing Tauri (checked in `main.rs` before `app_init_run()`).
-- **Scheduled task** (`ViewStage_MemClean`) runs as SYSTEM to avoid UAC on every clean:
-  - `memreduct_setup` (IPC) → creates task pointing to `ViewStage.exe --mem-clean`
-  - `memreduct_clean_now` (IPC) → `schtasks /run` → SYSTEM process → clean → exit
-  - `memreduct_uninstall` (IPC) → deletes task
-- Background monitor thread starts on app launch, polls `GlobalMemoryStatusEx` every 300s, triggers task when RAM > 80%.
-- Task creation requires admin once (during first-run OOBE or `memreduct_setup`). Subsequent runs are silent — no UAC.
-- Only 7 operations (volume cache flush skipped, harmless).
-- Runs on Windows 10+ only; no OS version checks.
-
-### IPC commands registered in `lib.rs`:
-- `memreduct_check_installed` → `bool`
-- `memreduct_clean_now` → `bool`
-- `memreduct_setup` → `Result<(), String>` (UAC on first call)
-- `memreduct_uninstall` → `Result<(), String>`
 
 ## Uninstall Cleanup
 
-- `ViewStage.exe --uninstall-cleanup` (or `--cleanup`) runs cleanup and exits without Tauri init.
+- `ViewPDF.exe --uninstall-cleanup` (or `--cleanup`) runs cleanup and exits without Tauri init.
 - Called automatically via NSIS uninstall hook (`installer-hooks.nsh` → `NSIS_HOOK_PREUNINSTALL`).
-- Cleans up: file association registry entries (ProgIDs, OpenWithProgids, UserChoice for .pdf/.docx/.doc) + deletes `ViewStage_MemClean` scheduled task.
+- Cleans up: file association registry entries (ProgIDs, OpenWithProgids, UserChoice for .pdf/.docx/.doc) + deletes `ViewPDF_MemClean` scheduled task.
 - Implementation in `lib.rs:3540-3558` (`uninstall_cleanup_perform`).

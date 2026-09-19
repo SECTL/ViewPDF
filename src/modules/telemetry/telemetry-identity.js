@@ -1,6 +1,6 @@
 /**
  * 设备身份管理：UUID 生成/读取、device_type 判定
- * UUID 由 Rust 后端持久化到 identity.json（%APPDATA%/SECTL/ViewStage/identity.json），
+ * UUID 由 Rust 后端持久化到 identity.json（%APPDATA%/SECTL/ViewPDF/identity.json），
  * 设备重置后保持不变。
  */
 

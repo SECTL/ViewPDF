@@ -173,15 +173,23 @@ const _history_pending_queue = [];
 /**
  * 执行命令并压入 undo 栈，清空 redo 栈
  * 当 undo 栈超过硬性上限（MAX_HISTORY_STEPS * 2）时强制裁剪
+ * 若正在执行其他命令，命令会进入待执行队列；此时返回的 Promise
+ * 会在该命令真正执行完成后才 resolve，保证调用方可以依赖
+ * "命令已生效"这一事实再进行后续操作（如将笔画烘焙进 tile）
  * @param {Command} command - 待执行命令
  * @param {boolean} [needRedraw=true] - 是否需要重绘
+ * @returns {Promise<void>}
  */
-export async function history_execute_command(command, needRedraw = true) {
+export function history_execute_command(command, needRedraw = true) {
     if (history_state.is_executing) {
-        _history_pending_queue.push({ command, needRedraw });
-        return;
+        return new Promise((resolve, reject) => {
+            _history_pending_queue.push({ command, needRedraw, resolve, reject });
+        });
     }
+    return _history_run_command(command, needRedraw);
+}
 
+async function _history_run_command(command, needRedraw) {
     history_state.is_executing = true;
     try {
         await command.execute(needRedraw);
@@ -202,7 +210,12 @@ export async function history_execute_command(command, needRedraw = true) {
 
     if (_history_pending_queue.length > 0) {
         const next = _history_pending_queue.shift();
-        await history_execute_command(next.command, next.needRedraw);
+        try {
+            await _history_run_command(next.command, next.needRedraw);
+            next.resolve();
+        } catch (err) {
+            next.reject(err);
+        }
     }
 }
 
@@ -224,6 +237,10 @@ export function history_validate_redo() {
 
 /**
  * 执行撤销：弹出 undo 栈顶命令并调用 undo()
+ *
+ * 命令真正撤销失败时会把命令放回 undo 栈、从 redo 栈弹出，
+ * 保证「栈的形状」与「画布实际状态」始终一致（否则会出现
+ * 「redo 栈里躺着一条并未被撤销的命令」这种不可自愈的错位）。
  * @returns {Promise<Command|null>} 被撤销的命令，无命令可撤销时返回 null
  */
 export async function history_handle_undo() {
@@ -234,7 +251,49 @@ export async function history_handle_undo() {
     try {
         command = history_state.undo_list.pop();
         history_state.redo_list.push(command);
+        // redo 栈同样设硬上限：它会被序列化进缓存文件，不能无界增长。
+        // 超限时丢弃队首（= 撤销得最深的那条，本就再无可重做的意义）。
+        const REDO_HARD_LIMIT = MAX_HISTORY_STEPS * 2;
+        if (history_state.redo_list.length > REDO_HARD_LIMIT) {
+            history_state.redo_list.shift();
+        }
         await command.undo();
+    } catch (err) {
+        if (command !== undefined) {
+            history_state.redo_list.pop();
+            history_state.undo_list.push(command);
+        }
+        throw err;
+    } finally {
+        history_state.is_executing = false;
+    }
+
+    history_handle_state_change();
+    return command;
+}
+
+/**
+ * 执行重做：弹出 redo 栈顶命令并调用 redo()
+ *
+ * 与 history_handle_undo 严格对称（undo 把命令从 undo 挪到 redo，本函数挪回来）。
+ * 失败时同样回滚栈，理由见 history_handle_undo。
+ * @returns {Promise<Command|null>} 被重做的命令，无命令可重做时返回 null
+ */
+export async function history_handle_redo() {
+    if (history_state.is_executing || history_state.redo_list.length === 0) return null;
+
+    history_state.is_executing = true;
+    let command;
+    try {
+        command = history_state.redo_list.pop();
+        history_state.undo_list.push(command);
+        await command.redo();
+    } catch (err) {
+        if (command !== undefined) {
+            history_state.undo_list.pop();
+            history_state.redo_list.push(command);
+        }
+        throw err;
     } finally {
         history_state.is_executing = false;
     }
@@ -335,6 +394,14 @@ export function history_trim_undo_front(maxSteps) {
  */
 export function history_peek_undo() {
     return history_state.undo_list[history_state.undo_list.length - 1];
+}
+
+/**
+ * 获取 redo 栈顶部命令（不移除）——重做跨页切换时需要先看栈顶命令属于哪页
+ * @returns {Command|undefined}
+ */
+export function history_peek_redo() {
+    return history_state.redo_list[history_state.redo_list.length - 1];
 }
 
 export { history_state };
