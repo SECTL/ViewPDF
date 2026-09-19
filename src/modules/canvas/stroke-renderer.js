@@ -4,6 +4,52 @@ export function getPenEffectMode() {
     return window.DRAW_CONFIG?.penEffectMode || 'off';
 }
 
+/**
+ * 常量宽度笔画的 Path2D 缓存。
+ *
+ * Path2D 的几何只由 stroke.points 决定，且以**内容坐标**书写（瓦片偏移与
+ * DPR 都由 ctx 的变换承担），因此与瓦片、DPR、缩放全都无关 —— 同一笔画的
+ * 路径在所有瓦片、所有重建之间都是同一个。此前每块瓦片每次重建都对每条
+ * 相交笔画重新 new Path2D 并逐点 lineTo，同一笔画被重复构建
+ * 「命中瓦片数 × 重建次数」次。
+ *
+ * 以「点数组长度 + 首尾点对象标识」作版本判据：笔画被追加点（长度变）或
+ * 原地替换端点（首尾标识变）时自动失效，避免沿用过期路径画出错误笔迹。
+ *
+ * ⚠️ 该判据**看不到「原地改写坐标值」**（长度不变、点对象标识也不变）。
+ * 任何原地改写已有 stroke.points 的代码都必须显式调用
+ * invalidate_stroke_path_cache()（或统一入口
+ * window.main_invalidate_stroke_geometry_caches()），否则会继续按旧坐标绘制。
+ */
+let _strokePathCache = new WeakMap();
+
+/**
+ * 作废全部常量宽度笔画的 Path2D 缓存。
+ * 与 RealPenManager.invalidate_cache() 一起由 main.js 的统一入口调用。
+ */
+export function invalidate_stroke_path_cache() {
+    _strokePathCache = new WeakMap();
+}
+
+function _get_stroke_path(stroke) {
+    const pts = stroke.points;
+    const last = pts[pts.length - 1];
+    const cached = _strokePathCache.get(stroke);
+    if (cached && cached.n === pts.length && cached.first === pts[0] && cached.last === last) {
+        return cached.path;
+    }
+    const path = new Path2D();
+    path.moveTo(pts[0].fromX, pts[0].fromY);
+    path.lineTo(pts[0].toX, pts[0].toY);
+    for (let i = 1; i < pts.length; i++) {
+        const p = pts[i];
+        path.lineTo(p.fromX, p.fromY);
+        path.lineTo(p.toX, p.toY);
+    }
+    _strokePathCache.set(stroke, { n: pts.length, first: pts[0], last, path });
+    return path;
+}
+
 function _render_segment_ellipse(ctx, fromX, fromY, toX, toY, lineWidth, color) {
     const dx = toX - fromX;
     const dy = toY - fromY;
@@ -27,8 +73,12 @@ function _render_segment_ellipse(ctx, fromX, fromY, toX, toY, lineWidth, color) 
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array} strokes - 笔画数组
  * @param {Object} options
- * @param {number} options.renderScale - 当前 canvas 缩放比
  * @param {Object} [options.penManager] - RealPenManager 实例（笔锋渲染）
+ *
+ * 注意：这里曾经声明过一个 `options.renderScale`（JSDoc 有、函数体从未读取）。
+ * 线宽在书写时已按当时的缩放折算进 `stroke.lineWidth`，渲染侧不需要再乘缩放。
+ * 若将来真要按缩放重算线宽，必须连 `PenTessellator._build_runs(ts, scaleRatio)`
+ * 一起改（该参数当前恒为 1，见 `tessellator_render_stroke(ctx, ts, 1)`）。
  */
 export async function renderStrokesToContext(ctx, strokes, options = {}) {
     if (strokes.length === 0) return;
@@ -199,14 +249,7 @@ export async function renderStrokesToContext(ctx, strokes, options = {}) {
             batchIsErase = (stroke.type === 'erase');
 
             const pts = stroke.points;
-            const path = new Path2D();
-            path.moveTo(pts[0].fromX, pts[0].fromY);
-            path.lineTo(pts[0].toX, pts[0].toY);
-            for (let i = 1; i < pts.length; i++) {
-                const p = pts[i];
-                path.lineTo(p.fromX, p.fromY);
-                path.lineTo(p.toX, p.toY);
-            }
+            const path = _get_stroke_path(stroke);
             ctx.stroke(path);
             const lastPt = pts[pts.length - 1];
             batchPrevMidX = (lastPt.fromX + lastPt.toX) / 2;
