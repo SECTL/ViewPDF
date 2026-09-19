@@ -33,8 +33,6 @@ export class DocumentReaderPageManager {
             is_visible: false,
             is_virtualized: false,
             loading_promise: null,
-            overlay_canvas: null,
-            overlay_ctx: null,
             pdf_canvas: null,
             pdf_render_css_width: 0,
             pdf_render_promise: null,
@@ -79,9 +77,6 @@ export class DocumentReaderPageManager {
                 page.tile_renderer = null;
             }
             page.is_tiles_initialized = false;
-            if (page.overlay_canvas && page.overlay_canvas.parentNode) {
-                page.overlay_canvas.parentNode.removeChild(page.overlay_canvas);
-            }
             if (page.pdf_render_task) {
                 page.pdf_render_task.cancel?.();
             }
@@ -89,8 +84,6 @@ export class DocumentReaderPageManager {
                 page.pdf_canvas.width = 0;
                 page.pdf_canvas.height = 0;
             }
-            page.overlay_canvas = null;
-            page.overlay_ctx = null;
             page.pdf_canvas = null;
             page.pdf_render_css_width = 0;
             page.pdf_render_promise = null;

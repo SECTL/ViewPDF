@@ -10,10 +10,13 @@ import {
     history_execute_command,
     history_init_manager,
     history_validate_undo,
+    history_validate_redo,
     history_handle_undo,
+    history_handle_redo,
     history_handle_state_change,
     history_trim_undo_front,
     history_peek_undo,
+    history_peek_redo,
     DrawCommand,
     ClearCommand,
     history_state
@@ -80,7 +83,6 @@ class DocumentReaderManager {
         this.savedDrawMode = null;
         this._was_camera_open_before = false;
         this._last_loaded_index = -1;
-        this._page_visible_timeout_id = null;
         this._wheel_raf_id = null;               // 滚轮缩放 rAF 节流
         this._smooth_transform_timeout_id = null; // will-change 延迟移除
         this._gpu_cleanup_delay_ms = 800;
@@ -184,8 +186,8 @@ class DocumentReaderManager {
         this._dr_last_canvas_x = 0;
         this._dr_last_canvas_y = 0;
 
-        // 自适应 DPR（按缩放级别 + 内存压力动态降级，减少 4K 屏幕 GPU 显存占用）
-        this._adaptive_dpr_enabled = true;
+        // 自适应 DPR 已收归 ResolutionController（按角色分级 + 内存压力降级），
+        // 本类不再持有开关状态；是否动态由 DRAW_CONFIG.dynamicDprEnabled 决定
 
         // gesture 模块实例
         this._input_source = null;
@@ -271,8 +273,12 @@ class DocumentReaderManager {
                     <span>橡皮</span>
                 </button>
                 <button class="toolbar-btn function-btn" id="drBtnUndo">
-                    <img data-icon="undo" width="16" height="16" alt="撤销">
+                    <img data-icon="reply" width="16" height="16" alt="撤销">
                     <span>撤销</span>
+                </button>
+                <button class="toolbar-btn function-btn" id="drBtnRedo">
+                    <img data-icon="arrow-repeat" width="16" height="16" alt="重做">
+                    <span>重做</span>
                 </button>
                 <button class="toolbar-btn function-btn" id="drBtnBlackboard">
                     <img data-icon="blackboard" width="16" height="16" alt="小黑板">
@@ -967,17 +973,9 @@ class DocumentReaderManager {
         this._pages_with_tiles.clear();
         this.page_manager.destroy();
 
-        // 清理 batch_draw 和 overlay_canvas
+        // 清理 batch_draw 与覆盖层（像素释放与 DOM 摘除均由 OverlayManager.destroy 负责）
         if (this.batch_draw) {
-            // 显式清空 overlay canvas 释放 GPU 纹理，交由 OverlayManager 统一销毁
-            const ov = this.batch_draw.overlay;
-            if (ov?.canvas) {
-                const ctx = ov.canvas.getContext('2d');
-                if (ctx) ctx.clearRect(0, 0, ov.canvas.width, ov.canvas.height);
-                ov.canvas.width = 0;
-                ov.canvas.height = 0;
-            }
-            this.batch_draw.destroy_overlay();
+            this.batch_draw.overlay.destroy();
             this.batch_draw.batch_draw_delete_all();
             if (window.ResolutionController && this._res_ctx) {
                 window.ResolutionController.unregister_context(this._res_ctx);
@@ -1521,7 +1519,6 @@ class DocumentReaderManager {
             const page_div = this._spawn_page_element(i, base_w);
             // overlay canvas 延迟到 _on_page_visible 创建（节省大量 getContext 开销）
             fragment.appendChild(page_div);
-            pages[i]._visible_init_timeout = null;
         }
 
         wrapper.appendChild(fragment);
@@ -1748,10 +1745,12 @@ class DocumentReaderManager {
     // ====== 懒加载（手动可见性检查，transform 替代 IntersectionObserver） ======
 
     _destroy_lazy_loading() {
-        // 清理延迟销毁定时器
-        if (this._page_visible_timeout_id !== null) {
-            clearTimeout(this._page_visible_timeout_id);
-            this._page_visible_timeout_id = null;
+        // 清理按页挂的延迟销毁定时器（每页一个，见 _on_page_hidden）
+        for (const page_data of this.page_manager?.pages_list || []) {
+            if (page_data && page_data._visible_cleanup_timeout_id != null) {
+                clearTimeout(page_data._visible_cleanup_timeout_id);
+                page_data._visible_cleanup_timeout_id = null;
+            }
         }
     }
 
@@ -2203,10 +2202,12 @@ class DocumentReaderManager {
         if (this._dom_virtualize()) this._ensure_page_element(page_index);
         this._ensure_page_runtime_dom(page_index);
 
-        // 取消待销毁的 tiles（页面快速滚回可见区域时避免闪烁）
-        if (this._page_visible_timeout_id !== null) {
-            clearTimeout(this._page_visible_timeout_id);
-            this._page_visible_timeout_id = null;
+        // 取消「该页」待销毁的 tiles（页面快速滚回可见区域时避免闪烁）。
+        // 定时器必须按页存放：用单个全局 id 时，这里会误取消**另一页**待执行的清理，
+        // 让已隐藏页的瓦片显存一直不回收。
+        if (page_data._visible_cleanup_timeout_id != null) {
+            clearTimeout(page_data._visible_cleanup_timeout_id);
+            page_data._visible_cleanup_timeout_id = null;
         }
 
         // 打开期预渲染锁：面板未激活时几何为 0，此时栅格化只会得到错位瓦片、
@@ -2286,18 +2287,14 @@ class DocumentReaderManager {
         if (!page_data) return;
         page_data.is_visible = false;
 
-        // 取消待处理的初始化定时器（快速滚动跳过该页）
-        if (page_data._visible_init_timeout !== null) {
-            clearTimeout(page_data._visible_init_timeout);
-            page_data._visible_init_timeout = null;
+        // 离开视口后延迟释放页面 GPU 资源（防抖动 + requestIdleCallback 降 GPU 峰值）。
+        // 定时器挂在 page_data 上（而非全局单变量）：隐藏 A 页后再显示 B 页时，
+        // B 页只该取消自己的清理，不应把 A 页的清理一起取消掉。
+        if (page_data._visible_cleanup_timeout_id != null) {
+            clearTimeout(page_data._visible_cleanup_timeout_id);
         }
-
-        // 离开视口后延迟释放页面 GPU 资源（防抖动 + requestIdleCallback 降 GPU 峰值）
-        if (this._page_visible_timeout_id !== null) {
-            clearTimeout(this._page_visible_timeout_id);
-        }
-        this._page_visible_timeout_id = setTimeout(() => {
-            this._page_visible_timeout_id = null;
+        page_data._visible_cleanup_timeout_id = setTimeout(() => {
+            page_data._visible_cleanup_timeout_id = null;
             const destroy_fn = () => this._cleanup_hidden_page_gpu();
             if (window.requestIdleCallback) {
                 window.requestIdleCallback(destroy_fn, { timeout: 2000 });
@@ -2623,44 +2620,37 @@ class DocumentReaderManager {
     }
 
     /**
-     * 根据缩放级别和内存压力计算自适应 DPR
-     * @param {number} base_dpr - 基础设备像素比
+     * 页面栅格化 DPR——按页面角色分级，算法本体全部来自 ResolutionController。
+     *
+     * 本方法只做一件事：把「活动页 / 半可见邻页 / 离屏预渲染页」这一页面语义
+     * 翻译成控制器的 role 分级参数。此前的 base*scale→ceil→cap4 计算是本文件
+     * 的第二份 DPR 实现，与瓦片层/覆盖层各自漂移，且完全不响应「动态分辨率」
+     * 开关（_adaptive_dpr_enabled 恒为 true）——现已收归控制器。
+     *
      * @param {number} scale - 当前缩放级别
      * @param {boolean} is_active_page - 是否活动页
-     * @param {boolean} is_visible - 是否（至少部分）在视口内。非活动的可见页
-     *   （翻页时半可见的相邻页）此前也被按"非活动"降级，是"翻到两页中间时
-     *   下一页模糊、完全翻过去才清晰"的根源之一
-     * @returns {number} 降级后的 DPR
+     * @param {boolean} is_visible - 是否（至少部分）在视口内
+     * @returns {number} 该页的目标 DPR
      */
-    _calculate_adaptive_dpr(base_dpr, scale, is_active_page = true, is_visible = true) {
-        if (!this._adaptive_dpr_enabled) return Math.min(base_dpr, 2);
-
-        // 极低缩放（<0.3）时才强制降 DPR=1，避免 0.5x 附近的模糊
-        if (scale < 0.3) return 1;
-
-        // 内存压力检测：堆内存超 500MB 时降级 DPR
-        if (performance.memory?.usedJSHeapSize > 500 * 1024 * 1024) return 1;
-
-        // 使用 ceil 语义避免向下取整导致的模糊，上限 4x 防止 OOM
-        const dpr = base_dpr * scale;
-        const step = 0.25;
-        const stepped = Math.min(Math.ceil(dpr / step) * step, 4);
-
-        // 活动页全量 DPR
-        if (is_active_page) return stepped;
-
-        // 非活动的可见页（翻页中半可见的相邻页）：保底 2x——scale=1 时与活动页
-        // 等清晰度，翻页瞬间即清晰；大幅放大时封顶 2x 兼顾显存
-        if (is_visible) return Math.min(stepped, 2);
-
-        // 不可见页（预渲染/远离）维持旧策略：大幅放大时降 1x 省内存
-        return scale > 3 ? 1 : stepped;
+    _calculate_adaptive_dpr(scale, is_active_page = true, is_visible = true) {
+        const res = window.ResolutionController;
+        const role = is_active_page ? 'active' : (is_visible ? 'neighbor' : 'offscreen');
+        if (res && typeof res.calc_tile_dpr === 'function') {
+            // memoryGuard：堆内存超阈值时页面栅格化降到 1x，
+            // 瓦片层无此策略，故只在此路径显式开启，保持两侧既有行为
+            return res.calc_tile_dpr(scale, { role, memoryGuard: true });
+        }
+        // 控制器缺失属于加载顺序被破坏。此处不复刻一套公式——第二份实现会与
+        // 控制器的口径静默漂移，而「页面清晰度与瓦片层不一致」极难定位。
+        // 退回 1x 是安全降级（更省显存），报错让问题当场可见。
+        console.error('[DocumentReader] ResolutionController 未就绪，页面栅格化降级为 1x');
+        return 1;
     }
 
     /** 计算某页当前期望的 PDF 渲染参数（渲染起点与完成后收敛检查共用，避免两处漂移） */
     _pdf_desired_render_params(page_index, page_data, is_prerender) {
         const css_w = Math.round(parseFloat(page_data.page_element.style.width)) || page_data.page_element.clientWidth || 800;
-        const base_dpr = window.devicePixelRatio || window.DRAW_CONFIG?.dpr || 1;
+        const scale = this.dr_scale || 1;
         if (is_prerender) {
             // 预渲染分级：与活动页相邻的页（翻页立即看到的页）直接按全量 DPR
             // 栅格化——翻页瞬间无需再等一次高清重渲染；更远的页才降 1x 省资源
@@ -2668,16 +2658,17 @@ class DocumentReaderManager {
             if (dist > 1) return { css_w, target_dpr: 1 };
             return {
                 css_w,
-                target_dpr: this._calculate_adaptive_dpr(base_dpr, this.dr_scale, false, true)
+                target_dpr: this._calculate_adaptive_dpr(scale, false, true)
             };
         }
-        const target_dpr = this._calculate_adaptive_dpr(
-            base_dpr,
-            this.dr_scale,
-            page_index === this.active_page_index,
-            !!page_data.is_visible
-        );
-        return { css_w, target_dpr };
+        return {
+            css_w,
+            target_dpr: this._calculate_adaptive_dpr(
+                scale,
+                page_index === this.active_page_index,
+                !!page_data.is_visible
+            )
+        };
     }
 
     async _render_pdf_page_direct(page_index, force = false, is_prerender = false) {
@@ -3580,6 +3571,13 @@ class DocumentReaderManager {
 
         history_state.undo_list.forEach(scale_command);
         history_state.redo_list.forEach(scale_command);
+
+        // 上面全是**原地改写**笔画几何（points/bounds/lineWidth 就地乘系数），
+        // 而笔锋细分缓存与 Path2D 缓存都以笔画对象标识作键、判据看不到这次变化。
+        // 不作废的话，重绘仍按改写前的坐标落笔：位移小则批注错位，位移大到
+        // 越出所属瓦片时整块瓦片空白——「缩小窗口再放大回来批注就不见了，
+        // 要再画一笔才出来」即此因。必须在重建瓦片前作废。
+        window.main_invalidate_stroke_geometry_caches?.();
     }
 
     /** 确保页面 tile 已初始化（延迟创建的页面在首次绘制前调用） */
@@ -3667,41 +3665,28 @@ class DocumentReaderManager {
         overlay_canvas.style.pointerEvents = 'none';
         overlay_canvas.style.zIndex = '100';
 
-        // 先创建 batch_draw 实例，复用 DPR 计算逻辑
+        // 先创建 batch_draw 实例；覆盖层 DPR 由 OverlayManager -> ResolutionController 提供
         this.batch_draw = new window.RealtimeBatchDrawManager();
         // 阅读器为多页架构：_tileRenderer 必须始终指向当前页的渲染器，
         // 禁止回退到主画布渲染器（否则擦除会误伤主画布/其他页笔迹）
         this.batch_draw.fallbackToMain = false;
-        const init_overlay_dpr = this.batch_draw.calc_overlay_dpr(this.dr_scale || 1);
-
-        // 设置初始尺寸为视口大小（含 DPR，确保清晰）
-        overlay_canvas.width = Math.ceil(window.innerWidth * init_overlay_dpr);
-        overlay_canvas.height = Math.ceil(window.innerHeight * init_overlay_dpr);
-        overlay_canvas.style.width = window.innerWidth + 'px';
-        overlay_canvas.style.height = window.innerHeight + 'px';
 
         document.body.appendChild(overlay_canvas);
 
-        const overlay_ctx = overlay_canvas.getContext('2d');
-        overlay_ctx.imageSmoothingEnabled = false;
-
-        // 统一经 OverlayManager 注入：登记视口展示尺寸 + 动态 DPR，
-        // 后续 zoom / 设置变更走 overlay.request_dpr 才不会把画布缩成 1px
+        // 统一经 OverlayManager 注入：一次完成「创建 2D 上下文（按 _contextAttributes）
+        // + 登记视口展示尺寸 + 按控制器计算覆盖层 DPR + 设置像素/CSS 尺寸
+        // + imageSmoothingEnabled」。此前先在外部手写一遍 width/height/style 再交给
+        // attach 覆盖一遍，两次 resize 之间必有一次白清空，且尺寸口径容易走散；
+        // 2D 上下文也一并在管理器内创建，避免「该带哪些 attributes」两处走散。
         this.batch_draw.overlay.attach(
-            overlay_canvas, overlay_ctx, window.innerWidth, window.innerHeight
+            overlay_canvas, null, window.innerWidth, window.innerHeight
         );
-        this.batch_draw._overlay_cached_rect_left = null;
-        this.batch_draw._overlay_cached_rect_top = null;
         // 预览层变换以"当前页内容原点的实时屏幕位置"为锚（页面 rect），
         // 自动包含滚动、缩放与容器偏移；随 active 页切换自动跟随
-        this.batch_draw.set_transform_provider(() => {
-            const page_data = this.page_manager.pages_list[this.active_page_index];
-            const r = page_data?.page_element?.getBoundingClientRect();
-            return {
-                scale: this.dr_scale || 1,
-                originX: r ? r.left : 0,
-                originY: r ? r.top : 0
-            };
+        this.batch_draw.overlay.set_rect_anchor({
+            get_rect: () => this.page_manager.pages_list[this.active_page_index]
+                ?.page_element?.getBoundingClientRect() || null,
+            get_scale: () => this.dr_scale || 1
         });
 
         if (window.DRAW_CONFIG.frameRateMode) {
@@ -3713,14 +3698,14 @@ class DocumentReaderManager {
             this._res_ctx = {
                 id: 'reader',
                 get_scale: () => this.dr_scale || 1,
-                on_dpr_change: (scale, force) => {
+                on_dpr_change: (scale) => {
                     for (const i of this._pages_with_tiles) {
                         const pd = this.page_manager.pages_list[i];
                         if (pd && (pd.is_visible || this._is_page_near_active(i, this._tile_keep_distance))) {
                             pd.tile_renderer?.update_visible_tile_dpr(scale, false, true);
                         }
                     }
-                    this.batch_draw?.sync_overlay_dpr_now(scale, force);
+                    this.batch_draw?.overlay?.sync_dpr_now(scale);
                 }
             };
             window.ResolutionController.register_context(this._res_ctx);
@@ -3745,23 +3730,6 @@ class DocumentReaderManager {
             page_data.tile_renderer.destroy();
             page_data.tile_renderer = null;
         }
-
-        // 清理历史版本可能已创建的 per-page overlay canvas，避免滚动大量页面后驻留纹理
-        if (page_data.overlay_canvas) {
-            const ctx = page_data.overlay_canvas.getContext('2d');
-            if (ctx) {
-                ctx.clearRect(0, 0, page_data.overlay_canvas.width, page_data.overlay_canvas.height);
-            }
-            page_data.overlay_canvas.width = 0;
-            page_data.overlay_canvas.height = 0;
-            if (page_data.overlay_canvas.parentNode) {
-                page_data.overlay_canvas.parentNode.removeChild(page_data.overlay_canvas);
-            }
-        }
-        page_data.overlay_canvas = null;
-        page_data.overlay_ctx = null;
-        page_data._overlay_cached_w = 0;
-        page_data._overlay_cached_h = 0;
 
         const tiles_container = page_data._tiles_container;
         if (tiles_container) tiles_container.innerHTML = '';
@@ -3827,30 +3795,12 @@ class DocumentReaderManager {
 
     /**
      * 分页 overlay 已废弃：批注实时预览统一走全局覆盖层（doc-reader-overlay-global），
-     * 其尺寸随视口变化，由 _sync_reader_overlay_size / OverlayManager 维护。
+     * 其尺寸随视口变化，由 OverlayManager 统一维护。
      * 此处保留调用点语义：页面几何变化后使预览层变换缓存失效，下一帧重新对齐。
+     * @param {number} _page_index - 已无实际用途（保留形参以兼容既有调用点）
      */
-    _update_overlay_size(page_index) {
-        const page_data = this.page_manager.pages_list[page_index];
-        if (page_data?.overlay_canvas && page_data.page_element) {
-            // 历史版本遗留的分页 overlay：仍按原逻辑维护，避免残留 DOM 显示异常
-            const rect = page_data.page_element.getBoundingClientRect();
-            const w = Math.ceil(rect.width);
-            const h = Math.ceil(rect.height);
-            if (page_data._overlay_cached_w !== w || page_data._overlay_cached_h !== h) {
-                page_data._overlay_cached_w = w;
-                page_data._overlay_cached_h = h;
-                page_data.overlay_canvas.width = w;
-                page_data.overlay_canvas.height = h;
-                page_data.overlay_canvas.style.width = w + 'px';
-                page_data.overlay_canvas.style.height = h + 'px';
-                page_data.overlay_ctx.imageSmoothingEnabled = false;
-            }
-        }
-        // 全局覆盖层：强制下一帧重新同步视图变换
-        if (this.batch_draw?.overlay) {
-            this.batch_draw.overlay._transformScale = 0;
-        }
+    _update_overlay_size(_page_index) {
+        this.batch_draw?.overlay?.invalidate_transform();
     }
 
     // ====== 批注渲染 ======
@@ -3881,9 +3831,9 @@ class DocumentReaderManager {
         const page = this.page_manager.get_current_page();
         if (!page || !page.tile_renderer) return;
 
-        const orig_scale = window.state?.scale;
-        if (window.state) window.state.scale = this.dr_scale;
-
+        // 这里曾经临时把 window.state.scale 改成 dr_scale（为了 renderStrokesToContext 的
+        // renderScale 参数）——但该参数在渲染侧从未被读取，整段存取是空转，还留着
+        // 「异常路径下全局状态不复原」的风险，故已删除。线宽由书写时的缩放决定。
         window.main_reset_context_state?.();
         page.tile_renderer._strokeHistoryRef = page.stroke_history;
         page.tile_renderer.mark_strokes_changed();
@@ -3901,11 +3851,7 @@ class DocumentReaderManager {
             page.tile_renderer.mark_all();
         }
 
-        try {
-            page.tile_renderer.rebuild_all();
-        } finally {
-            if (window.state) window.state.scale = orig_scale;
-        }
+        page.tile_renderer.rebuild_all();
     }
 
     // ====== 绘制事件 ======
@@ -4144,8 +4090,7 @@ class DocumentReaderManager {
             this.dr_scale = this._dr_zoom_damper.update(ev.scale);
             this.dr_cached_inv_scale = 1 / this.dr_scale;
             if (this.batch_draw) {
-                this.batch_draw._overlay_cached_rect_left = null;
-                this.batch_draw._overlay_cached_rect_top = null;
+                this.batch_draw.overlay?.invalidate_transform();
             }
             this.dr_canvas_x = ev.centerX - this.dr_start_finger0_cx * this.dr_scale;
             this.dr_canvas_y = ev.centerY - this.dr_start_finger0_cy * this.dr_scale;
@@ -4313,6 +4258,22 @@ class DocumentReaderManager {
         }
 
         if (is_input_focused) return;
+
+        // Ctrl+Z 撤销 / Ctrl+Y 或 Ctrl+Shift+Z 重做（与黑板一致）
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            if (e.shiftKey) {
+                this.handle_redo();
+            } else {
+                this.handle_undo();
+            }
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+            e.preventDefault();
+            this.handle_redo();
+            return;
+        }
 
         // Home → 第一页，End → 最后一页
         if (e.key === 'Home') {
@@ -4543,6 +4504,31 @@ class DocumentReaderManager {
         this._update_button_status();
     }
 
+    async handle_redo() {
+        if (!history_validate_redo()) return;
+        if (this.is_drawing) return;
+
+        // 检查栈顶命令所属页面，若与当前页不同则先切换（与 handle_undo 对称）
+        const top_cmd = history_peek_redo();
+        if (top_cmd && typeof top_cmd.page_index === 'number' &&
+            top_cmd.page_index !== this.active_page_index) {
+            this.active_page_index = top_cmd.page_index;
+            this.page_manager.current_index = top_cmd.page_index;
+            await this._scroll_to_page(top_cmd.page_index);
+            this._update_page_indicator();
+            this._sync_page_buttons();
+        }
+
+        this._diag_suppress = true;
+        try {
+            await history_handle_redo();
+        } finally {
+            this._diag_suppress = false;
+        }
+        this._dr_diag('redo', { page: this.active_page_index + 1 });
+        this._update_button_status();
+    }
+
     async handle_clear() {
         if (this.is_drawing) return;
 
@@ -4760,6 +4746,8 @@ class DocumentReaderManager {
         this._el_comment_btn = document.getElementById('drBtnComment');
         this._el_eraser_btn = document.getElementById('drBtnEraser');
         this._el_undo_btn = document.getElementById('drBtnUndo');
+        this._el_redo_btn = document.getElementById('drBtnRedo');
+        if (this._el_redo_btn) this._el_redo_btn.addEventListener('click', () => this.handle_redo());
 
         if (this._el_move_btn) this._el_move_btn.addEventListener('click', () => this._set_draw_mode('move'));
         if (this._el_comment_btn) this._el_comment_btn.addEventListener('click', () => {
@@ -5207,7 +5195,10 @@ class DocumentReaderManager {
             // 使用更小的渲染尺寸以提高性能
             const css_w = Math.max(120, Math.round(canvas.clientWidth || canvas.closest('.dr-page-sidebar-item')?.clientWidth || 180));
             const css_h = Math.round(css_w * 9 / 16);
-            const dpr = Math.min(window.devicePixelRatio || window.DRAW_CONFIG?.dpr || 1, 2);
+            // 缩略图只需「够显示 + 有上限」，不随缩放提升，走控制器的小尺寸 UI 档。
+            // 控制器缺失时退 1x：缩略图宁可粗一点，也不在此复刻一份公式。
+            const res = window.ResolutionController;
+            const dpr = res && res.calc_ui_dpr ? res.calc_ui_dpr(1, 2) : 1;
             const canvas_w = Math.ceil(css_w * dpr);
             const canvas_h = Math.ceil(css_h * dpr);
             const page_scale = Math.min(canvas_w / base_viewport.width, canvas_h / base_viewport.height);
@@ -5436,8 +5427,7 @@ class DocumentReaderManager {
 
         // 使 overlay 缓存失效
         if (this.batch_draw) {
-            this.batch_draw._overlay_cached_rect_left = null;
-            this.batch_draw._overlay_cached_rect_top = null;
+            if (this.batch_draw?.overlay) this.batch_draw.overlay.invalidate_transform();
         }
 
         this._dr_update_move_bound();
@@ -5469,7 +5459,7 @@ class DocumentReaderManager {
         if (!this._dr_is_zooming) {
             this._dr_is_zooming = true;
             if (this.batch_draw) {
-                this.batch_draw.hide_overlay();
+                this.batch_draw.overlay.hide();
             }
         }
         if (this._zoom_complete_timer !== null) clearTimeout(this._zoom_complete_timer);
@@ -5478,8 +5468,8 @@ class DocumentReaderManager {
             this._dr_is_zooming = false;
             if (this.batch_draw) {
                 // 缩放结束后按统一控制器重算 overlay DPR 再恢复显示
-                this.batch_draw.sync_overlay_dpr_now(this.dr_scale || 1);
-                this.batch_draw.show_overlay();
+                this.batch_draw.overlay.sync_dpr_now(this.dr_scale || 1);
+                this.batch_draw.overlay.show();
             }
             // 缩放结束后批量重绘可见页 + 更新 tile DPR
             this._check_page_visibility();
@@ -5513,7 +5503,7 @@ class DocumentReaderManager {
         if (this._dr_is_zooming) {
         this._dr_is_zooming = false;
             if (this.batch_draw) {
-                this.batch_draw.show_overlay();
+                this.batch_draw.overlay.show();
             }
         }
     }
@@ -5644,8 +5634,7 @@ class DocumentReaderManager {
                 this.dr_scale = new_s;
                 this.dr_cached_inv_scale = 1 / new_s;
                 if (this.batch_draw) {
-                    this.batch_draw._overlay_cached_rect_left = null;
-                    this.batch_draw._overlay_cached_rect_top = null;
+                    if (this.batch_draw?.overlay) this.batch_draw.overlay.invalidate_transform();
                 }
 
                 this._dr_enable_smooth_transform();
@@ -5683,6 +5672,8 @@ class DocumentReaderManager {
     _update_button_status() {
         const btn = this._el_undo_btn || document.getElementById('drBtnUndo');
         if (btn) btn.disabled = !history_validate_undo();
+        const redo_btn = this._el_redo_btn || document.getElementById('drBtnRedo');
+        if (redo_btn) redo_btn.disabled = !history_validate_redo();
     }
 }
 
