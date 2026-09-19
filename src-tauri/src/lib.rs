@@ -253,6 +253,9 @@ fn app_confirm_close(app: tauri::AppHandle) {
 /// Tauri IPC 命令：检查是否达到自动清理缓存的间隔，若达到则执行清理
 #[tauri::command]
 fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
+    // 与 settings_save_all 共用配置锁：本函数会「读配置 → 写 lastCacheClearDate」，
+    // 不加锁会与设置保存互相覆盖
+    let _config_guard = config_lock();
     let paths = AppPaths::new(&app)?;
     let config_file = &paths.config_path;
     
@@ -406,6 +409,8 @@ fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
 /// Tauri IPC 命令：检查是否达到自动清除 Word 转换缓存的间隔，若达到则执行清理
 #[tauri::command]
 fn word_cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
+    // 同 cache_validate_auto_clear：与设置保存共用配置锁
+    let _config_guard = config_lock();
     let paths = AppPaths::new(&app)?;
     let config_file = &paths.config_path;
     
@@ -675,6 +680,64 @@ fn theme_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 极简 base64 编码（仅用于主题预览图内嵌 data URL，避免为此引入依赖）
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Tauri IPC 命令：读取用户主题的预览图，返回 data URL（前端直接塞进 <img src>）
+#[tauri::command]
+fn theme_get_preview(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    if name.is_empty() {
+        return Err("Theme name cannot be empty".to_string());
+    }
+
+    let paths = AppPaths::new(&app)?;
+    let theme_base = &paths.themes_dir;
+    let theme_base_canonical = std::fs::canonicalize(theme_base)
+        .map_err(|_| "Themes directory not found".to_string())?;
+    let theme_dir = theme_base.join(&name);
+    let theme_dir_canonical = std::fs::canonicalize(&theme_dir)
+        .map_err(|_| format!("Theme '{}' not found", name))?;
+    if !theme_dir_canonical.starts_with(&theme_base_canonical) {
+        return Err("Invalid theme name".to_string());
+    }
+
+    const CANDIDATES: [(&str, &str); 5] = [
+        ("preview.png", "image/png"),
+        ("preview.jpg", "image/jpeg"),
+        ("preview.jpeg", "image/jpeg"),
+        ("preview.webp", "image/webp"),
+        ("preview.gif", "image/gif"),
+    ];
+    for (file, mime) in CANDIDATES {
+        let p = theme_dir_canonical.join(file);
+        if p.is_file() {
+            let data = std::fs::read(&p)
+                .map_err(|e| format!("Failed to read preview: {}", e))?;
+            // 预览图限 4MB，防止异常包撑爆 IPC
+            if data.len() > 4 * 1024 * 1024 {
+                return Err("Preview image too large (>4MB)".to_string());
+            }
+            return Ok(format!("data:{};base64,{}", mime, base64_encode(&data)));
+        }
+    }
+
+    Err(format!("Theme '{}' has no preview image", name))
+}
+
 /// 在 ZIP 中按文件名模糊匹配条目索引（忽略路径前缀差异）
 fn zip_find_entry(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Option<usize> {
     for i in 0..archive.len() {
@@ -688,16 +751,61 @@ fn zip_find_entry(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Opti
     None
 }
 
-/// 从 ZIP 中读取指定文件名的文本内容
+/// 从 ZIP 中读取指定文件名的文本内容（限长，防超大条目撑爆内存）
 fn zip_read_text(archive: &mut ZipArchive<std::fs::File>, target: &str) -> Result<String, String> {
     let idx = zip_find_entry(archive, target)
         .ok_or_else(|| format!("Missing {} in .vst file", target))?;
     let mut entry = archive.by_index(idx)
         .map_err(|e| format!("Failed to read {}: {}", target, e))?;
     let mut content = String::new();
-    entry.read_to_string(&mut content)
+    entry.by_ref().take(MAX_THEME_TEXT_BYTES + 1).read_to_string(&mut content)
         .map_err(|e| format!("Failed to read {}: {}", target, e))?;
+    if content.len() as u64 > MAX_THEME_TEXT_BYTES {
+        return Err(format!("{} in .vst file is too large (limit {} bytes)", target, MAX_THEME_TEXT_BYTES));
+    }
     Ok(content)
+}
+
+/// 主题包单条目解压上限（32 MiB）——正常主题只含 json/css/svg，远小于此值
+const MAX_THEME_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+/// 主题包解压总量上限（256 MiB）——防 zip bomb 撑爆内存/磁盘
+const MAX_THEME_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+/// 主题元数据（config.json / theme.json）读取上限（1 MiB）
+const MAX_THEME_TEXT_BYTES: u64 = 1024 * 1024;
+
+/// 把 ZIP 条目名规范化为可安全 join 到 target_dir 的相对路径。
+///
+/// 返回 `None` 表示该条目必须被丢弃。拒绝：
+/// * 绝对路径（`/etc/x`、`C:/x`、`C:\x`）—— 任何形式都会逃出 target_dir；
+/// * 任何 `..` 片段（Zip Slip 的经典载荷）；
+/// * 空片段（`a//b`）与 `.` 片段 —— 说明条目名不规范且可能被不同层解释成不同路径；
+/// * 含 NUL、`:` 的片段 —— NUL 截断与 NTFS 数据流。
+fn zip_entry_relative_path(entry_name: &str) -> Option<String> {
+    let normalized = entry_name.replace('\\', "/");
+
+    if normalized.starts_with('/') {
+        return None;
+    }
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return None;
+    }
+
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in normalized.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return None;
+        }
+        if seg.contains('\0') || seg.contains(':') {
+            return None;
+        }
+        segments.push(seg);
+    }
+    if segments.is_empty() {
+        return None;
+    }
+
+    Some(segments.join("/"))
 }
 
 /// Tauri IPC 命令：从 .vst 文件导入主题
@@ -852,6 +960,7 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
     }
 
     let prefix_len = common_prefix.len();
+    let mut total_bytes: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)
             .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
@@ -861,11 +970,41 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
         }
 
         let entry_name = entry.name().replace('\\', "/");
-        let relative = if prefix_len > 0 && entry_name.starts_with(&common_prefix) {
-            entry_name[prefix_len..].to_string()
-        } else {
-            entry_name.clone()
+
+        // Zip Slip 防护：条目名必须是可安全落到 target_dir 内的相对路径
+        let Some(validated) = zip_entry_relative_path(&entry_name) else {
+            log::warn!("Skipping unsafe zip entry (absolute or contains '..'): {:?}", entry_name);
+            continue;
         };
+
+        let relative = if prefix_len > 0 && validated.starts_with(&common_prefix) {
+            let stripped = validated[prefix_len..].to_string();
+            match zip_entry_relative_path(&stripped) {
+                Some(r) => r,
+                None => {
+                    log::warn!("Skipping unsafe zip entry after prefix strip: {:?}", entry_name);
+                    continue;
+                }
+            }
+        } else {
+            validated
+        };
+
+        // 解压体积上限（单条目 + 总量），防 zip bomb
+        let entry_size = entry.size();
+        if entry_size > MAX_THEME_ENTRY_BYTES {
+            return Err(format!(
+                "Entry '{}' is too large ({} bytes, limit {})",
+                entry_name, entry_size, MAX_THEME_ENTRY_BYTES
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(entry_size);
+        if total_bytes > MAX_THEME_TOTAL_BYTES {
+            return Err(format!(
+                "Theme archive unpacks to more than {} bytes",
+                MAX_THEME_TOTAL_BYTES
+            ));
+        }
 
         let target_path = target_dir.join(&relative);
 
@@ -875,8 +1014,14 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
         }
 
         let mut buffer = Vec::new();
-        entry.read_to_end(&mut buffer)
+        entry.by_ref().take(MAX_THEME_ENTRY_BYTES + 1).read_to_end(&mut buffer)
             .map_err(|e| format!("Failed to read entry '{}': {}", entry_name, e))?;
+        if buffer.len() as u64 > MAX_THEME_ENTRY_BYTES {
+            return Err(format!(
+                "Entry '{}' exceeds the {} byte limit while reading",
+                entry_name, MAX_THEME_ENTRY_BYTES
+            ));
+        }
 
         let mut out_file = std::fs::File::create(&target_path)
             .map_err(|e| format!("Failed to create file {:?}: {}", target_path, e))?;
@@ -899,13 +1044,23 @@ fn theme_import_vst(app: tauri::AppHandle, file_path: String, force: Option<bool
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static MIRROR_STATE: AtomicBool = AtomicBool::new(false);
 static OOBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MAIN_SCRIPT_LOADED: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 /// 主窗口关闭确认标志：前端保存批注/位置完成后由 app_confirm_close 置位，
 /// on_window_event 据此放行 CloseRequested（否则拦截并通知前端先保存）
 static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// config.json 读-改-写互斥锁。
+/// `settings_save_all` 与 `cache_validate_auto_clear` / `word_cache_validate_auto_clear`
+/// 都会「读配置 → 改一个字段 → 原子写回」，并发时后写者会拿旧快照覆盖前写者，
+/// 静默丢掉用户设置。所有读写 config.json 的命令都必须持此锁。
+static CONFIG_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 获取配置锁；`panic = "abort"` 下不会有中毒状态，这里仍容错取值
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ==================== 设置窗口 ====================
 
@@ -920,20 +1075,6 @@ async fn window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
         window.maximize().map_err(|e| format!("Failed to maximize: {}", e))?;
     }
     Ok(())
-}
-
-/// Tauri IPC 命令：更新镜像状态并通知前端
-#[tauri::command]
-async fn mirror_update_state(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
-    MIRROR_STATE.store(enabled, Ordering::SeqCst);
-    let _ = app.emit("mirror-changed", enabled);
-    Ok(())
-}
-
-/// Tauri IPC 命令：获取当前镜像状态
-#[tauri::command]
-async fn mirror_fetch_state() -> Result<bool, String> {
-    Ok(MIRROR_STATE.load(Ordering::SeqCst))
 }
 
 /// Tauri IPC 命令：获取应用版本号（编译时注入）
@@ -1037,6 +1178,51 @@ fn url_validate_github(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 把前端/用户提供的文件名清洗为可安全 join 的单一文件名。
+///
+/// 只取最后一段并拒绝 `..`/`.`/空/含 `:`/含 NUL 的名字 ——
+/// 否则 `..\..\x.exe` 这类名字会把文件写到目标目录之外。
+fn sanitize_file_name(raw: &str) -> Result<String, String> {
+    let normalized = raw.replace('\\', "/");
+    let base = normalized.rsplit('/').next().unwrap_or("");
+    if base.is_empty() || base == "." || base == ".." {
+        return Err(format!("Invalid file name: {}", raw));
+    }
+    if base.contains(':') || base.contains('\0') {
+        return Err(format!("Invalid file name: {}", raw));
+    }
+    Ok(base.to_string())
+}
+
+/// 遥测出口域名白名单：POST 走自建 Appwrite，GET 走 ipapi.co 查 IP 归属地。
+///
+/// 两个命令都直接接受前端传入的 URL，若不做域名限制，页面内任意脚本
+/// 都能拿它当 SSRF 跳板访问内网。
+const TELEMETRY_ALLOWED_HOSTS: [&str; 2] = ["appwrite.sectl.cn", "ipapi.co"];
+
+fn url_validate_telemetry(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("Invalid telemetry URL scheme: {}", parsed.scheme()));
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if !TELEMETRY_ALLOWED_HOSTS.contains(&host) {
+        return Err(format!("Telemetry URL host not allowed: {}", host));
+    }
+    Ok(())
+}
+
+/// 校验 MD5 十六进制串（前端 `main_calculate_md5` 产出 32 位小写十六进制）。
+///
+/// 该值会被直接拼进缓存文件名，不校验即可用 `../../x` 穿越目录。
+fn validate_hex_md5(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.len() != 32 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("Invalid file hash: {}", raw));
+    }
+    Ok(normalized)
+}
+
 /// Tauri IPC 命令：检查是否有新版本
 ///
 /// 直接通过 GitHub Releases API 获取最新发布（tag/说明/资产），
@@ -1130,6 +1316,8 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
 /// 遥测 HTTP POST 请求（绕过 CORS）
 #[tauri::command]
 async fn telemetry_http_post(url: String, body: String) -> Result<String, String> {
+    url_validate_telemetry(&url)?;
+
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(10))
@@ -1161,6 +1349,8 @@ async fn telemetry_http_post(url: String, body: String) -> Result<String, String
 /// 遥测 HTTP GET 请求（绕过 CORS）
 #[tauri::command]
 async fn telemetry_http_get(url: String) -> Result<String, String> {
+    url_validate_telemetry(&url)?;
+
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(5))
@@ -1478,6 +1668,9 @@ fn config_apply_settings_to_defaults(defaults: &serde_json::Value, settings: &se
 /// 配置文件损坏时备份并回退默认配置。
 #[tauri::command]
 async fn settings_save_all(app: tauri::AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    // 配置「读 → 改 → 原子写」必须与其它 config.json 写入者互斥，
+    // 否则并发保存会拿旧快照覆盖，静默丢设置（无 await，guard 不跨挂起点）
+    let _config_guard = config_lock();
     let paths = AppPaths::new(&app)?;
     
     if !paths.config_dir.exists() {
@@ -1723,36 +1916,28 @@ async fn update_download_file(
     app: tauri::AppHandle,
     url: String,
     file_name: String,
-    mirror_url: Option<String>,
     version_tag: Option<String>,
 ) -> Result<String, String> {
     DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
-    log::info!("开始下载更新，文件: {}, 镜像: {:?}", file_name, mirror_url);
+    log::info!("开始下载更新，文件: {}", file_name);
 
     let paths = AppPaths::new(&app)?;
     let updates_dir = &paths.updates_dir;
     std::fs::create_dir_all(updates_dir)
         .map_err(|e| format!("Failed to create updates dir: {}", e))?;
 
-    let file_path = updates_dir.join(&file_name);
+    // 清洗文件名：只允许单一文件名，防 `..\..\x` 写到更新目录之外
+    let safe_file_name = sanitize_file_name(&file_name)?;
+    let file_path = updates_dir.join(&safe_file_name);
     log::info!("保存路径: {:?}", file_path);
 
     // 更新源已切换为 GitHub Releases；version_tag 参数保留以兼容前端调用，不再使用
     let _ = &version_tag;
 
-    // GitHub（可选镜像加速）下载
+    // 只允许 GitHub 域（下载产物随后会被 update_install_release 执行，域名必须可信）
     url_validate_github(&url)?;
 
-    let use_mirror = mirror_url.as_ref().is_some_and(|m| !m.is_empty());
-    let fallback_urls: Vec<String> = if use_mirror {
-        let mirror = mirror_url.as_ref().unwrap();
-        let proxy_url = format!("{}/{}", mirror.trim_end_matches('/'), &url);
-        log::info!("镜像 URL: {}", proxy_url);
-        vec![proxy_url, url]
-    } else {
-        log::info!("使用原始地址下载: {}", url);
-        vec![url]
-    };
+    let fallback_urls: Vec<String> = vec![url];
 
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
@@ -1773,7 +1958,7 @@ async fn update_download_file(
         }
 
         if attempt_idx > 0 {
-            log::info!("镜像下载失败，尝试回退到原始地址: {}", download_url);
+            log::info!("重试下载: {}", download_url);
             app.emit("update-download-progress", 0).unwrap_or(());
         }
 
@@ -1879,12 +2064,24 @@ async fn update_download_file(
 /// 启动安装程序后自动退出当前应用，由安装程序接管后续流程
 #[tauri::command]
 async fn update_install_release(app: tauri::AppHandle, file_path: String) -> Result<(), String> {
-    let path = std::path::Path::new(&file_path);
-    if !path.exists() {
-        log::error!("安装文件不存在: {}", file_path);
-        return Err(format!("安装文件不存在: {}", file_path));
+    let paths = AppPaths::new(&app)?;
+
+    // 只允许执行「更新目录内」的安装包：该命令会 spawn 一个可执行文件，
+    // 若不限制路径，页面内任意脚本都能借它执行任意程序。
+    std::fs::create_dir_all(&paths.updates_dir)
+        .map_err(|e| format!("Failed to create updates dir: {}", e))?;
+    let updates_dir = paths.updates_dir.canonicalize()
+        .map_err(|e| format!("更新目录不可用: {}", e))?;
+    let canonical = std::path::Path::new(&file_path).canonicalize().map_err(|e| {
+        log::error!("安装文件不存在或不可访问: {} ({})", file_path, e);
+        format!("安装文件不存在: {}", file_path)
+    })?;
+    if !canonical.starts_with(&updates_dir) {
+        log::error!("拒绝执行更新目录之外的文件: {:?}", canonical);
+        return Err(format!("安装文件路径不在更新目录内: {}", file_path));
     }
 
+    let path = canonical.as_path();
     log::info!("启动安装程序: {:?}", path);
 
     #[cfg(target_os = "windows")]
@@ -2744,6 +2941,11 @@ async fn office_convert_docx_to_pdf_bytes(file_data: Vec<u8>, file_name: String,
         return Err("文件数据太小，可能已损坏".to_string());
     }
 
+    // file_md5 直接拼进缓存文件名，必须先校验成 32 位十六进制；
+    // file_name 虽然只用于日志，也走一次清洗，避免将来被拼进路径时带分隔符
+    let file_md5 = validate_hex_md5(&file_md5)?;
+    sanitize_file_name(&file_name)?;
+
     let paths = AppPaths::new(&app)?;
     let word_cache = paths.cache_dir.join("word-cache");
     fs::create_dir_all(&word_cache).map_err(|e| e.to_string())?;
@@ -3583,8 +3785,6 @@ pub fn app_init_run() {
             theme_delete,
             theme_import_vst,
             window_toggle_maximize,
-            mirror_update_state,
-            mirror_fetch_state,
             app_fetch_version,
             app_fetch_platform,
             update_fetch_check,
@@ -3597,6 +3797,7 @@ pub fn app_init_run() {
             app_restart_process,
             filetype_validate_pdf_default,
             filetype_validate_word_default,
+            theme_get_preview,
             oobe_submit_complete,
             oobe_check_active,
             main_signal_loaded,
