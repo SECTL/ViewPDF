@@ -46,4 +46,6 @@ example/
 # Theme package archives
 *.vst
 
+# WorkBuddy 工作区数据（验证探针、审计脚本、记忆、报告等）全部保持本地，不入库
+.workbuddy/
 
