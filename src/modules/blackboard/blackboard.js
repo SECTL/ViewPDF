@@ -14,8 +14,9 @@ class BlackboardManager {
         this.is_open = false;
         this.canvas = null;
         this.ctx = null;
-        this.overlay_canvas = null;
-        this.overlay_ctx = null;
+        // 覆盖层画布不在此持有：创建后即交给 OverlayManager 托管（含像素释放与
+        // DOM 摘除）。黑板再存一份引用只会形成双所有者，容易出现一方已销毁、
+        // 另一方还在用的错配。
         this.page_manager = new BlackboardPageManager();
 
         // DOM 元素引用（由 _create_panel / _create_toolbar 创建）
@@ -65,6 +66,12 @@ class BlackboardManager {
         this._cached_visible_rect_x = null;
         this._cached_visible_rect_y = null;
         this._animate_timer_id = null;
+
+        // 关闭进行中闩 + 复用同一次关闭的 promise。
+        // close() 中间有 await（提交未完成笔画），没有这两个字段时 open() 能插空进来，
+        // 会把 saved_history_state 覆盖成黑板自己的历史 → 全局撤销历史永久丢失。
+        this._closing = false;
+        this._close_promise = null;
 
         // 触摸手势优化
         this._touch_raf_id = null;               // 捏合缩放 rAF 节流 ID
@@ -577,11 +584,9 @@ class BlackboardManager {
         this.bb_wrapper.style.height = this.bb_state.canvas_h + 'px';
         canvas_wrap.appendChild(this.bb_wrapper);
 
-        // tile_renderer / overlay_canvas / DrawingEngine 子模块
+        // tile_renderer / 覆盖层 / DrawingEngine 子模块
         // 延迟到首次 open() 中初始化，减少应用启动时不必要的 canvas 创建
         this.tile_renderer = null;
-        this.overlay_canvas = null;
-        this.overlay_ctx = null;
 
         // 初始化状态位置：居中画布
         const init_x = -(this.bb_state.canvas_w - this.screen_w) / 2;
@@ -661,45 +666,33 @@ class BlackboardManager {
         });
         this.tile_renderer.init_tiles(this.bb_wrapper, 1);
 
-        // 覆盖层（实时预览，独立于分块包装器之外）
-        this.overlay_canvas = document.createElement('canvas');
-        this.overlay_canvas.className = 'blackboard-overlay';
-        this.overlay_canvas.style.width = this.screen_w + 'px';
-        this.overlay_canvas.style.height = this.screen_h + 'px';
-        canvas_wrap.appendChild(this.overlay_canvas);
-        this.overlay_ctx = this.overlay_canvas.getContext('2d');
-        this.overlay_ctx.imageSmoothingEnabled = false;
+        // 覆盖层（实时预览，独立于分块包装器之外）。
+        // 创建后立即交给 OverlayManager 托管：CSS/像素尺寸与 DPR 都在 attach 内
+        // 一次落地（外层再写一遍只会白清空一次画布），此后黑板不再持有该画布引用。
+        const overlay_canvas = document.createElement('canvas');
+        overlay_canvas.className = 'blackboard-overlay';
+        canvas_wrap.appendChild(overlay_canvas);
 
-        // batch_draw 使用覆盖层（同时登记展示尺寸，供动态 DPR 调整使用）
-        this.drawing_engine.init_batch_draw(
-            this.overlay_canvas, this.overlay_ctx, this.screen_w, this.screen_h
-        );
+        // batch_draw 使用覆盖层（attach 同时登记展示尺寸，供动态 DPR 调整使用）
+        this.drawing_engine.init_batch_draw(overlay_canvas, this.screen_w, this.screen_h);
         this.drawing_engine.batch_draw._tileRenderer = this.tile_renderer;
-        // 预览层变换以"内容原点的实时屏幕位置"为锚（bb_wrapper 的 rect），
-        // 自动包含工具栏高度、容器 padding、平移与缩放——
-        // 任何基于状态值的推算都会因基础偏移/状态滞后产生笔迹偏移
-        this.drawing_engine.batch_draw.set_transform_provider(() => {
-            const r = this.bb_wrapper?.getBoundingClientRect();
-            const lt = this.bb_state.last_transform;
-            return {
-                scale: lt.scale || 1,
-                originX: r ? r.left : (lt.x || 0),
-                originY: r ? r.top : (lt.y || 0)
-            };
+        // 预览层变换以「内容原点的实时屏幕位置」为锚（bb_wrapper 的 rect），
+        // 自动包含工具栏高度、容器 padding、平移与缩放。统一走 set_rect_anchor：
+        // 任何基于状态值的推算都会因基础偏移/状态滞后产生笔迹偏移（曾偏移 ~112px）。
+        this.drawing_engine.batch_draw.overlay.set_rect_anchor({
+            get_rect: () => this.bb_wrapper?.getBoundingClientRect() || null,
+            get_scale: () => this.bb_state.scale || 1,
+            fallback_origin: () => ({ x: this.bb_state.canvas_x || 0, y: this.bb_state.canvas_y || 0 })
         });
-        // 按 DPR 调整 overlay canvas 实际像素尺寸（已由 overlay.attach 处理，此处仅同步状态）
-        const init_dpr = this.drawing_engine.batch_draw._overlayDpr || 1;
-        this.overlay_canvas.width = Math.ceil(this.screen_w * init_dpr);
-        this.overlay_canvas.height = Math.ceil(this.screen_h * init_dpr);
 
         // 注册到统一分辨率控制器：DPR 设置变更时自动刷新瓦片层与覆盖层
         if (window.ResolutionController && !this._res_ctx) {
             this._res_ctx = {
                 id: 'blackboard',
-                get_scale: () => this.bb_state?.last_transform?.scale || 1,
-                on_dpr_change: (scale, force) => {
+                get_scale: () => this.bb_state.scale || 1,
+                on_dpr_change: (scale) => {
                     this.tile_renderer?.update_visible_tile_dpr(scale, true, true);
-                    this.drawing_engine?.batch_draw?.sync_overlay_dpr_now(scale, force);
+                    this.drawing_engine?.batch_draw?.overlay?.sync_dpr_now(scale);
                 }
             };
             window.ResolutionController.register_context(this._res_ctx);
@@ -714,10 +707,29 @@ class BlackboardManager {
     _setup_keyboard_events() {
         document.addEventListener('keydown', (e) => {
             if (!this.is_open) return;
+            // 正在关闭（面板动画中）时不再响应，避免与收尾竞争
+            if (this._closing) return;
 
             if (e.key === 'Escape') {
                 e.preventDefault();
                 this.close();
+                return;
+            }
+
+            // Ctrl+Z 撤销 / Ctrl+Y 或 Ctrl+Shift+Z 重做
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    this.handle_redo();
+                } else {
+                    this.handle_undo();
+                }
+                return;
+            }
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+                e.preventDefault();
+                this.handle_redo();
+                return;
             }
 
             if (e.key === 'ArrowUp' || e.key === 'PageUp') {
@@ -731,6 +743,14 @@ class BlackboardManager {
                 return;
             }
         });
+    }
+
+    /** 同步捏合起手延迟：非平移模式下需要手掌搭扶容错（与阅读器规则一致）。 */
+    _sync_pinch_start_delay() {
+        if (!this._pinch_source) return;
+        const mode = this.drawing_engine.draw_mode;
+        // 0 表示第二指一落就进入捏合；200ms 让"手掌先搭上、手指再落笔"不被当成捏合
+        this._pinch_source.startDelayMs = mode !== 'move' ? 200 : 0;
     }
 
     _update_button_status() {
@@ -856,6 +876,12 @@ class BlackboardManager {
     }
 
     async open() {
+        // 正在关闭（面板滑出动画 + 提交未完成笔画）：等它收尾完成再开。
+        // 不等的话 open() 会在 close() 的 await 处插进去 push_history_isolate，
+        // 覆盖掉 close() 待恢复的全局历史快照。
+        if (this._closing && this._close_promise) {
+            try { await this._close_promise; } catch (_) { /* close 内部已兜底 */ }
+        }
         if (this.is_open) return;
 
         // 小黑板按文档隔离：打开前切换到当前 PDF 标签对应的板状态
@@ -870,6 +896,7 @@ class BlackboardManager {
             window.batchDrawManager.batch_draw_delete_all();
         }
         this.drawing_engine.set_draw_mode('move');
+        this._sync_pinch_start_delay();
         this._update_mode_buttons('move');
 
         // 使用 DrawingEngine 隔离历史
@@ -954,6 +981,7 @@ class BlackboardManager {
 
         this.draw_mode = 'comment';
         this.drawing_engine.set_draw_mode('comment');
+        this._sync_pinch_start_delay();
         this._update_mode_buttons('comment');
 
         // 笔画加载与面板过渡并发：瓦片重绘不依赖面板可见性，
@@ -972,60 +1000,134 @@ class BlackboardManager {
     }
 
     async close() {
+        // 关闭中：复用同一次关闭（重复点击/动画期间再点不会重跑一遍，
+        // 否则第二次 pop_history_isolate 会在 saved_history_state 已置空后再恢复一次）
+        if (this._closing) return this._close_promise;
         if (!this.is_open) return;
+
+        this._closing = true;
         this.is_open = false;
 
-        // 小黑板按文档隔离：关闭前把当前板状态快照到当前 md5，
-        // 否则同一文档重开板会因 _per_doc_bb 无记录而被误清空
-        if (this._bb_per_doc() && this._bb_current_md5) {
-            this._per_doc_bb.set(this._bb_current_md5, this._bb_snapshot_state());
-            this._bb_evict_lru();
-        }
+        this._close_promise = this._do_close()
+            .finally(() => {
+                this._closing = false;
+                this._close_promise = null;
+            })
+            // 调用方（按钮点击 / Esc）都不 await，这里兜底避免未处理的 rejection
+            .catch((err) => {
+                console.error('[blackboard] 关闭时发生错误:', err);
+            });
 
-        if (this._animate_timer_id !== null) {
-            clearTimeout(this._animate_timer_id);
-            this._animate_timer_id = null;
-        }
-        if (this.bb_wrapper) {
-            this.bb_wrapper.classList.remove('smooth-transform');
-            this.bb_wrapper.style.willChange = '';
-        }
-        // 清理 gesture 模块 — 仅重置状态，不销毁 InputSource/PinchZoomSourceV2。
-        // 两者保持附着但不会收到事件（面板关闭时 transform 移出屏幕）。
-        // 防止下次 open() 时手势事件丢失导致无法批注/缩放。
-        if (this._input_source) {
-            // 重置活跃指针状态（防止残留状态污染下次 open）
-            this._input_source._emitAllUp(VirtualDeviceType.LostCapture);
-            // 重新 attach 确保状态干净
-            this._input_source.detach();
-            this._input_source.attach();
-        }
-        // 重置捏合缩放内部状态（不移除监听）
-        if (this._pinch_source) {
-            this._pinch_source._isPinching = false;
-        }
-        this.bb_state.is_scaling = false;
-        this.bb_state.is_dragging = false;
+        return this._close_promise;
+    }
 
-        // 通过 DrawingEngine 提交未完成的笔画
-        if (this.drawing_engine.is_drawing || this.drawing_engine.current_stroke) {
-            await this.drawing_engine._submit_stroke();
+    /**
+     * close() 的实际工作体。
+     *
+     * 收尾三件事（恢复全局历史 / 收起面板 / 还原工具栏）放在 finally：
+     * 中间任何一步抛错都不能跳过它们 —— 跳过 pop_history_isolate 会让
+     * `__HISTORY_ISOLATED` 永久停在 true，且面板再也关不掉。
+     */
+    async _do_close() {
+        try {
+            // 小黑板按文档隔离：关闭前把当前板状态快照到当前 md5，
+            // 否则同一文档重开板会因 _per_doc_bb 无记录而被误清空
+            if (this._bb_per_doc() && this._bb_current_md5) {
+                this._per_doc_bb.set(this._bb_current_md5, this._bb_snapshot_state());
+                this._bb_evict_lru();
+            }
+
+            if (this._animate_timer_id !== null) {
+                clearTimeout(this._animate_timer_id);
+                this._animate_timer_id = null;
+            }
+            // 与 _cleanup_touch_gesture 一致的完整定时器/rAF 清理：
+            // 面板已收起却还有动量滚动或缩放补绘在跑，会继续写 bb_wrapper 变换
+            this._cancel_pending_timers();
+
+            if (this.bb_wrapper) {
+                this.bb_wrapper.classList.remove('smooth-transform');
+                this.bb_wrapper.style.willChange = '';
+            }
+            // 清理 gesture 模块 — 仅重置状态，不销毁 InputSource/PinchZoomSourceV2。
+            // 两者保持附着但不会收到事件（面板关闭时 transform 移出屏幕）。
+            // 防止下次 open() 时手势事件丢失导致无法批注/缩放。
+            if (this._input_source) {
+                // 重置活跃指针状态（防止残留状态污染下次 open）
+                this._input_source._emitAllUp(VirtualDeviceType.LostCapture);
+                // 重新 attach 确保状态干净
+                this._input_source.detach();
+                this._input_source.attach();
+            }
+            // 重置捏合缩放内部状态（不移除监听）
+            if (this._pinch_source) {
+                this._pinch_source._isPinching = false;
+            }
+            this.bb_state.is_scaling = false;
+            this.bb_state.is_dragging = false;
+
+            // 通过 DrawingEngine 提交未完成的笔画
+            if (this.drawing_engine.is_drawing || this.drawing_engine.current_stroke) {
+                await this.drawing_engine._submit_stroke();
+            }
+            this.drawing_engine._hide_eraser_hint();
+
+            // 关闭前保存当前页的 undo/redo 历史（笔画源数据随 stroke_history 保留，无需 tile 像素快照）
+            const cur_page = this.page_manager.get_current_page();
+            if (cur_page) {
+                cur_page.undo_list = [...history_state.undo_list];
+                cur_page.redo_list = [...history_state.redo_list];
+            }
+        } finally {
+            // DrawingEngine 恢复全局历史
+            this.drawing_engine.pop_history_isolate();
+
+            this._el.panel.classList.remove('active');
+
+            this._switch_toolbar(false);
+
+            // 关闭后按钮状态已无意义；重开时 open() 会重新调用
+            this.bb_state.is_scaling = false;
+            this.bb_state.is_dragging = false;
         }
-        this.drawing_engine._hide_eraser_hint();
+    }
 
-        // 关闭前保存当前页的 undo/redo 历史（笔画源数据随 stroke_history 保留，无需 tile 像素快照）
-        const cur_page = this.page_manager.get_current_page();
-        if (cur_page) {
-            cur_page.undo_list = [...history_state.undo_list];
-            cur_page.redo_list = [...history_state.redo_list];
+    /** 取消所有待执行的 rAF / 定时器（关闭路径复用） */
+    _cancel_pending_timers() {
+        if (this._touch_raf_id !== null) {
+            cancelAnimationFrame(this._touch_raf_id);
+            this._touch_raf_id = null;
         }
-
-        // DrawingEngine 恢复全局历史
-        this.drawing_engine.pop_history_isolate();
-
-        this._el.panel.classList.remove('active');
-
-        this._switch_toolbar(false);
+        this._touch_pending_data = null;
+        if (this._momentum_raf !== null) {
+            cancelAnimationFrame(this._momentum_raf);
+            this._momentum_raf = null;
+        }
+        if (this._bb_transform_raf_id !== null) {
+            cancelAnimationFrame(this._bb_transform_raf_id);
+            this._bb_transform_raf_id = null;
+        }
+        this._pending_bb_transform = null;
+        if (this._zoom_complete_timer_id !== null) {
+            clearTimeout(this._zoom_complete_timer_id);
+            this._zoom_complete_timer_id = null;
+        }
+        if (this._smooth_transform_timeout_id !== null) {
+            clearTimeout(this._smooth_transform_timeout_id);
+            this._smooth_transform_timeout_id = null;
+        }
+        if (this._bb_dirty_refresh_timer !== null) {
+            clearTimeout(this._bb_dirty_refresh_timer);
+            this._bb_dirty_refresh_timer = null;
+        }
+        if (this._bb_resize_timer !== null) {
+            clearTimeout(this._bb_resize_timer);
+            this._bb_resize_timer = null;
+        }
+        if (this._bb_resize_retry_timer !== null) {
+            clearTimeout(this._bb_resize_retry_timer);
+            this._bb_resize_retry_timer = null;
+        }
     }
 
     _switch_toolbar(bb_active) {
@@ -1191,6 +1293,7 @@ class BlackboardManager {
         // ====== 两指捏合缩放（V2 增量式算法，中点锚点） ======
         const pinch = new PinchZoomSourceV2(input);
         this._pinch_source = pinch;
+        this._sync_pinch_start_delay();
 
         pinch.onPinchStarted = (ev) => {
             if (!this.is_open) return;
@@ -1488,6 +1591,7 @@ class BlackboardManager {
                 // 已激活的按钮再次点击 → 唤出笔控制面板（move 无面板）
                 if (mode === 'move') {
                     this.drawing_engine.set_draw_mode('move');
+                    this._sync_pinch_start_delay();
                     this._update_mode_buttons('move');
                     return;
                 }
@@ -1495,6 +1599,7 @@ class BlackboardManager {
             } else {
                 this.draw_mode = mode;
                 this.drawing_engine.set_draw_mode(mode);
+                this._sync_pinch_start_delay();
                 this._update_mode_buttons(mode);
             }
         };
@@ -1663,6 +1768,11 @@ class BlackboardManager {
         this._update_button_status();
     }
 
+    async handle_redo() {
+        await this.drawing_engine.handle_redo();
+        this._update_button_status();
+    }
+
     async handle_clear() {
         const page = this.page_manager.get_current_page();
         await this.drawing_engine.handle_clear(page?.stroke_history);
@@ -1771,14 +1881,13 @@ class BlackboardManager {
             this.tile_renderer.init_tiles(this.bb_wrapper, scale);
         }
 
-        // overlay 在首次 open() 前为 null，首次 open 时才会创建
-        if (this.overlay_canvas) {
-            const dpr = this.drawing_engine?.batch_draw?._overlayDpr || 1;
-            this.overlay_canvas.width = Math.ceil(screen_w * dpr);
-            this.overlay_canvas.height = Math.ceil(screen_h * dpr);
-            this.overlay_canvas.style.width = screen_w + 'px';
-            this.overlay_canvas.style.height = screen_h + 'px';
-            this.overlay_ctx.imageSmoothingEnabled = false;
+        // 覆盖层在首次 open() 前不存在，首次 open 时才会创建。
+        // 尺寸与 DPR 一律交给 OverlayManager.resize：它会按 ResolutionController
+        // 重算 DPR、保留旧内容快照，并把展示尺寸记回自身。
+        // 此前在外层手写像素尺寸与倍率，绕过了快照逻辑（resize 即白清空、
+        // 笔迹闪断），也让展示尺寸在管理器里失真。
+        if (this.drawing_engine?.batch_draw?.overlay?.canvas) {
+            this.drawing_engine.batch_draw.overlay.resize(screen_w, screen_h);
         }
 
         this._cached_move_bound_scale = null;
@@ -1848,9 +1957,8 @@ class BlackboardManager {
             this.bb_wrapper = null;
         }
 
-        if (this.overlay_canvas && this.overlay_canvas.parentNode) {
-            this.overlay_canvas.parentNode.removeChild(this.overlay_canvas);
-        }
+        // 覆盖层画布不必在此摘除：drawing_engine.destroy() 内已交给
+        // OverlayManager.destroy() 完成像素释放 + DOM 摘除
 
         // 清理面板 DOM
         if (this._el.panel && this._el.panel.parentNode) {
@@ -1863,8 +1971,6 @@ class BlackboardManager {
             pageIndicator: null, btnClose: null
         };
 
-        this.overlay_canvas = null;
-        this.overlay_ctx = null;
         this.drawing_engine = null;
         this.is_open = false;
     }

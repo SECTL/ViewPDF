@@ -18,7 +18,9 @@ import {
     history_execute_command,
     history_init_manager,
     history_validate_undo,
+    history_validate_redo,
     history_handle_undo,
+    history_handle_redo,
     history_handle_state_change,
     DrawCommand,
     ClearCommand,
@@ -74,46 +76,28 @@ export class DrawingEngine {
 
     // ====== 初始化 ======
 
-    init_batch_draw(overlay_canvas, overlay_ctx, screenW, screenH) {
+    init_batch_draw(overlay_canvas, screenW, screenH) {
         this.batch_draw = new window.RealtimeBatchDrawManager();
         // 黑板为多页架构：禁止回退到主画布渲染器，防止擦除误伤主画布笔迹
         this.batch_draw.fallbackToMain = false;
-        // 统一经 OverlayManager 注入已有 canvas：同时记录展示尺寸，
-        // 后续 DPR 调整才不会因尺寸未知把画布缩成 1px
-        this.batch_draw.overlay.attach(overlay_canvas, overlay_ctx, screenW, screenH);
-        // 黑板以 bb_wrapper 的实时 gBCR 为锚，覆盖默认的 provider 变换
-        this.batch_draw._sync_overlay_transform = () => this._sync_overlay_transform();
+        // 统一经 OverlayManager 注入已有 canvas：完成「创建 2D 上下文 + 登记展示
+        // 尺寸 + 按控制器计算覆盖层 DPR + 落地像素/CSS 尺寸 + imageSmoothingEnabled」。
+        // 变换锚点由调用方通过 overlay.set_rect_anchor 注入（见 blackboard.js），
+        // 覆盖层自身的 sync_transform 即最终实现，此处不得再覆盖该方法。
+        this.batch_draw.overlay.attach(overlay_canvas, null, screenW, screenH);
 
         if (window.DRAW_CONFIG?.frameRateMode) {
             this.batch_draw.batch_draw_update_frame_rate(window.DRAW_CONFIG.frameRateMode);
         }
     }
 
-    /**
-     * 预览层变换同步（黑板）。
-     * 锚定 bb_wrapper 的实时 gBCR——自动包含工具栏、padding、平移、缩放。
-     * 禁止用 coord.get_origin() 等状态值推算：它们可能与实际视觉位置脱节
-     * （曾导致预览笔迹整体偏移 ~112px，抬笔后提交内容又正确，表现为
-     * "绘制中位置错误、完成后正常"）。
-     */
-    _sync_overlay_transform() {
-        const bd = this.batch_draw;
-        if (!bd?._overlayCtx) return;
-        const r = this.coord?.get_rect?.();
-        if (!r) return;
-        const s = this._fetch_safe_scale() || 1;
-        const dpr = bd._overlayDpr || 1;
-        if (bd._overlayTransformScale === s &&
-            bd._overlayTransformX === r.left &&
-            bd._overlayTransformY === r.top) return;
-        bd._overlayTransformScale = s;
-        bd._overlayTransformX = r.left;
-        bd._overlayTransformY = r.top;
-        bd._overlayCtx.setTransform(
-            s * dpr, 0, 0, s * dpr,
-            r.left * dpr, r.top * dpr
-        );
-    }
+    // 预览层变换同步不再在此重写实现：OverlayManager.sync_transform 已是
+    // 唯一实现，其取数来源是 blackboard 通过 set_transform_provider 注入的
+    // 「bb_wrapper 实时 gBCR + 当前缩放」——与本文件原覆盖版逐项等价
+    // （coord.get_rect() 即 bb_wrapper.getBoundingClientRect()，
+    //   coord.get_scale() 即 bb_state.scale）。
+    // 保留两份的代价是：覆盖层新增能力（比如新的变换锚定策略）时
+    // 黑板会静默继续走老路径，正是此前"预览偏移 ~112px"那类问题的温床。
 
     init_history(on_state_change) {
         history_init_manager({ on_state_change });
@@ -121,6 +105,13 @@ export class DrawingEngine {
 
     /** 保存全局历史快照并创建隔离历史 */
     push_history_isolate(on_state_change) {
+        // 已有未 pop 的隔离快照时拒绝覆盖：再存一次会把"真正的全局历史"
+        // 换成黑板自己的隔离历史，close() 恢复时就把黑板栈写进了主程序
+        // —— 表现为主程序撤销历史永久丢失。
+        if (this.saved_history_state) {
+            console.warn('[drawing-engine] 历史隔离快照已存在，忽略重复 push_history_isolate');
+            return;
+        }
         window.__HISTORY_ISOLATED = true;
         this.saved_history_state = {
             undo_list: [...history_state.undo_list],
@@ -279,7 +270,23 @@ export class DrawingEngine {
 
     async handle_undo() {
         if (history_validate_undo() && !this.is_drawing) {
-            await history_handle_undo();
+            try {
+                await history_handle_undo();
+            } catch (err) {
+                // 命令 undo 内部抛错时栈已自行回滚，这里只保证画布与栈重新对齐
+                console.error('[drawing-engine] 撤销失败:', err);
+            }
+            await this.coord.render_all_strokes();
+        }
+    }
+
+    async handle_redo() {
+        if (history_validate_redo() && !this.is_drawing) {
+            try {
+                await history_handle_redo();
+            } catch (err) {
+                console.error('[drawing-engine] 重做失败:', err);
+            }
             await this.coord.render_all_strokes();
         }
     }
@@ -541,6 +548,9 @@ export class DrawingEngine {
         }
         this._eraser_hint = null;
         this._eraser_hint_pending_pos = null;
+        // 覆盖层像素释放 + DOM 摘除统一走 OverlayManager.destroy；
+        // 直接置 null 只是丢引用，backing store 要等 GC，长会话反复开关会驻留显存
+        this.batch_draw?.overlay?.destroy();
         this.batch_draw = null;
         this.coord = null;
     }

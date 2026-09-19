@@ -237,6 +237,10 @@ export function history_validate_redo() {
 
 /**
  * 执行撤销：弹出 undo 栈顶命令并调用 undo()
+ *
+ * 命令真正撤销失败时会把命令放回 undo 栈、从 redo 栈弹出，
+ * 保证「栈的形状」与「画布实际状态」始终一致（否则会出现
+ * 「redo 栈里躺着一条并未被撤销的命令」这种不可自愈的错位）。
  * @returns {Promise<Command|null>} 被撤销的命令，无命令可撤销时返回 null
  */
 export async function history_handle_undo() {
@@ -247,7 +251,49 @@ export async function history_handle_undo() {
     try {
         command = history_state.undo_list.pop();
         history_state.redo_list.push(command);
+        // redo 栈同样设硬上限：它会被序列化进缓存文件，不能无界增长。
+        // 超限时丢弃队首（= 撤销得最深的那条，本就再无可重做的意义）。
+        const REDO_HARD_LIMIT = MAX_HISTORY_STEPS * 2;
+        if (history_state.redo_list.length > REDO_HARD_LIMIT) {
+            history_state.redo_list.shift();
+        }
         await command.undo();
+    } catch (err) {
+        if (command !== undefined) {
+            history_state.redo_list.pop();
+            history_state.undo_list.push(command);
+        }
+        throw err;
+    } finally {
+        history_state.is_executing = false;
+    }
+
+    history_handle_state_change();
+    return command;
+}
+
+/**
+ * 执行重做：弹出 redo 栈顶命令并调用 redo()
+ *
+ * 与 history_handle_undo 严格对称（undo 把命令从 undo 挪到 redo，本函数挪回来）。
+ * 失败时同样回滚栈，理由见 history_handle_undo。
+ * @returns {Promise<Command|null>} 被重做的命令，无命令可重做时返回 null
+ */
+export async function history_handle_redo() {
+    if (history_state.is_executing || history_state.redo_list.length === 0) return null;
+
+    history_state.is_executing = true;
+    let command;
+    try {
+        command = history_state.redo_list.pop();
+        history_state.undo_list.push(command);
+        await command.redo();
+    } catch (err) {
+        if (command !== undefined) {
+            history_state.undo_list.pop();
+            history_state.redo_list.push(command);
+        }
+        throw err;
     } finally {
         history_state.is_executing = false;
     }
@@ -348,6 +394,14 @@ export function history_trim_undo_front(maxSteps) {
  */
 export function history_peek_undo() {
     return history_state.undo_list[history_state.undo_list.length - 1];
+}
+
+/**
+ * 获取 redo 栈顶部命令（不移除）——重做跨页切换时需要先看栈顶命令属于哪页
+ * @returns {Command|undefined}
+ */
+export function history_peek_redo() {
+    return history_state.redo_list[history_state.redo_list.length - 1];
 }
 
 export { history_state };
