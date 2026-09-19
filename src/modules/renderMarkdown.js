@@ -7,11 +7,26 @@ function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** 链接协议白名单：来源是 GitHub Release body（不可信），堵掉 javascript:/data: 等 */
+function safeHref(url) {
+  if (!url) return '#';
+  try {
+    const u = new URL(url, 'https://github.com');
+    return ['http:', 'https:'].includes(u.protocol) ? url : '#';
+  } catch (e) {
+    return '#';
+  }
+}
+
 function renderInline(text) {
   let result = escapeHtml(text);
   result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   result = result.replace(/`(.+?)`/g, '<code>$1</code>');
-  result = result.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // href 在 escapeHtml 之后由捕获组还原（&amp; 还原回 &），再过协议白名单
+  result = result.replace(/\[(.+?)\]\((.+?)\)/g, (_, label, href) => {
+    const clean = safeHref(href.replace(/&amp;/g, '&'));
+    return `<a href="${escapeHtml(clean)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
   return result;
 }
 

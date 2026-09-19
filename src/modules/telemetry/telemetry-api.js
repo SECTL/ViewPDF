@@ -11,10 +11,31 @@ import { getInstallUUID, getDeviceType } from './telemetry-identity.js';
 import { getGeo } from './telemetry-geo.js';
 
 /**
+ * 用户是否允许遥测。上报前统一走这里判断：
+ * 开关必须收敛在唯一出口（此前只有 telemetryInit 判一次，而 reportOnline
+ * 可被任何模块直调 —— 关了开关照样上报 UUID/IP/地理，形同虚设）。
+ */
+export async function telemetry_is_enabled() {
+    try {
+        const invoke = window.__TAURI__?.core?.invoke;
+        if (!invoke) return false;
+        const result = await invoke('settings_fetch_all');
+        return result?.settings?.telemetryEnabled !== false;
+    } catch (e) {
+        console.warn('[telemetry] failed to fetch settings, treat as disabled:', e);
+        return false;
+    }
+}
+
+/**
  * 上报设备在线状态（通过 Tauri IPC 绕过 CORS）
  */
 export async function reportOnline() {
     try {
+        if (!(await telemetry_is_enabled())) {
+            console.log('[telemetry] disabled by user settings');
+            return;
+        }
         const installId = await getInstallUUID();
         const deviceType = getDeviceType();
         const geo = await getGeo();

@@ -560,9 +560,9 @@ async function setupInstalling() {
     } else {
       await invoke('oobe_submit_complete');
     }
-    // 遥测上报：OOBE 完成
+    // 遥测上报：OOBE 完成（telemetryInit 内部会先检查用户开关）
     import('./modules/telemetry/telemetry.js').then(m => {
-      m.reportOnline();
+      m.telemetryInit();
     }).catch(e => {
       console.warn('[oobe] telemetry report failed:', e);
     });

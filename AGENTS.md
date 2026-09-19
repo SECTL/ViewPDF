@@ -49,7 +49,23 @@ Locale files in `src/locales/{zh-CN,zh-TW,en-US}.json`. Setting stored in `confi
 
 ## Tests
 
-None found. No test framework is configured.
+No test framework / bundler / `package.json`. Verification is two-part:
+
+1. **Syntax**: `for f in $(git diff --name-only -- '*.js'); do node --check "$f"; done`
+2. **Logic + architecture invariants**: `.workbuddy/verify/dpr-harness.mjs`
+   ```
+   node .workbuddy/verify/dpr-harness.mjs   # exits non-zero on failure
+   ```
+   Stubs `window`/`document`/`performance` in a `node:vm` sandbox, then loads the **real**
+   `resolution-controller.js` + `overlay-manager.js` + `batch-draw.js` and runs assertions.
+   Its tail section scans `src/` (comments stripped) and asserts single-source invariants:
+   `devicePixelRatio` only in `resolution-controller.js`, `DRAW_CONFIG.dpr =` only there,
+   `_transform* =` only in `overlay-manager.js`, no retired overlay APIs left behind.
+   **When you change rendering/DPR/overlay code, extend this file rather than re-deriving
+   the audit by hand.**
+
+Also note: grep the whole repo **must** be scoped to `src/` — `src-tauri/` has ~25k files
+and will time out.
 
 ## Key Quirks
 
