@@ -3619,6 +3619,40 @@ pub fn app_init_run() {
         }
     }
 
+    // 【Linux/WebKitGTK 虚拟机渲染回退】（Issue #19 关联）
+    // AppImage 打包层已改为优先宿主系统 WebKitGTK（见
+    // src-tauri/scripts/patch-appimage-apprun.sh），本段处理另一类已知故障：
+    // WebKitGTK 2.44/2.46 的合成器首帧回归（窗口能开但 webview 纯白、终端无报错），
+    // 在虚拟机（VMware/QEMU/VirtualBox 等，llvmpipe 软渲染或 SVGA3D 驱动）上高发。
+    // 仅在检测到虚拟机时回退，不影响物理机默认渲染性能；
+    // 注意：这类变量救不了「EGL display 创建失败」类故障（见上述脚本注释）。
+    #[cfg(target_os = "linux")]
+    {
+        let is_vm = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+            .map(|vendor| {
+                let vendor = vendor.to_ascii_lowercase();
+                ["vmware", "qemu", "kvm", "virtualbox", "innotek", "xen", "bochs"]
+                    .iter()
+                    .any(|s| vendor.contains(s))
+            })
+            .unwrap_or(false);
+        if is_vm {
+            if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER")
+                .unwrap_or_default()
+                .is_empty()
+            {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+            if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE")
+                .unwrap_or_default()
+                .is_empty()
+            {
+                std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+            }
+            log::info!("检测到虚拟机环境，已预设 WebKitGTK 渲染回退变量");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())

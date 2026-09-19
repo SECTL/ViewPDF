@@ -118,6 +118,15 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
+      # ── AppImage 补丁（Issue #19）────────────────────────────
+      # CI 捆绑的 Ubuntu 版 WebKitGTK 在 Fedora 等新 Mesa 宿主上
+      # eglGetPlatformDisplay 直接失败（EGL_BAD_PARAMETER），任何
+      # 环境变量都无法挽救。重打包为「优先宿主系统 WebKitGTK」。
+      - name: Patch AppImage to prefer system WebKitGTK
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash src-tauri/scripts/patch-appimage-apprun.sh
+
       # ── Rename artifacts with platform suffix ─────────────
       - name: Rename artifacts with platform suffix
         shell: bash
