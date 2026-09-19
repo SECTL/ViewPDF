@@ -1,7 +1,15 @@
-const TILE_COLS = 4;
-const TILE_ROWS = 4;
-/** 分帧重建：队列剩余不超过该数量时一帧做完，否则每帧处理这么多块 */
+/**
+ * 固定内容尺寸瓦片边长（内容像素）。
+ * 网格随画布尺寸动态增删边缘块，已有瓦片的矩形恒定 —— 画布尺寸变化
+ * （窗口 resize）不再触发既有内容（笔迹/底图缓存）重光栅化，
+ * 这是消除 resize/加载结算冻结的关键（旧 4×4 布局下整帧 ~700ms）。
+ */
+const TILE_SIZE = 512;
+/** 分帧重建：队列剩余不超过该数量时一帧做完，否则每帧至少处理这么多块 */
 const TILE_REBUILD_BATCH = 3;
+/** 渐进重建泵的单帧时间预算（毫秒）：至少处理 TILE_REBUILD_BATCH 块，
+ * 之后在预算内继续，超过立即收手留给下一帧 */
+const TILE_REBUILD_FRAME_BUDGET_MS = 6;
 
 class TileRenderer {
     constructor(options) {
@@ -54,12 +62,11 @@ class TileRenderer {
         this._canvasH = options?.canvasH || null;
         this._skipBaseCache = options?.skipBaseCache || false;
 
-        for (let r = 0; r < TILE_ROWS; r++) {
-            for (let c = 0; c < TILE_COLS; c++) {
-                this.tileInfos.push({ col: c, row: r, key: `${c}_${r}`, dpr: 1 });
-            }
-        }
-        this._init_tile_map();
+        // 动态网格：init_tiles/resize_grid 按 TILE_SIZE × 画布尺寸生成，
+        // 已有瓦片矩形恒定，画布尺寸变化只增删边缘块
+        this._gridCols = 0;
+        this._gridRows = 0;
+        this._tileMap = new Map();
     }
 
     _get_stroke_history() {
@@ -90,13 +97,6 @@ class TileRenderer {
 
     _get_canvas_h() {
         return Math.max(1, this._canvasH || window.DRAW_CONFIG.canvasH || 1);
-    }
-
-    _init_tile_map() {
-        this._tileMap = new Map();
-        for (const info of this.tileInfos) {
-            this._tileMap.set(info.key, info);
-        }
     }
 
     _cancel_dpr_settle() {
@@ -273,23 +273,18 @@ class TileRenderer {
     }
 
     get_tile_dimensions() {
-        const cw = Math.max(1, this._get_canvas_w());
-        const ch = Math.max(1, this._get_canvas_h());
-        return {
-            w: Math.max(1, Math.ceil(cw / TILE_COLS)),
-            h: Math.max(1, Math.ceil(ch / TILE_ROWS))
-        };
+        // 固定内容尺寸：瓦片矩形不随画布尺寸变化
+        return { w: TILE_SIZE, h: TILE_SIZE };
     }
 
     get_tile_rect(col, row) {
-        const { w, h } = this.get_tile_dimensions();
         const cw = this._get_canvas_w();
         const ch = this._get_canvas_h();
         return {
-            x: col * w,
-            y: row * h,
-            width: Math.min(w, cw - col * w),
-            height: Math.min(h, ch - row * h)
+            x: col * TILE_SIZE,
+            y: row * TILE_SIZE,
+            width: Math.min(TILE_SIZE, cw - col * TILE_SIZE),
+            height: Math.min(TILE_SIZE, ch - row * TILE_SIZE)
         };
     }
 
@@ -589,9 +584,13 @@ class TileRenderer {
             return;
         }
 
-        // 剩余的预算：队列不长时一帧做完，避免拖出肉眼可见的"逐块变清"
-        let budget = q.length <= 6 ? q.length : TILE_REBUILD_BATCH;
-        while (budget-- > 0 && q.length > 0) {
+        // 剩余的预算：至少处理 TILE_REBUILD_BATCH 块；之后按帧预算继续，
+        // 超过单帧预算立即收手留给下一帧。瓦片缩小后单块更便宜、可见块数
+        // 更多，固定块数预算在大墨量下仍可能超帧预算 —— 按时间计量才能
+        // 保证结算期每帧都落在预算内，用户无感。
+        const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        let processed = 0;
+        while (q.length > 0 && !this._destroyed) {
             const info = q.shift();
             this._queuedUpgradeKeys.delete(info.key);
             if (this._destroyed) break;
@@ -603,6 +602,11 @@ class TileRenderer {
             } catch (e) {
                 console.error('tile-renderer: DPR 重建失败', info.key, e);
                 this.dirty.add(info.key);
+            }
+            processed++;
+            if (processed >= TILE_REBUILD_BATCH &&
+                (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0 >= TILE_REBUILD_FRAME_BUDGET_MS) {
+                break;
             }
         }
 
@@ -668,6 +672,10 @@ class TileRenderer {
         }
     }
 
+    /**
+     * 全量初始化网格（加载源 / 清空画布等「内容作废」场景）：
+     * 清空既有瓦片后按当前画布尺寸重建。
+     */
     init_tiles(wrapper, initialScale) {
         // 复位销毁闩锁：主画布路径是「destroy_all() 后复用同一实例 init_tiles()」
         // （加载源、清空绘制、以及窗口尺寸变化重建网格都走这条）。_destroyed
@@ -679,17 +687,103 @@ class TileRenderer {
         const existing = wrapper.querySelectorAll('.canvas-tile');
         for (const el of existing) el.remove();
 
-        for (const info of this.tileInfos) {
-            info.rect = this.get_tile_rect(info.col, info.row);
-            const dpr = this._calc_target_dpr(scale);
-            const { canvas, ctx } = this._create_tile_canvas(info, dpr);
+        this.tileInfos = [];
+        this._tileMap = new Map();
+        this._gridCols = 0;
+        this._gridRows = 0;
+        this.dirty.clear();
+        this.resize_grid(wrapper);
+    }
 
-            wrapper.appendChild(canvas);
-            info.canvas = canvas;
-            info.ctx = ctx;
-            info.dpr = dpr;
-            this.dirty.add(info.key);
+    /**
+     * 画布尺寸变化时的网格增删（窗口 resize / 页面尺寸变化）。
+     *
+     * 与 init_tiles 的本质区别：**保留内容仍然有效的瓦片**。
+     * 瓦片是固定内容尺寸（TILE_SIZE），已有瓦片的矩形与内容坐标恒定 ——
+     * 画布变大/变小只影响网格边缘：新增块、移除越界块、边缘矩形被
+     * 裁剪变化的块才需要重光栅化，其余瓦片零成本保留。
+     *
+     * @param {HTMLElement} wrapper 瓦片容器
+     * @returns {{added:number, removed:number, kept:number}} 网格变化统计
+     */
+    resize_grid(wrapper) {
+        const cw = this._get_canvas_w();
+        const ch = this._get_canvas_h();
+        const cols = Math.max(1, Math.ceil(cw / TILE_SIZE));
+        const rows = Math.max(1, Math.ceil(ch / TILE_SIZE));
+        const prev = this._tileMap;
+        this._gridCols = cols;
+        this._gridRows = rows;
+
+        this.tileInfos = [];
+        this._tileMap = new Map();
+        const targetDpr = this._calc_target_dpr(this._lastScale || 1);
+        let added = 0, kept = 0, changed = 0;
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const key = `${c}_${r}`;
+                const old = prev.get(key);
+                const rect = this.get_tile_rect(c, r);
+                if (old && old.canvas && old.ctx) {
+                    const sameRect = old.rect.x === rect.x && old.rect.y === rect.y &&
+                        old.rect.width === rect.width && old.rect.height === rect.height;
+                    if (sameRect) {
+                        // 原样保留：内容与底图缓存继续有效，零重绘
+                        this.tileInfos.push(old);
+                        this._tileMap.set(key, old);
+                        kept++;
+                        continue;
+                    }
+                    // 边缘裁剪矩形变化：画布尺寸收缩/扩展导致边缘块被裁剪，
+                    // 像素尺寸随之重分配（内容作废），底图缓存一并作废
+                    const dpr = old.dpr;
+                    old.rect = rect;
+                    old.canvas.width = Math.ceil(rect.width * dpr);
+                    old.canvas.height = Math.ceil(rect.height * dpr);
+                    old.canvas.style.width = rect.width + 'px';
+                    old.canvas.style.height = rect.height + 'px';
+                    old.canvas.style.left = rect.x + 'px';
+                    old.canvas.style.top = rect.y + 'px';
+                    // 画布重分配会重置绘图状态，与 _create_tile_canvas/_recreate_tile 保持一致
+                    old.ctx.imageSmoothingEnabled = false;
+                    old.ctx.lineCap = 'round';
+                    old.ctx.lineJoin = 'round';
+                    this._baseCaches.delete(key);
+                    this.dirty.add(key);
+                    this.tileInfos.push(old);
+                    this._tileMap.set(key, old);
+                    changed++;
+                    continue;
+                }
+                // 新增块
+                const info = { col: c, row: r, key, dpr: targetDpr, rect };
+                const { canvas, ctx } = this._create_tile_canvas(info, targetDpr);
+                if (wrapper) wrapper.appendChild(canvas);
+                info.canvas = canvas;
+                info.ctx = ctx;
+                this.dirty.add(key);
+                this.tileInfos.push(info);
+                this._tileMap.set(key, info);
+                added++;
+            }
         }
+
+        // 移除越界块
+        for (const [key, info] of prev) {
+            if (this._tileMap.has(key)) continue;
+            if (info.canvas && info.canvas.parentNode) {
+                info.canvas.parentNode.removeChild(info.canvas);
+            }
+            this._baseCaches.delete(key);
+            this.dirty.delete(key);
+        }
+
+        // 画布边界变化：四叉树 boundary 随之变化，强制下次全量重建
+        this._builtStrokeVersion = -1;
+
+        this.diag_hook?.('resize-grid', { cols, rows, added, removed: prev.size - kept - changed, changed });
+        return { added, removed: prev.size - kept - changed, kept };
     }
 
     for_each_visible(fn) {
@@ -711,10 +805,11 @@ class TileRenderer {
         const vr = this._getVisibleRectFn ? this._getVisibleRectFn() : window.main_fetch_visible_rect();
         const { w, h } = this.get_tile_dimensions();
         const keys = new Set();
+        if (!this._gridCols || !this._gridRows) return keys;
         const sc = Math.max(0, Math.floor(vr.x / w));
-        const ec = Math.min(TILE_COLS - 1, Math.floor((vr.x + vr.width - 1) / w));
+        const ec = Math.min(this._gridCols - 1, Math.floor((vr.x + vr.width - 1) / w));
         const sr = Math.max(0, Math.floor(vr.y / h));
-        const er = Math.min(TILE_ROWS - 1, Math.floor((vr.y + vr.height - 1) / h));
+        const er = Math.min(this._gridRows - 1, Math.floor((vr.y + vr.height - 1) / h));
         for (let r = sr; r <= er; r++) {
             for (let c = sc; c <= ec; c++) {
                 keys.add(this.tile_key(c, r));
@@ -724,9 +819,10 @@ class TileRenderer {
     }
 
     info_for_point(x, y) {
+        if (!this._gridCols || !this._gridRows) return undefined;
         const { w, h } = this.get_tile_dimensions();
-        const col = Math.min(TILE_COLS - 1, Math.max(0, Math.floor(x / w)));
-        const row = Math.min(TILE_ROWS - 1, Math.max(0, Math.floor(y / h)));
+        const col = Math.min(this._gridCols - 1, Math.max(0, Math.floor(x / w)));
+        const row = Math.min(this._gridRows - 1, Math.max(0, Math.floor(y / h)));
         return this._tileMap.get(this.tile_key(col, row));
     }
 
@@ -736,11 +832,12 @@ class TileRenderer {
         const maxX = Math.max(x1, x2) + padding;
         const minY = Math.min(y1, y2) - padding;
         const maxY = Math.max(y1, y2) + padding;
-        const sc = Math.max(0, Math.floor(minX / w));
-        const ec = Math.min(TILE_COLS - 1, Math.floor(maxX / w));
-        const sr = Math.max(0, Math.floor(minY / h));
-        const er = Math.min(TILE_ROWS - 1, Math.floor(maxY / h));
         const result = [];
+        if (!this._gridCols || !this._gridRows) return result;
+        const sc = Math.max(0, Math.floor(minX / w));
+        const ec = Math.min(this._gridCols - 1, Math.floor(maxX / w));
+        const sr = Math.max(0, Math.floor(minY / h));
+        const er = Math.min(this._gridRows - 1, Math.floor(maxY / h));
         for (let r = sr; r <= er; r++) {
             for (let c = sc; c <= ec; c++) {
                 const info = this._tileMap.get(this.tile_key(c, r));
@@ -834,6 +931,28 @@ class TileRenderer {
                 this.rebuild_tile(info);
             }
         }
+    }
+
+    /**
+     * 渐进全量重建：可见块同步重绘保证首屏立即可见，
+     * 其余脏块交给 idle 分片（_drain_dirty_tiles，每片 4 块）。
+     *
+     * 用于「加载 / 换底图 / 清空重绘」这类 mark_all 后的全量重建路径：
+     * 旧实现 rebuild_all 同步重绘全部瓦片，大墨量下用户面对一整帧
+     * 数百毫秒的白屏冻结；现在首帧只付可见区的钱，其余在空闲期补齐。
+     * 注意：调用方若在 drain 完成前同步读取非可见瓦片像素（导出合成），
+     * 读到的可能是旧内容 —— 导出属用户操作，间隔远大于 drain 耗时。
+     */
+    rebuild_progressive() {
+        this._build_quadtree();
+        this._update_base_cache();
+        const keys = this.get_visible_keys();
+        for (const info of this.tileInfos) {
+            if (keys.has(info.key) && this.dirty.has(info.key)) {
+                this.rebuild_tile(info);
+            }
+        }
+        this._drain_dirty_tiles(keys);
     }
 
     mark_all() {

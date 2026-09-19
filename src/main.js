@@ -1590,11 +1590,16 @@ async function main_update_canvas_size(newScreenW, newScreenH) {
 async function main_rebuild_canvas_for_size(newScreenW, newScreenH) {
     main_apply_canvas_geometry(newScreenW, newScreenH);
 
-    // 瓦片网格尺寸在构造时固定，画布尺寸变化后必须重建，
-    // 否则新区域的笔画落在网格之外（提交后不可见）
-    if (window.tileRenderer) {
-        window.tileRenderer.destroy_all();
-        if (dom.canvasWrapper) window.tileRenderer.init_tiles(dom.canvasWrapper);
+    // 固定内容尺寸瓦片：画布尺寸变化只增删边缘块，既有瓦片的矩形与内容
+    // （笔迹/底图缓存）保持有效，不再全量重光栅化 —— 消除 resize 结算冻结
+    // （旧实现 destroy+init+全量重绘，3000 笔迹 ~739ms 整帧冻结）。
+    // 新进入网格的边缘块由 resize_grid 标脏：可见区同步补齐，其余 idle 分片。
+    if (window.tileRenderer && dom.canvasWrapper) {
+        window.tileRenderer.resize_grid(dom.canvasWrapper);
+        window.tileRenderer.rebuild_visible();
+        // 屏幕尺寸变化可能改变目标 DPR：既有瓦片按渐进队列逐步对齐，
+        // 不在此帧批量 realloc（settle 后由渐进泵分帧完成）
+        window.tileRenderer.update_visible_tile_dpr(state.scale, false, false);
     }
 
     // 注：主画布没有实时预览覆盖层（笔迹直接落瓦片层），窗口尺寸变化时不需
@@ -1603,13 +1608,11 @@ async function main_rebuild_canvas_for_size(newScreenW, newScreenH) {
     // 图像层布局已由 main_apply_canvas_geometry（几何唯一写入者）按新屏幕
     // 尺寸重算，此处不再重复调用，避免同一几何被两处各自写一遍。
 
-    // 不保存 / 恢复 state.scale/canvasX/canvasY：这段区间（瓦片重建 + 笔画
-    // 重绘）不写视图状态，而 await 期间用户若平移/缩放，恢复旧值会把刚做的
-    // 操作回滚。几何对齐里已按同比例缩放平移量，正是应有的结果。
-    if (state.strokeHistory.length > 0 || state.baseImageObj) {
-        await main_render_all_strokes();
-    }
-
+    // 不保存 / 恢复 state.scale/canvasX/canvasY：这段区间不写视图状态，
+    // 而 await 期间用户若平移/缩放，恢复旧值会把刚做的操作回滚。
+    // 几何对齐里已按同比例缩放平移量，正是应有的结果。
+    // （旧实现此处还有一次 main_render_all_strokes 全量重绘 —— 固定瓦片
+    // 保留内容后已无必要，该调用连同 resize 冻结一并移除。）
     main_update_move_bound();
     main_update_canvas_position();
     main_update_canvas_transform();
@@ -2703,7 +2706,8 @@ async function main_render_all_strokes(bounds) {
         tr.mark_all();
     }
 
-    tr.rebuild_all();
+    // 渐进全量重建：可见块同步首绘，其余 idle 分片补齐（加载/换底图不再整帧冻结）
+    tr.rebuild_progressive();
 }
 
 function get_pen_effect_mode() { return getPenEffectMode(); }
