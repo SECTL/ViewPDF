@@ -319,9 +319,9 @@ async function initSettings() {
                     });
                     if (window.DRAW_CONFIG) {
                         window.DRAW_CONFIG.penEffectMode = mode;
-                        if (window.realPenManager) {
-                            window.realPenManager.invalidate_cache();
-                        }
+                        // 切模式＝换渲染分支，必须作废旧几何缓存。
+                        // （此前写 window.realPenManager，而该全局从未被赋值 → 静默空操作）
+                        window.main_invalidate_stroke_geometry_caches?.();
                     }
                 }
 
@@ -705,7 +705,16 @@ async function initSettings() {
             dprLimitOptions.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
             option.classList.add('sp-selected');
             closeSelect(dprLimitSelect);
+            // 画面精度（静态倍率上限，0=自动）：经控制器写入并立即重算
+            // DRAW_CONFIG.dpr + 刷新各上下文，动态分辨率关闭时无需重启即生效；
+            // 重启后由 init.js 的设置回放保持一致
+            if (window.ResolutionController) {
+                window.ResolutionController.update_settings({ dprLimit: value });
+            } else if (window.DRAW_CONFIG) {
+                window.DRAW_CONFIG.dprLimit = value;
+            }
             const saved = await settings_save_all_local({ dprLimit: value });
+            window.ResolutionController?.refresh_all(true);
             if (saved) {
                 const restartModal = document.getElementById('restartModal');
                 const modalMessage = restartModal?.querySelector('.sp-modal-message');
@@ -749,11 +758,15 @@ async function initSettings() {
             overlayDprOpts.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
             option.classList.add('sp-selected');
             closeSelect(overlayDprSel);
-            if (window.DRAW_CONFIG) {
+            // 覆盖层倍率经 ResolutionController 统一写入（外部不再直写 DRAW_CONFIG），
+            // 随后广播刷新；settings-changed 会再走一次同一入口，届时键值未变故为空转
+            if (window.ResolutionController) {
+                window.ResolutionController.update_settings({ overlayDpr: value });
+            } else if (window.DRAW_CONFIG) {
                 window.DRAW_CONFIG.overlayDpr = value;
             }
             await settings_save_all_local({ overlayDpr: value });
-            window.sync_all_overlay_dpr?.();
+            window.ResolutionController?.refresh_all(true);
         });
     }
 
@@ -1190,9 +1203,8 @@ async function initSettings() {
                 await settings_save_all_local({ penEffectMode: mode });
                 if (window.DRAW_CONFIG) {
                     window.DRAW_CONFIG.penEffectMode = mode;
-                    if (window.realPenManager) {
-                        window.realPenManager.invalidate_cache();
-                    }
+                    // 同上：切换渲染分支必须作废旧几何缓存
+                    window.main_invalidate_stroke_geometry_caches?.();
                 }
             });
         });

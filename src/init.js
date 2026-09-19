@@ -108,6 +108,14 @@ async function settings_load_config() {
                 window.DRAW_CONFIG.penEffectMode = settings.penEffectMode;
             }
 
+            // DPR 相关设置回放到 DRAW_CONFIG：这是唯一一次在首帧渲染前
+            // 把持久化画质设置落地的机会。此前只由设置面板在"被打开并改动"
+            // 时写入，导致「画面精度已更改，建议重启应用」的提示实际不成立
+            // ——重启后一律回落到默认值。必须在任何瓦片初始化之前执行。
+            window.ResolutionController?.apply_persisted(settings);
+            // 跟随显示器 DPR 变化（跨屏拖动 / 系统缩放调整）
+            window.ResolutionController?.watch_display_dpr();
+
             console.log('[init] 配置加载完成');
             return settings;
         } catch (error) {

@@ -14,6 +14,8 @@ class TileRenderer {
         this._quadtree = null;
         this._baseCaches = new Map();
         this._baseCacheLoadId = 0;
+        // 最近一次整体重算底图缓存时的视图缩放（诊断用，不参与判定）
+        this._baseCacheDpr = 0;
         this._dprSettleTimerId = null;
         this._DPR_SETTLE_MS = 300;
         this._idleShrinkTimerId = null;
@@ -155,6 +157,18 @@ class TileRenderer {
         this._rebuildRafId = requestAnimationFrame(() => this._apply_dpr_update());
     }
 
+    /**
+     * 底图缓存的**像素尺寸必须等于瓦片的像素尺寸**，即 rect × 瓦片 dpr。
+     *
+     * 此前这里恒按 rect（1x）分配，再由 rebuild_tile 在 dpr 变换下贴回瓦片：
+     * 底图被放大 dpr 倍，而笔迹是矢量按 dpr 重绘 —— 同一张瓦片里「图片」与
+     * 「批注」的有效分辨率差 dpr 倍，缩放越高差得越远。底图源本身可能已带
+     * dpr 级细节（压缩快照是按 calc_tile_dpr 渲染出来的），按 1x 缓存等于
+     * 先把这些细节丢掉再放大，属于纯粹的画质损失，换不来显存收益。
+     *
+     * 逐块比对而非整体早退：瓦片 dpr 由渐进重建队列逐个改动，缓存必须跟着
+     * 每块自己的 dpr 走，不能只看最近一次整体目标。
+     */
     _update_base_cache() {
         if (this._skipBaseCache) return;
         const img = window.state.baseImageObj;
@@ -164,24 +178,64 @@ class TileRenderer {
             this._baseCacheLoadId = loadId;
             return;
         }
-        if (this._baseCacheLoadId === loadId && this._baseCaches.size > 0) return;
         for (const info of this.tileInfos) {
-            const rect = info.rect;
-            let entry = this._baseCaches.get(info.key);
-            if (!entry) {
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                canvas.width = rect.width;
-                canvas.height = rect.height;
-                entry = { canvas, ctx };
-                this._baseCaches.set(info.key, entry);
-            }
-            const ctx = entry.ctx;
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, rect.width, rect.height);
-            ctx.drawImage(img, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+            const dpr = info.dpr || 1;
+            const entry = this._baseCaches.get(info.key);
+            // 源未换且该块缓存已是本块当前 dpr：无需重画
+            if (entry && entry.dpr === dpr && entry.loadId === loadId) continue;
+            this._build_base_cache_entry(info, img, dpr, loadId);
         }
         this._baseCacheLoadId = loadId;
+        this._baseCacheDpr = this._lastScale || 0;
+    }
+
+    /**
+     * 按给定 dpr 重建单块底图缓存。dpr 变换 + 「源矩形取内容坐标」的组合
+     * 与 rebuild_tile 同构：源图只在 dpr 倍下采样一次，不做二次拉伸。
+     * @returns {{canvas:HTMLCanvasElement, ctx:CanvasRenderingContext2D, dpr:number, loadId:number}}
+     */
+    _build_base_cache_entry(info, img, dpr, loadId) {
+        const rect = info.rect;
+        const w = Math.max(1, Math.ceil(rect.width * dpr));
+        const h = Math.max(1, Math.ceil(rect.height * dpr));
+        let entry = this._baseCaches.get(info.key);
+        if (!entry) {
+            entry = { canvas: document.createElement('canvas'), ctx: null, dpr: 0, loadId: -1 };
+            this._baseCaches.set(info.key, entry);
+        }
+        const canvas = entry.canvas;
+        if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+        }
+        let ctx = entry.ctx;
+        if (!ctx) {
+            ctx = canvas.getContext('2d');
+            entry.ctx = ctx;
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        ctx.drawImage(img, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        entry.dpr = dpr;
+        entry.loadId = loadId;
+        return entry;
+    }
+
+    /**
+     * 取该块当前 dpr 对应的底图缓存，缺失/过期就地补建。
+     * rebuild_tile 走此入口：渐进重建队列先改 info.dpr 再调 rebuild_tile，
+     * 而批量 _update_base_cache 发生在改之前——中间那一帧会读到旧 dpr 的
+     * 缓存。宁可此处补一次，也不能让底图被静默拉伸。
+     */
+    _ensure_base_cache(info, dpr) {
+        if (this._skipBaseCache) return null;
+        const img = window.state.baseImageObj;
+        if (!img) return null;
+        const loadId = window.state.baseImageLoadId || 0;
+        const entry = this._baseCaches.get(info.key);
+        if (entry && entry.dpr === dpr && entry.loadId === loadId) return entry;
+        return this._build_base_cache_entry(info, img, dpr, loadId);
     }
 
     _clear_base_caches() {
@@ -241,23 +295,20 @@ class TileRenderer {
 
     tile_key(col, row) { return `${col}_${row}`; }
 
-    _calc_target_dpr(scale) {
+    _calc_target_dpr(scale, opts) {
         // 动态分辨率计算的唯一来源：ResolutionController。
-        // 此前此处与 batch-draw 的 overlay 计算各写一份，改动设置时易漏改一处。
+        // 此前此处与 batch-draw 的 overlay、阅读器的页面栅格化各写一份，
+        // 改动设置时易漏改一处。
         const res = window.ResolutionController;
         if (res && typeof res.calc_tile_dpr === 'function') {
-            return res.calc_tile_dpr(scale);
+            return res.calc_tile_dpr(scale, opts);
         }
-        const cfg = window.DRAW_CONFIG;
-        if (cfg.dynamicDprEnabled === false) return cfg.dpr;
-        const baseDpr = cfg.baseDpr || window.devicePixelRatio || 1;
-        const minDpr = cfg.dprMin || 1;
-        const maxDpr = cfg.dprMax || 4;
-        const step = cfg.dprStep || 0.25;
-        // 改用 Math.ceil 使 DPR 始终不低于原始计算值，避免向下取整导致的模糊
-        let dpr = baseDpr * scale;
-        dpr = Math.ceil(dpr / step) * step;
-        return Math.max(minDpr, Math.min(maxDpr, dpr));
+        // 控制器缺失属于加载顺序被破坏（index.html 保证 Wave 0 先加载它）。
+        // 此处刻意**不复刻**一套公式：复刻出的第二份实现会与控制器的口径静默
+        // 漂移——而"改了设置只生效一半"正是这条分支存在时最容易出现的故障。
+        // 退回 1x 是安全降级，报错让加载顺序问题当场可见。
+        console.error('[TileRenderer] ResolutionController 未就绪，瓦片层降级为 1x');
+        return 1;
     }
 
     /**
@@ -618,6 +669,11 @@ class TileRenderer {
     }
 
     init_tiles(wrapper, initialScale) {
+        // 复位销毁闩锁：主画布路径是「destroy_all() 后复用同一实例 init_tiles()」
+        // （加载源、清空绘制、以及窗口尺寸变化重建网格都走这条）。_destroyed
+        // 一旦为 true，DPR 调度、dirty 补帧泵、idle 显存回收会全部静默失效，
+        // 表现为「重建之后瓦片再也不升分辨率」。
+        this._destroyed = false;
         const scale = initialScale || (window.state ? (window.state.scale || 1) : 1);
         this._lastScale = scale;
         const existing = wrapper.querySelectorAll('.canvas-tile');
@@ -702,11 +758,14 @@ class TileRenderer {
         ctx.setTransform(dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr);
         ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
 
-        const cacheEntry = this._baseCaches.get(info.key);
+        // 底图缓存与瓦片同 dpr（见 _update_base_cache）；源矩形必须取缓存
+        // 自身的像素尺寸，否则 dpr 缓存只被取走左上角 1x 的一块
+        const cacheEntry = this._ensure_base_cache(info, dpr);
         if (cacheEntry) {
+            const cacheCanvas = cacheEntry.canvas;
             ctx.drawImage(
-                cacheEntry.canvas,
-                0, 0, rect.width, rect.height,
+                cacheCanvas,
+                0, 0, cacheCanvas.width, cacheCanvas.height,
                 rect.x, rect.y, rect.width, rect.height
             );
         }

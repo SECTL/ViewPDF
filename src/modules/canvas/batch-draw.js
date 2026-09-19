@@ -72,47 +72,6 @@ class RealtimeBatchDrawManager {
         return this._tileRenderer || (this.fallbackToMain ? window.tileRenderer : null);
     }
 
-    /**
-     * 注入视口变换提供器。
-     * 返回内容原点 (0,0) 在屏幕上的位置与缩放：{ scale, originX, originY }。
-     * overlay 的 setTransform 用 originX/originY 作平移量，
-     * 自动包含工具栏高度、容器 padding 等全部基础偏移。
-     * 未提供时回退到 window.state 的 canvasX/canvasY（旧约定）。
-     */
-    set_transform_provider(fn) {
-        this.overlay.set_transform_provider(fn);
-    }
-
-    /**
-     * 计算覆盖层 DPR（委托给 OverlayManager → ResolutionController）。
-     * 动态模式下取显示 DPR 为上限（此前错误地恒为 1，导致高分屏/放大下发虚）。
-     * @param {number} scale - 当前画布缩放比例
-     * @returns {number} 覆盖层 DPR
-     */
-    calc_overlay_dpr(scale) {
-        return this.overlay.calc_overlay_dpr(scale);
-    }
-
-    /** 兼容旧名：_calc_overlay_dpr */
-    _calc_overlay_dpr(scale) {
-        return this.overlay.calc_overlay_dpr(scale);
-    }
-
-    /**
-     * 请求按 scale 调整 overlay DPR（带迟滞，笔迹进行中自动顺延）。
-     * 全部状态（settle 定时器 / 笔画标记 / 顺延请求）由 OverlayManager 统一持有。
-     */
-    update_overlay_dpr(scale, force) {
-        if (!this.overlay) return;
-        this.overlay.request_dpr(scale, force);
-    }
-
-    /** 立即按 scale 应用 overlay DPR（无迟滞），用于 resize / 设置变更。 */
-    sync_overlay_dpr_now(scale, force) {
-        if (!this.overlay) return;
-        this.overlay.sync_dpr_now(scale, force);
-    }
-
     /** 注册绘制性能采样回调（参数为最近 20 次 flush 的平均耗时 ms），节流 500ms */
     set_perf_hook(fn) {
         this._perfHook = typeof fn === 'function' ? fn : null;
@@ -120,54 +79,10 @@ class RealtimeBatchDrawManager {
 
     // _apply_overlay_dpr 已下沉至 OverlayManager._apply_dpr
 
-    init_overlay(container, screenW, screenH, dpr) {
-        this.overlay.init(container, screenW, screenH, dpr);
-    }
-
-    resize_overlay(screenW, screenH, dpr) {
-        this.overlay.resize(screenW, screenH);
-    }
-
-    destroy_overlay() {
-        if (this.overlay) this.overlay.destroy();
-    }
-
-    /** 缩放期间隐藏 overlay，释放 GPU 合成层 */
-    hide_overlay() {
-        if (this.overlay) this.overlay.hide();
-    }
-
-    /** 缩放结束后恢复 overlay */
-    show_overlay() {
-        if (this.overlay) this.overlay.show();
-    }
-
-    _fetch_view_transform() {
-        return this.overlay._fetch_view_transform();
-    }
-
-    _sync_overlay_transform() {
-        this.overlay.sync_transform();
-    }
-
     clear_overlay() {
         if (this.overlay) this.overlay.clear(this._dirtyBoundsCanvas);
         this._dirtyBoundsCanvas = null;
     }
-
-    // ===== 兼容代理：保留外部（阅读器 / 小黑板）对 overlay 内部字段的直接访问 =====
-    get _overlayCanvas() { return this.overlay ? this.overlay.canvas : null; }
-    set _overlayCanvas(v) { if (this.overlay) this.overlay.canvas = v; }
-    get _overlayCtx() { return this.overlay ? this.overlay.ctx : null; }
-    set _overlayCtx(v) { if (this.overlay) this.overlay.ctx = v; }
-    get _overlayDpr() { return this.overlay ? this.overlay.dpr : 1; }
-    set _overlayDpr(v) { if (this.overlay) this.overlay.dpr = v; }
-    get _overlayTransformScale() { return this.overlay ? this.overlay._transformScale : 0; }
-    set _overlayTransformScale(v) { if (this.overlay) this.overlay._transformScale = v; }
-    get _overlayTransformX() { return this.overlay ? this.overlay._transformX : 0; }
-    set _overlayTransformX(v) { if (this.overlay) this.overlay._transformX = v; }
-    get _overlayTransformY() { return this.overlay ? this.overlay._transformY : 0; }
-    set _overlayTransformY(v) { if (this.overlay) this.overlay._transformY = v; }
 
     _each_visible_tile(fn) {
         const tr = this._get_active_tile_renderer();
@@ -398,7 +313,7 @@ class RealtimeBatchDrawManager {
 
         const drawStart = performance.now();
 
-        this._sync_overlay_transform();
+        this.overlay.sync_transform();
 
         const commands = this.pendingCommands;
         let currentType = this.lastType;
@@ -416,10 +331,10 @@ class RealtimeBatchDrawManager {
         const perSegTime = Math.min(batchTimeSpan / count, 8);
         lastMoveTime = curTime;
 
-        if (this._overlayCtx) {
-            this._overlayCtx.globalCompositeOperation = 'source-over';
-            this._overlayCtx.lineCap = 'round';
-            this._overlayCtx.lineJoin = 'round';
+        if (this.overlay.ctx) {
+            this.overlay.ctx.globalCompositeOperation = 'source-over';
+            this.overlay.ctx.lineCap = 'round';
+            this.overlay.ctx.lineJoin = 'round';
         }
 
         let eraseByTile = null;
@@ -478,8 +393,8 @@ class RealtimeBatchDrawManager {
 
             if (cmd.type === 'erase') {
                 /* 刷出上一个绘制批处理 */
-                if (this._overlayCtx && !batchFirst) {
-                    this._overlayCtx.stroke();
+                if (this.overlay.ctx && !batchFirst) {
+                    this.overlay.ctx.stroke();
                     batchFirst = true;
                 }
                 const tr = this._get_active_tile_renderer();
@@ -497,8 +412,8 @@ class RealtimeBatchDrawManager {
                         entry.lineWidths.push(lineWidth);
                     }
                 }
-            } else if (this._overlayCtx) {
-                const ctx = this._overlayCtx;
+            } else if (this.overlay.ctx) {
+                const ctx = this.overlay.ctx;
 
                 if (this.ellipseMode) {
                     this._draw_segment_ellipse(ctx, fromX, fromY, toX, toY, lineWidth, cmd.color || currentColor);
@@ -557,8 +472,8 @@ class RealtimeBatchDrawManager {
         }
 
         /* 提交最后一个批处理路径 */
-        if (this._overlayCtx && !batchFirst) {
-            this._overlayCtx.stroke();
+        if (this.overlay.ctx && !batchFirst) {
+            this.overlay.ctx.stroke();
         }
 
         if (eraseByTile && eraseByTile.size > 0) {
@@ -674,7 +589,6 @@ class RealtimeBatchDrawManager {
         this._segmentTimes = [];
         this._dirtyBoundsCanvas = null;
         this._limitedTailWidth = null;
-        this.overlay.end_stroke(false);
         this.clear_overlay();
     }
 
@@ -684,7 +598,6 @@ class RealtimeBatchDrawManager {
         this.lastDrawTime = performance.now();
         this._penEffectMode = 'off';
         this._strokeStart = true;
-        this.overlay.begin_stroke();
         this.ellipseMode = window.DRAW_CONFIG?.ellipseStrokeEnabled === true;
         this._totalSegments = 0;
         this._lastMidX = null;
@@ -716,11 +629,11 @@ class RealtimeBatchDrawManager {
         }
 
         this.batch_draw_handle_flush();
-        this._sync_overlay_transform();
+        this.overlay.sync_transform();
 
         if (this._lastMidX !== null && this._lastToX !== null) {
-            if (this._overlayCtx) {
-                const ctx = this._overlayCtx;
+            if (this.overlay.ctx) {
+                const ctx = this.overlay.ctx;
                 const cfg = window.DRAW_CONFIG || {};
                 ctx.globalCompositeOperation = 'source-over';
                 this._limitedTailWidth = this.lastLineWidth || 5;
@@ -779,9 +692,6 @@ class RealtimeBatchDrawManager {
 
         this.clear_overlay();
 
-        // 笔画结束：补执行进行期间被顺延的 overlay DPR 调整
-        this.overlay.end_stroke();
-
         if (this.is_adaptive) {
             this.drawTimes = [];
             this.commandCounts = [];
@@ -796,14 +706,16 @@ class RealtimeBatchDrawManager {
 window.RealtimeBatchDrawManager = RealtimeBatchDrawManager;
 window.batchDrawManager = new RealtimeBatchDrawManager();
 
-// 主画布上下文注册到统一分辨率控制器：DPR 设置变更时无需外部逐处手写同步
+// 主画布上下文注册到统一分辨率控制器：DPR 设置变更时无需外部逐处手写同步。
+// 注：主画布**没有实时预览覆盖层**（笔迹直接落瓦片层，不产生 batch_draw
+// 绘制指令），故这里只刷瓦片层。原先还跟着一行覆盖层刷新，那是空转
+// （OverlayManager 在 canvas 为空时直接返回），只会给每次设置变更白排一个定时器。
 if (window.ResolutionController) {
     window.ResolutionController.register_context({
         id: 'main',
         get_scale: () => (window.state?.scale || 1),
-        on_dpr_change: (scale, force) => {
+        on_dpr_change: (scale) => {
             window.tileRenderer?.update_visible_tile_dpr(scale, true, true);
-            window.batchDrawManager.sync_overlay_dpr_now(scale, force);
         }
     });
 }
