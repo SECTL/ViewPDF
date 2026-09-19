@@ -181,10 +181,12 @@ class DocumentReaderManager {
 
         // 惯性（动量）系统
         this._dr_momentum_raf = null;
+        this._dr_momentum_last_ts = null;   // 上一惯性帧时间戳（帧率无关衰减用）
         this._dr_gesture_vx = 0;
         this._dr_gesture_vy = 0;
         this._dr_last_canvas_x = 0;
         this._dr_last_canvas_y = 0;
+        this._dr_last_move_time = null;     // 最后一次拖拽位移的事件时间戳（停顿检测用）
 
         // 自适应 DPR 已收归 ResolutionController（按角色分级 + 内存压力降级），
         // 本类不再持有开关状态；是否动态由 DRAW_CONFIG.dynamicDprEnabled 决定
@@ -3906,6 +3908,7 @@ class DocumentReaderManager {
                 this._dr_last_canvas_y = this.dr_canvas_y;
                 this._dr_gesture_vx = 0;
                 this._dr_gesture_vy = 0;
+                this._dr_last_move_time = performance.now();
                 this._dr_enable_smooth_transform();
                 return;
             }
@@ -4037,6 +4040,7 @@ class DocumentReaderManager {
             this._dr_last_canvas_y = this.dr_canvas_y;
             this._dr_gesture_vx = 0;
             this._dr_gesture_vy = 0;
+            this._dr_last_move_time = performance.now();
 
             // 取消当前笔画
             if (this.is_drawing) {
@@ -5541,25 +5545,40 @@ class DocumentReaderManager {
 
     _dr_start_momentum() {
         if (window.DRAW_CONFIG && !window.DRAW_CONFIG.momentumEnabled) return;
+        // 手指松开前已停顿（>120ms 无位移）：旧速度不再代表手势意图，不触发惯性
+        if (this._dr_last_move_time !== null && performance.now() - this._dr_last_move_time > 120) {
+            this._dr_gesture_vx = 0;
+            this._dr_gesture_vy = 0;
+            this._dr_schedule_disable_smooth_transform();
+            this._check_page_visibility();
+            return;
+        }
         this._dr_cancel_momentum();
         if (this._dr_momentum_raf !== null) return;
+        this._dr_momentum_last_ts = null;   // 首帧用参考帧长
         this._dr_momentum_raf = requestAnimationFrame(() => this._dr_momentum_tick());
     }
 
     _dr_momentum_tick() {
-        let vx = this._dr_gesture_vx;
-        let vy = this._dr_gesture_vy;
-        const speed = Math.sqrt(vx * vx + vy * vy);
-        const friction = 0.85 - 0.20 * Math.exp(-speed / 8);
-        vx *= friction;
-        vy *= friction;
+        const now = performance.now();
+        const dt = this._dr_momentum_last_ts === null
+            ? 16.7
+            : Math.min(64, Math.max(1, now - this._dr_momentum_last_ts));
+        this._dr_momentum_last_ts = now;
+
+        // 指数衰减、帧率无关：每 16.7ms 保留 94%（≈3.7/s），猛甩约滑行 1s、轻抛约 0.6s
+        const friction = Math.pow(0.94, dt / 16.7);
+        let vx = this._dr_gesture_vx * friction;
+        let vy = this._dr_gesture_vy * friction;
         this._dr_gesture_vx = vx;
         this._dr_gesture_vy = vy;
 
+        // 位移同样按 dt 缩放（速度单位是「每 16.7ms 的像素」）
+        const step = dt / 16.7;
         const prevX = this.dr_canvas_x;
         const prevY = this.dr_canvas_y;
-        this.dr_canvas_x += vx;
-        this.dr_canvas_y += vy;
+        this.dr_canvas_x += vx * step;
+        this.dr_canvas_y += vy * step;
 
         this._dr_update_canvas_position();
 
@@ -5593,13 +5612,24 @@ class DocumentReaderManager {
     }
 
     _dr_update_gesture_velocity() {
+        const now = performance.now();
+        const dt = now - this._dr_last_move_time;
+        this._dr_last_move_time = now;
         const dx = this.dr_canvas_x - this._dr_last_canvas_x;
         const dy = this.dr_canvas_y - this._dr_last_canvas_y;
-        const alpha = 0.5;
-        this._dr_gesture_vx = this._dr_gesture_vx * (1 - alpha) + dx * alpha;
-        this._dr_gesture_vy = this._dr_gesture_vy * (1 - alpha) + dy * alpha;
         this._dr_last_canvas_x = this.dr_canvas_x;
         this._dr_last_canvas_y = this.dr_canvas_y;
+        // 停顿 >200ms（拖住不动再继续）：旧速度作废，从零重新估计
+        if (!(dt > 0) || dt > 200) {
+            this._dr_gesture_vx = 0;
+            this._dr_gesture_vy = 0;
+            return;
+        }
+        // 事件频率归一化：折算成「每 16.7ms 的位移」，鼠标/触屏/手写笔事件率不同但手感一致
+        const k = 16.7 / dt;
+        const alpha = 0.5;
+        this._dr_gesture_vx = this._dr_gesture_vx * (1 - alpha) + dx * k * alpha;
+        this._dr_gesture_vy = this._dr_gesture_vy * (1 - alpha) + dy * k * alpha;
     }
 
     /** 滚轮缩放（以鼠标位置为中心，rAF 节流重计算） */

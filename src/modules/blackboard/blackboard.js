@@ -98,6 +98,8 @@ class BlackboardManager {
         this._gesture_vy = 0;
         this._last_canvas_x = 0;
         this._last_canvas_y = 0;
+        this._last_move_time = null;         // 最后一次拖拽位移的事件时间戳（停顿检测用）
+        this._momentum_last_ts = null;       // 上一惯性帧时间戳（帧率无关衰减用）
 
         this.draw_mode = 'comment';
 
@@ -425,24 +427,40 @@ class BlackboardManager {
     }
 
     _start_momentum() {
-        // inertial scrolling disabled
+        if (window.DRAW_CONFIG && !window.DRAW_CONFIG.momentumEnabled) return;
+        // 手指松开前已停顿（>120ms 无位移）：旧速度不再代表手势意图，不触发惯性
+        if (this._last_move_time !== null && performance.now() - this._last_move_time > 120) {
+            this._gesture_vx = 0;
+            this._gesture_vy = 0;
+            return;
+        }
+        this._cancel_momentum();
+        if (this._momentum_raf !== null) return;
+        this._momentum_last_ts = null;   // 首帧用参考帧长
+        this._momentum_raf = requestAnimationFrame(() => this._momentum_tick());
     }
 
     _momentum_tick() {
-        let vx = this._gesture_vx;
-        let vy = this._gesture_vy;
-        const speed = Math.sqrt(vx * vx + vy * vy);
-        const friction = 0.85 - 0.20 * Math.exp(-speed / 8);
-        vx *= friction;
-        vy *= friction;
+        const now = performance.now();
+        const dt = this._momentum_last_ts === null
+            ? 16.7
+            : Math.min(64, Math.max(1, now - this._momentum_last_ts));
+        this._momentum_last_ts = now;
+
+        // 指数衰减、帧率无关：每 16.7ms 保留 94%（≈3.7/s），猛甩约滑行 1s、轻抛约 0.6s
+        const friction = Math.pow(0.94, dt / 16.7);
+        let vx = this._gesture_vx * friction;
+        let vy = this._gesture_vy * friction;
         this._gesture_vx = vx;
         this._gesture_vy = vy;
 
+        // 位移同样按 dt 缩放（速度单位是「每 16.7ms 的像素」）
+        const step = dt / 16.7;
         const s = this.bb_state;
         const prevX = s.canvas_x;
         const prevY = s.canvas_y;
-        s.canvas_x += vx;
-        s.canvas_y += vy;
+        s.canvas_x += vx * step;
+        s.canvas_y += vy * step;
 
         this._update_move_bound();
         this._update_canvas_position();
@@ -469,13 +487,24 @@ class BlackboardManager {
 
     _update_bb_gesture_velocity() {
         const s = this.bb_state;
+        const now = performance.now();
+        const dt = now - this._last_move_time;
+        this._last_move_time = now;
         const dx = s.canvas_x - this._last_canvas_x;
         const dy = s.canvas_y - this._last_canvas_y;
-        const alpha = 0.5;
-        this._gesture_vx = this._gesture_vx * (1 - alpha) + dx * alpha;
-        this._gesture_vy = this._gesture_vy * (1 - alpha) + dy * alpha;
         this._last_canvas_x = s.canvas_x;
         this._last_canvas_y = s.canvas_y;
+        // 停顿 >200ms（拖住不动再继续）：旧速度作废，从零重新估计
+        if (!(dt > 0) || dt > 200) {
+            this._gesture_vx = 0;
+            this._gesture_vy = 0;
+            return;
+        }
+        // 事件频率归一化：折算成「每 16.7ms 的位移」，鼠标/触屏/手写笔事件率不同但手感一致
+        const k = 16.7 / dt;
+        const alpha = 0.5;
+        this._gesture_vx = this._gesture_vx * (1 - alpha) + dx * k * alpha;
+        this._gesture_vy = this._gesture_vy * (1 - alpha) + dy * k * alpha;
     }
 
     /** 触控交互时启用 GPU 合成层（will-change: transform 内联样式，不使用带 transition 的 class） */
@@ -1196,6 +1225,7 @@ class BlackboardManager {
                 this._last_canvas_y = this.bb_state.canvas_y;
                 this._gesture_vx = 0;
                 this._gesture_vy = 0;
+                this._last_move_time = performance.now();
                 this._touch_enable_gpu();
                 return;
             }
@@ -1347,6 +1377,7 @@ class BlackboardManager {
             this._last_canvas_y = s.canvas_y;
             this._gesture_vx = 0;
             this._gesture_vy = 0;
+            this._last_move_time = performance.now();
             this._touch_enable_gpu();
         };
 

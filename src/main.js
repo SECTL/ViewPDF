@@ -53,7 +53,8 @@ const DRAW_CONFIG = {
     penSizePresets: [2, 5, 10, 15, 21],
     eraserSize: 15,
     eraserSizePresets: [5, 15, 25, 38, 50],
-    momentumEnabled: false,
+    // 拖拽平移松手后的惯性滑动（阅读器/小黑板 move 模式；主画布无拖拽平移不涉及）
+    momentumEnabled: true,
     minScale: 0.5,
     maxScale: 3,
     maxScaleImage: 4,
