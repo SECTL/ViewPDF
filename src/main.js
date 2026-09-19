@@ -12,7 +12,9 @@ import {
     ClearCommand,
     SnapshotCommand,
     history_validate_undo,
+    history_validate_redo,
     history_handle_undo,
+    history_handle_redo,
     history_delete_all,
     history_validate_compact,
     history_fetch_undo_stack,
@@ -27,7 +29,7 @@ import { DocLoader, get_pdf_page_info, get_pdfjs_assets_base } from './modules/p
 // 并刷出 "Ensure that the standardFontDataUrl API parameter is provided" 警告。
 const PDFJS_ASSETS_BASE = get_pdfjs_assets_base();
 import { resetContextState, updateContextState } from './modules/canvas/context-state.js';
-import { renderStrokesToContext, getPenEffectMode } from './modules/canvas/stroke-renderer.js';
+import { renderStrokesToContext, getPenEffectMode, invalidate_stroke_path_cache } from './modules/canvas/stroke-renderer.js';
 import { createHistoryCompactor } from './modules/canvas/history-compactor.js';
 
 // === 全局变量 ===
@@ -66,7 +68,10 @@ const DRAW_CONFIG = {
     dprMax: 4,
     dprStep: 0.25,
     imageSmoothingQuality: 'high',
-    baseDpr: window.devicePixelRatio || 1,
+    // baseDpr 由控制器从当前显示器 DPR 推导（全应用唯一 DPR 事实来源），
+    // 运行期由 watch_display_dpr() 跟随显示器变化刷新。
+    // 这里不再裸读 devicePixelRatio：该读取全应用只允许出现在控制器内。
+    baseDpr: window.ResolutionController?.display_dpr?.() || 1,
     canvasBgColor: '#2a2a2a',
     penColors: [
         '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
@@ -87,11 +92,15 @@ if (DRAW_CONFIG.penColor === null && DRAW_CONFIG.penColors.length > 0) {
 // 将配置暴露到全局，供 batch-draw.js 使用
 window.DRAW_CONFIG = DRAW_CONFIG;
 
-// 应用 DPR 限制（0=自动无限制）
-function main_calc_capped_dpr(rawDpr, limit) {
-    return limit > 0 ? Math.min(rawDpr, limit) : rawDpr;
+// 静态倍率 DPR（动态分辨率关闭时的固定倍率）由 ResolutionController 统一派生。
+// 此处不再自持一份公式：base*limit 的算法只在控制器里存在一份，
+// 外部任何地方都不得直写 DRAW_CONFIG.dpr。
+function main_sync_static_dpr() {
+    return window.ResolutionController
+        ? window.ResolutionController.sync_static_dpr()
+        : DRAW_CONFIG.dpr;
 }
-window.main_calc_capped_dpr = main_calc_capped_dpr;
+window.main_sync_static_dpr = main_sync_static_dpr;
 
 function main_fetch_safe_scale() {
     return Math.max(0.001, state.scale || 1);
@@ -115,7 +124,7 @@ class RealPenManager {
     }
     
     reset() {
-        this.cached_tessellated = new WeakMap();
+        this.invalidate_cache();
         this.init_tessellator();
     }
     
@@ -248,6 +257,9 @@ class RealPenManager {
     
     invalidate_cache() {
         this.cached_tessellated = new WeakMap();
+        // 细分对象被丢弃后，tessellator 里以旧细分对象为键的 runs 已不可达，
+        // 连同体积配额计数一起清掉（否则配额被死条目永久占用）
+        if (this.tessellator) this.tessellator.reset_runs_cache();
     }
 }
 
@@ -302,98 +314,141 @@ class StrokeQuadTree {
         this.depth = depth;
         this.strokes = [];
         this.children = null;
+        // 节点范围构造后不再改变。相交判定是全部热点中调用最频繁的一处
+        // （一次 build 里被调用数十万次），把右/下边界预先算成数字，
+        // 省掉判定里每次重复的加法与属性读取。
+        this._bx = boundary.x;
+        this._by = boundary.y;
+        this._br = boundary.x + boundary.width;
+        this._bb = boundary.y + boundary.height;
     }
-    
+
+    /**
+     * 把包围盒归一化成 4 个数字。历史实现容忍两种形状（{minX..} 或 {x,width..}），
+     * 而这份归一化此前发生在**每个节点的每次**相交判定里 —— 同一笔画的包围盒
+     * 在一次插入中会被归一化 5^depth 次。抽到入口只做一次，判定退化为纯数值比较。
+     */
+    static _normalize(b) {
+        if (b.minX != null) {
+            return { minX: b.minX, maxX: b.maxX, minY: b.minY, maxY: b.maxY };
+        }
+        return { minX: b.x, maxX: b.x + b.width, minY: b.y, maxY: b.y + b.height };
+    }
+
+    /** 已归一化包围盒与本节点范围的相交判定（padding 5，与旧实现逐字一致） */
+    _hits_norm(nb) {
+        return !(nb.maxX + 5 < this._bx ||
+                 nb.minX - 5 > this._br ||
+                 nb.maxY + 5 < this._by ||
+                 nb.minY - 5 > this._bb);
+    }
+
     insert(stroke) {
         if (!stroke.bounds) return false;
-        
-        if (!this.intersects(stroke.bounds)) return false;
-        
+        return this._insert_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
+    }
+
+    /** 插入递归实现：入参须为已归一化包围盒，避免逐层重复归一化 */
+    _insert_norm(stroke, nb) {
+        if (!this._hits_norm(nb)) return false;
+
         if (this.children) {
-            return this.insert_to_children(stroke);
+            return this.insert_to_children_norm(stroke, nb);
         }
-        
+
         this.strokes.push(stroke);
-        
+
         if (this.strokes.length > this.capacity && this.depth < this.maxDepth) {
             this.subdivide();
         }
-        
+
         return true;
     }
-    
+
     insert_to_children(stroke) {
+        if (!stroke.bounds) return false;
+        return this.insert_to_children_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
+    }
+
+    insert_to_children_norm(stroke, nb) {
         let inserted = false;
         for (const child of this.children) {
-            if (child.insert(stroke)) {
+            if (child._insert_norm(stroke, nb)) {
                 inserted = true;
             }
         }
         return inserted;
     }
-    
+
     subdivide() {
         const { x, y, width, height } = this.boundary;
         const hw = width / 2;
         const hh = height / 2;
-        
+
         this.children = [
             new StrokeQuadTree({ x, y, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x: x + hw, y, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x, y: y + hh, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1),
             new StrokeQuadTree({ x: x + hw, y: y + hh, width: hw, height: hh }, this.capacity, this.maxDepth, this.depth + 1)
         ];
-        
+
         for (const stroke of this.strokes) {
-            this.insert_to_children(stroke);
+            if (!stroke.bounds) continue;
+            this.insert_to_children_norm(stroke, StrokeQuadTree._normalize(stroke.bounds));
         }
         this.strokes = [];
     }
-    
+
     query(range, found = new Set()) {
-        if (!this.intersects(range)) return found;
-        
+        return this._query_norm(StrokeQuadTree._normalize(range), found);
+    }
+
+    _query_norm(nb, found) {
+        if (!this._hits_norm(nb)) return found;
+
         for (const stroke of this.strokes) {
-            if (this.stroke_intersects(stroke, range)) {
+            if (this._stroke_hits_norm(stroke, nb)) {
                 found.add(stroke);
             }
         }
-        
+
         if (this.children) {
             for (const child of this.children) {
-                child.query(range, found);
+                child._query_norm(nb, found);
             }
         }
-        
+
         return found;
     }
-    
+
     intersects(bounds) {
-        const padding = 5;
-        const bMinX = bounds.minX != null ? bounds.minX : bounds.x;
-        const bMaxX = bounds.maxX != null ? bounds.maxX : bounds.x + bounds.width;
-        const bMinY = bounds.minY != null ? bounds.minY : bounds.y;
-        const bMaxY = bounds.maxY != null ? bounds.maxY : bounds.y + bounds.height;
-        return !(bMaxX + padding < this.boundary.x ||
-                 bMinX - padding > this.boundary.x + this.boundary.width ||
-                 bMaxY + padding < this.boundary.y ||
-                 bMinY - padding > this.boundary.y + this.boundary.height);
+        return this._hits_norm(StrokeQuadTree._normalize(bounds));
     }
-    
-    stroke_intersects(stroke, range) {
+
+    /**
+     * 笔画与本节点范围的相交判定。
+     * 入参为已归一化范围：改造前这里直接读 range.x / range.x + range.width，
+     * 全应用唯一的调用方（tile-renderer 的 rebuild_tile）传的正是
+     * {x, y, width, height} 形状，故语义完全一致。
+     */
+    _stroke_hits_norm(stroke, nb) {
         if (!stroke.bounds) return true;
         const padding = Math.max(stroke.lineWidth || 5, stroke.eraserSize || 5);
-        return !(stroke.bounds.maxX + padding < range.x ||
-                 stroke.bounds.minX - padding > range.x + range.width ||
-                 stroke.bounds.maxY + padding < range.y ||
-                 stroke.bounds.minY - padding > range.y + range.height);
+        return !(stroke.bounds.maxX + padding < nb.minX ||
+                 stroke.bounds.minX - padding > nb.maxX ||
+                 stroke.bounds.maxY + padding < nb.minY ||
+                 stroke.bounds.minY - padding > nb.maxY);
     }
-    
+
+    stroke_intersects(stroke, range) {
+        return this._stroke_hits_norm(stroke, StrokeQuadTree._normalize(range));
+    }
+
     clear() {
         this.strokes = [];
         this.children = null;
     }
-    
+
     build(strokes) {
         this.clear();
         for (const stroke of strokes) {
@@ -447,7 +502,6 @@ let state = {
     baseImageURL: null,
     baseImageObj: null,
     baseImageLoadId: 0,
-    currentStroke: null,
     moveBound: {
         minX: 0, maxX: 0,
         minY: 0, maxY: 0
@@ -658,19 +712,6 @@ function main_load_source_data(sourceId) {
     currentSourceId = sourceId;
 }
 
-// 切换到新源：保存当前源 → 加载目标源 → 重绘 → 刷新UI
-async function main_update_source(newSourceId) {
-    main_save_current_source_data();
-    main_load_source_data(newSourceId);
-    main_delete_draw_canvas();
-    if (state.strokeHistory.length > 0) {
-        await main_render_all_strokes();
-    }
-    main_update_move_bound();
-    main_update_canvas_position();
-    main_update_canvas_transform();
-    main_update_history_button_status();
-}
 
 let dom = {};  // DOM 元素引用缓存
 
@@ -685,7 +726,6 @@ const historyCompactor = createHistoryCompactor({
     releaseOffscreenCanvas: (c) => main_release_offscreen_canvas(c),
     renderAllStrokes: (bounds) => main_render_all_strokes(bounds),
     loadBaseImage: (url) => main_load_base_image(url),
-    safeScaleFn: main_fetch_safe_scale,
     penManager: () => realPenManager,
     historyValidateCompact: history_validate_compact,
     historyFetchUndoStack: history_fetch_undo_stack,
@@ -695,10 +735,22 @@ const historyCompactor = createHistoryCompactor({
 });
 
 let cachedCanvasRect = null;
+
+// 依赖画布几何的缓存。
+//
+// 可见域与移动边界都由「画布尺寸 + 屏幕尺寸」决定，而命中判定此前只看视图
+// 状态（scale / canvasX / canvasY）—— 几何变化被完全漏掉：窗口 resize 后
+// 可见域塌缩/停留在旧尺寸（它决定哪些瓦片参与 DPR 升降与 idle 回收）、
+// 平移夹取范围也停在旧尺寸。用一个几何版本号把它们与几何绑死，
+// 比在每条改动几何的路径上记得手动清缓存可靠。
+let main_geometry_version = 0;
 let cachedVisibleRect = null;
 let cachedVisibleRectScale = null;
 let cachedVisibleRectX = null;
 let cachedVisibleRectY = null;
+let cachedVisibleRectVersion = null;
+let cachedMoveBoundScale = null;
+let cachedMoveBoundVersion = null;
 
 const OFFSCREEN_MAX_PHYSICAL = 3840;
 const OFFSCREEN_POOL_MAX = 2;
@@ -724,8 +776,13 @@ function main_schedule_offscreen_pool_evict() {
 
 function main_fetch_offscreen_canvas() {
     clearTimeout(_offscreenPoolTimer);
-    let w = DRAW_CONFIG.canvasW * DRAW_CONFIG.dpr;
-    let h = DRAW_CONFIG.canvasH * DRAW_CONFIG.dpr;
+    // 离屏画布与瓦片同为**内容空间**（逻辑尺寸 canvasW×canvasH），
+    // 故分辨率须走瓦片档而非静态倍率——放大时静态倍率会让合成结果发虚。
+    const dpr = window.ResolutionController
+        ? window.ResolutionController.calc_tile_dpr(state.scale || 1)
+        : (DRAW_CONFIG.dpr || 1);
+    let w = DRAW_CONFIG.canvasW * dpr;
+    let h = DRAW_CONFIG.canvasH * dpr;
     if (w > OFFSCREEN_MAX_PHYSICAL || h > OFFSCREEN_MAX_PHYSICAL) {
         const s = OFFSCREEN_MAX_PHYSICAL / Math.max(w, h);
         w = Math.round(w * s);
@@ -763,12 +820,6 @@ function main_delete_cached_rect() {
     cachedCanvasRect = null;
 }
 
-function main_fetch_cached_canvas_rect() {
-    if (!cachedCanvasRect) {
-        cachedCanvasRect = dom.canvasContainer.getBoundingClientRect();
-    }
-    return cachedCanvasRect;
-}
 
 // 监听系统关联打开的PDF文件
 function main_setup_pdf_file_open() {
@@ -835,19 +886,15 @@ function main_setup_pdf_file_open() {
         const settings = event.payload;
         console.log('收到设置更改通知:', settings);
         
-        // 动态分辨率相关设置统一经 ResolutionController 写入，
-        // 再由已注册的渲染上下文（主画布 / 阅读器 / 黑板）各自刷新
+        // 动态分辨率相关设置统一经 ResolutionController 写入（含 dprLimit——
+        // 此前遗漏该键，"画面精度"保存后既不进 DRAW_CONFIG 也无从生效），
+        // 再由已注册的渲染上下文（主画布 / 阅读器 / 黑板）各自刷新。
+        // 控制器内部会在 dprLimit/baseDpr 变更时自动重算静态倍率 DRAW_CONFIG.dpr。
         const dpr_changed = window.ResolutionController
-            ? window.ResolutionController.update_settings({
-                dynamicDprEnabled: settings.dynamicDprEnabled,
-                dprMin: settings.dprMin,
-                dprMax: settings.dprMax,
-                dprStep: settings.dprStep,
-                overlayDpr: settings.overlayDpr
-            })
+            ? window.ResolutionController.update_settings(settings)
             : [];
         if (dpr_changed.length > 0) {
-            window.sync_all_overlay_dpr?.();
+            window.ResolutionController?.refresh_all(true);
         }
 
         if (settings.penColors && Array.isArray(settings.penColors)) {
@@ -938,9 +985,6 @@ function main_setup_pdf_file_open() {
     
 }
 
-async function main_render_pdf_pages_lazy(pdf, totalPages, initialPages = 3, docNumber = null) {
-    return DocLoader.render_pdf_pages_lazy(pdf, totalPages, initialPages, docNumber);
-}
 
 const PDF_INITIAL_RENDER_PAGES = 20;
 
@@ -1329,47 +1373,180 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
     }
 }
 
-// 处理窗口大小变化（防抖 150ms）
-let resizeTimeout = null;
+// ===== 窗口尺寸响应 =====
+//
+// 主画布几何基准（DRAW_CONFIG.screenW/screenH/canvasW/canvasH）的唯一写入处。
+//
+// 这套逻辑原先只挂在 main_handle_resize 上，而它自首次提交起就没有任何调用者
+// —— 于是 screenW/screenH 恒为 0：可见域塌缩到 21x21（瓦片分辨率与显存回收
+// 全部失准）、移动边界恒为「画布任意拖动」、#canvasWrapper 从不写
+// width/height（CSS 里它是 contain: paint，零盒尺寸会把整块内容裁掉）。
+// 现由「启动首帧几何对齐 + resize 事件」两条路径共同驱动。
 
+const RESIZE_DEBOUNCE_MS = 150;
+let resizeTimeout = null;
+let resizeRetryTimer = null;
+/**
+ * 拖拽期间逐帧做「轻量几何对齐」，瓦片网格重建仍旧防抖。此闩记录「还有一次
+ * 重建没做」：轻量对齐已经把 DRAW_CONFIG.screenW/H 推到最终值，防抖到点时
+ * `main_sync_screen_size()` 会据此判定「尺寸没变」而直接 return —— 网格就永远
+ * 不会按新尺寸重建（实测表现：几何 lag 归零、但画布重分配 0 次，旧尺寸网格
+ * 一直被沿用）。所以重建入口必须看这个闩，而不是看屏幕尺寸是否变化。
+ */
+let _resize_needs_rebuild = false;
+let _resize_light_raf = null;
+
+/**
+ * 窗口尺寸变化入口：轻量几何逐帧跟、完整重建防抖合并；
+ * 最大化/还原过渡期延后重试而非丢弃。
+ */
 function main_handle_resize() {
-    if (_windowTransitioning) return;
     main_delete_cached_rect();
+    // 逐帧（rAF 合并）把几何对齐到当前窗口尺寸，让画布 / 图像层 / 视图变换
+    // 在拖拽期间跟着窗口走。此前是「整体防抖」，代价是画布在整个拖拽期间完全
+    // 不动 —— 实测「容器宽 − 已应用屏幕宽」一路涨到 420px，读起来就是
+    // 「窗口在动、内容僵住」。几何对齐不含瓦片重建，是纯样式/变换写入，很便宜。
+    _resize_needs_rebuild = true;
+    main_schedule_light_geometry();
+
     if (resizeTimeout) clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(() => {
-        if (_windowTransitioning) return;
         resizeTimeout = null;
-        const container = dom.canvasContainer;
-        const newScreenW = Math.max(1, container.clientWidth);
-        const newScreenH = Math.max(1, container.clientHeight);
-
-        if (newScreenW !== DRAW_CONFIG.screenW || newScreenH !== DRAW_CONFIG.screenH) {
-            main_update_canvas_size(newScreenW, newScreenH);
+        // 过渡（~300ms 动画）期间读到的是中间尺寸，此时重排会按错误尺寸重建
+        // 一次。与阅读器 / 小黑板同一策略：跳过并延后重试，过渡结束后必定补
+        // 一次对齐。原实现在过渡期直接 return —— 若之后不再有 resize 事件
+        // 送达，就会永久停在中间尺寸。
+        if (_windowTransitioning) {
+            if (resizeRetryTimer) clearTimeout(resizeRetryTimer);
+            resizeRetryTimer = setTimeout(() => {
+                resizeRetryTimer = null;
+                main_handle_resize();
+            }, 250);
+            return;
         }
-    }, 150);
+        // 顺手核对基准 DPR：显示器缩放比变化（跨屏拖动 / 系统缩放）常伴随窗口
+        // 尺寸变化，而 matchMedia 的 resolution 查询并非在所有环境都派发 change
+        // —— 只依赖它会让「尺寸变了但基准倍率没跟」，瓦片层按旧密度栅格化
+        window.ResolutionController?.refresh_display_dpr();
+        main_flush_resize_rebuild();
+    }, RESIZE_DEBOUNCE_MS);
 }
 
-// 调整画布大小
-async function main_update_canvas_size(newScreenW, newScreenH) {
-    const oldScale = state.scale;
-    const oldCanvasX = state.canvasX;
-    const oldCanvasY = state.canvasY;
-    
-    if (window.tileRenderer) {
-        window.tileRenderer.destroy_all();
+/** 拖拽期间的轻量几何对齐（rAF 合并，一帧最多一次）。 */
+function main_schedule_light_geometry() {
+    if (_resize_light_raf !== null) return;
+    _resize_light_raf = requestAnimationFrame(() => {
+        _resize_light_raf = null;
+        // 最大化/还原过渡期读到的是中间尺寸；过渡结束后由防抖那条路径补一次对齐
+        if (_windowTransitioning) return;
+        main_sync_screen_size({ light: true });
+    });
+}
+
+/**
+ * 防抖到点后的「完整重建」入口。
+ * 这里刻意不复用 `main_sync_screen_size()`：拖拽期间的轻量几何对齐已经把
+ * `DRAW_CONFIG.screenW/H` 推到最终尺寸，那个函数会据此判定「尺寸没变」而
+ * 直接 return，瓦片网格再也不会按新尺寸重建。所以判据换成 `_resize_needs_rebuild`。
+ */
+function main_flush_resize_rebuild() {
+    const container = dom.canvasContainer;
+    if (!container) return;
+    const w = Math.max(1, container.clientWidth || window.innerWidth);
+    const h = Math.max(1, container.clientHeight || window.innerHeight);
+    const sizeChanged = w !== DRAW_CONFIG.screenW || h !== DRAW_CONFIG.screenH;
+    if (!_resize_needs_rebuild && !sizeChanged) return;
+    _resize_needs_rebuild = false;
+    main_update_canvas_size(w, h);
+}
+
+/**
+ * 注册尺寸响应。
+ * DOM resize 覆盖窗口尺寸变化；Tauri 的 onResized 额外覆盖显示器缩放比变化
+ * （跨屏拖动 / 系统缩放调整）这类不一定产生 DOM resize 的情形。
+ * 末尾补一次首帧几何对齐：启动期没有内容，只对齐几何不建瓦片（省显存）。
+ */
+function main_setup_resize_handling() {
+    window.addEventListener('resize', main_handle_resize, { passive: true });
+    try {
+        const tw = window.__TAURI__?.window;
+        if (tw?.getCurrentWindow) {
+            const win = tw.getCurrentWindow();
+            if (typeof win?.onResized === 'function') {
+                const p = win.onResized(() => main_handle_resize());
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+            }
+        }
+    } catch (_) {}
+    main_sync_screen_size({ light: true });
+}
+
+/**
+ * 以容器实尺寸为准与 DRAW_CONFIG 对齐。
+ * @param {{light?: boolean}} [opts] light=true 只对齐几何基准，不做重建
+ *   （首帧用：此时没有内容，建瓦片纯属空占显存）
+ *
+ * 注意：**resize 路径已不再走这里的默认分支**。它在拖拽期间已经用 light 把几何
+ * 推到最终尺寸，走到这里时 `w === screenW` 会命中上面那行 return，重活就永远不会做。
+ * 防抖到点后的重建入口是 `main_flush_resize_rebuild()`（判据是 `_resize_needs_rebuild`
+ * 闩，而不是尺寸是否变化）。保留默认分支只为兼容外部（Tauri 注入侧）的直接调用。
+ */
+function main_sync_screen_size(opts = {}) {
+    const container = dom.canvasContainer;
+    if (!container) return false;
+    const w = Math.max(1, container.clientWidth || window.innerWidth);
+    const h = Math.max(1, container.clientHeight || window.innerHeight);
+    if (w === DRAW_CONFIG.screenW && h === DRAW_CONFIG.screenH) return false;
+    if (opts.light) main_apply_canvas_geometry(w, h);
+    else main_update_canvas_size(w, h);
+    return true;
+}
+
+/** 几何相关缓存统一失效（版本号推进即让它们全部落空）。 */
+function main_invalidate_geometry_caches() {
+    main_geometry_version++;
+    cachedCanvasRect = null;
+}
+
+/**
+ * 几何基准对齐，不含瓦片 / 笔画重建：
+ * 屏幕尺寸 → 画布尺寸 → 派生静态倍率 → 包装器与图片层盒尺寸 →
+ * 几何缓存失效 → 移动边界 / 位置 / 变换。
+ * @returns {boolean} 几何是否发生变化
+ */
+function main_apply_canvas_geometry(newScreenW, newScreenH) {
+    const w = Math.max(1, Math.floor(newScreenW));
+    const h = Math.max(1, Math.floor(newScreenH));
+    const oldW = DRAW_CONFIG.screenW;
+    const oldH = DRAW_CONFIG.screenH;
+    if (w === oldW && h === oldH) return false;
+
+    DRAW_CONFIG.screenW = w;
+    DRAW_CONFIG.screenH = h;
+    DRAW_CONFIG.canvasW = Math.max(1, Math.floor(w * 2));
+    DRAW_CONFIG.canvasH = Math.max(1, Math.floor(h * 2));
+
+    // 静态倍率由控制器派生（动态分辨率关闭时瓦片/页面均取它）
+    main_sync_static_dpr();
+
+    // 视图保持：画布尺寸与屏幕同比例变化，把平移量按同比例缩放即可保持
+    // 「视野内是画布的同一相对区域」。这里不能套用阅读器 / 小黑板那条
+    // 「视口中心的内容点不动」规则 —— 它们的画布尺寸固定、视口在画布内移动；
+    // 主画布的画布尺寸随屏幕一起变大，保持内容点不动会让画布边缘移进视野、
+    // 露出容器底色。首帧对齐无旧值可比，保持原样。
+    if (oldW > 0 && oldH > 0) {
+        state.canvasX *= w / oldW;
+        state.canvasY *= h / oldH;
     }
-    
-    DRAW_CONFIG.screenW = Math.max(1, newScreenW);
-    DRAW_CONFIG.screenH = Math.max(1, newScreenH);
-    
-    DRAW_CONFIG.canvasW = Math.max(1, Math.floor(newScreenW * 2));
-    DRAW_CONFIG.canvasH = Math.max(1, Math.floor(newScreenH * 2));
-    
-    DRAW_CONFIG.dpr = window.main_calc_capped_dpr(DRAW_CONFIG.baseDpr, DRAW_CONFIG.dprLimit);
-    
-    main_update_move_bound();
-    
-    if (dom.imageElement) {
+
+    // 图像层的盒尺寸是「按屏幕尺寸等比放入画布再居中」的派生量，不能在这里
+    // 直接写成 canvasW×canvasH —— 那会让图像被拉伸成 2 倍、同时丢掉居中
+    // （left/top 还是旧的），而批注层瓦片是随几何正常重建的：两层几何就此
+    // 不同步。有图时交给图像层自己的布局函数按新屏幕尺寸重算，无图时保持
+    // 满画布的空盒（导出合成等路径按此判定）。
+    if (state.currentImage) {
+        main_render_image_centered(state.currentImage);
+    } else if (dom.imageElement) {
         dom.imageElement.style.width = DRAW_CONFIG.canvasW + 'px';
         dom.imageElement.style.height = DRAW_CONFIG.canvasH + 'px';
     }
@@ -1377,32 +1554,65 @@ async function main_update_canvas_size(newScreenW, newScreenH) {
         dom.canvasWrapper.style.width = DRAW_CONFIG.canvasW + 'px';
         dom.canvasWrapper.style.height = DRAW_CONFIG.canvasH + 'px';
     }
-    
-    // 初始化瓦片渲染器
-    if (window.tileRenderer && dom.canvasWrapper) {
-        window.tileRenderer.init_tiles(dom.canvasWrapper);
-    }
-    
-    if (window.batchDrawManager) {
-        window.batchDrawManager.resize_overlay(newScreenW, newScreenH, DRAW_CONFIG.dpr);
-    }
-    
-    if (state.currentImage) {
-        main_render_image_centered(state.currentImage);
-    }
-    
-    if (state.strokeHistory.length > 0 || state.baseImageObj) {
-        await main_render_all_strokes();
-    }
-    
-    state.scale = oldScale;
-    state.canvasX = oldCanvasX;
-    state.canvasY = oldCanvasY;
-    
+
+    main_invalidate_geometry_caches();
     main_update_move_bound();
     main_update_canvas_position();
     main_update_canvas_transform();
-    
+    return true;
+}
+
+// 重入守卫：完整重建含 await（重绘笔画），窗口连续变化时若并发执行，
+// 两次的 destroy / init_tiles 会与对方的重绘交错
+let _canvas_size_rebuilding = false;
+let _canvas_size_pending = null;
+
+async function main_update_canvas_size(newScreenW, newScreenH) {
+    if (_canvas_size_rebuilding) {
+        _canvas_size_pending = [newScreenW, newScreenH];
+        return;
+    }
+    _canvas_size_rebuilding = true;
+    try {
+        let target = [newScreenW, newScreenH];
+        while (target) {
+            _canvas_size_pending = null;
+            await main_rebuild_canvas_for_size(target[0], target[1]);
+            target = _canvas_size_pending;
+        }
+    } finally {
+        _canvas_size_rebuilding = false;
+    }
+}
+
+/** 几何对齐 + 重内容（瓦片网格重建 / 图片重排 / 笔画重绘）。 */
+async function main_rebuild_canvas_for_size(newScreenW, newScreenH) {
+    main_apply_canvas_geometry(newScreenW, newScreenH);
+
+    // 瓦片网格尺寸在构造时固定，画布尺寸变化后必须重建，
+    // 否则新区域的笔画落在网格之外（提交后不可见）
+    if (window.tileRenderer) {
+        window.tileRenderer.destroy_all();
+        if (dom.canvasWrapper) window.tileRenderer.init_tiles(dom.canvasWrapper);
+    }
+
+    // 注：主画布没有实时预览覆盖层（笔迹直接落瓦片层），窗口尺寸变化时不需
+    // 同步任何覆盖层。将来若接入，在此处对主画布的 OverlayManager 调 resize。
+
+    // 图像层布局已由 main_apply_canvas_geometry（几何唯一写入者）按新屏幕
+    // 尺寸重算，此处不再重复调用，避免同一几何被两处各自写一遍。
+
+    // 不保存 / 恢复 state.scale/canvasX/canvasY：这段区间（瓦片重建 + 笔画
+    // 重绘）不写视图状态，而 await 期间用户若平移/缩放，恢复旧值会把刚做的
+    // 操作回滚。几何对齐里已按同比例缩放平移量，正是应有的结果。
+    if (state.strokeHistory.length > 0 || state.baseImageObj) {
+        await main_render_all_strokes();
+    }
+
+    main_update_move_bound();
+    main_update_canvas_position();
+    main_update_canvas_transform();
+
     console.log(`窗口调整: 屏幕 ${newScreenW}x${newScreenH}, 画布 ${DRAW_CONFIG.canvasW}x${DRAW_CONFIG.canvasH}, DPR ${DRAW_CONFIG.dpr.toFixed(2)}`);
 }
 
@@ -1416,13 +1626,14 @@ function main_update_canvas_bg_color(color) {
     }
 }
 
-let cachedMoveBoundScale = null;
-
 function main_update_move_bound() {
-    if (cachedMoveBoundScale === state.scale) {
+    // 命中判定必须同时覆盖几何版本：边界由画布尺寸与屏幕尺寸共同决定，
+    // 只看 scale 会让窗口 resize 后仍沿用旧尺寸算出的夹取范围
+    if (cachedMoveBoundScale === state.scale && cachedMoveBoundVersion === main_geometry_version) {
         return;
     }
     cachedMoveBoundScale = state.scale;
+    cachedMoveBoundVersion = main_geometry_version;
     
     const screenW = DRAW_CONFIG.screenW;
     const screenH = DRAW_CONFIG.screenH;
@@ -1453,16 +1664,20 @@ function main_update_canvas_position() {
 }
 
 function main_fetch_visible_rect() {
-    if (cachedVisibleRectScale === state.scale && 
-        cachedVisibleRectX === state.canvasX && 
-        cachedVisibleRectY === state.canvasY && 
+    // 命中判定覆盖几何版本：可见域由画布尺寸与屏幕尺寸共同决定，
+    // 只看视图状态会让窗口 resize 后仍返回旧尺寸算出的可见域
+    if (cachedVisibleRectScale === state.scale &&
+        cachedVisibleRectX === state.canvasX &&
+        cachedVisibleRectY === state.canvasY &&
+        cachedVisibleRectVersion === main_geometry_version &&
         cachedVisibleRect) {
         return cachedVisibleRect;
     }
-    
+
     cachedVisibleRectScale = state.scale;
     cachedVisibleRectX = state.canvasX;
     cachedVisibleRectY = state.canvasY;
+    cachedVisibleRectVersion = main_geometry_version;
     
     // 确保缩放系数 > 0，防止除以零
     const scale = Math.max(0.01, state.scale || 1);
@@ -2350,6 +2565,7 @@ function main_setup_all_events() {
         document.getElementById(btnId)?.addEventListener('click', handler);
     }
     main_setup_maximize_state_sync();
+    main_setup_undo_keyboard();
     main_update_tabs();
 
     // 标签栏交互增强：快捷键 + 横向滚轮（一次性注册）
@@ -2397,6 +2613,9 @@ function main_setup_all_events() {
             }
         }, { passive: false });
     }
+
+    // 窗口尺寸响应：主画布几何基准 + 启动首帧对齐
+    main_setup_resize_handling();
 }
 
 // 设置笔触样式
@@ -2404,9 +2623,6 @@ function main_update_pen_style() {
     main_reset_context_state();
 }
 
-function main_update_eraser_style() {
-    main_reset_context_state();
-}
 
 function main_update_canvas_transform() {
     if (last_canvas_transform.x === state.canvasX && 
@@ -2434,129 +2650,21 @@ function main_update_canvas_transform() {
     if (window.tileRenderer) {
         window.tileRenderer.update_visible_tile_dpr(state.scale, false, true);
     }
-    if (window.batchDrawManager) {
-        window.batchDrawManager.update_overlay_dpr(state.scale);
-    }
 }
 
-// 撤销功能 - 混合方案：路径记录 + ImageData 压缩
-function main_start_stroke(type, eraserShape) {
-    const invScale = 1 / main_fetch_safe_scale();
-    const baseEraserSize = DRAW_CONFIG.eraserSize * invScale;
-    state.currentStroke = {
-        type: type,
-        points: [],
-        color: type === 'draw' ? DRAW_CONFIG.penColor : '#000000',
-        lineWidth: (type === 'draw' ? DRAW_CONFIG.penWidth : DRAW_CONFIG.eraserSize) * invScale,
-        eraserSize: baseEraserSize,
-        eraserSizeRaw: DRAW_CONFIG.eraserSize,
-        eraserShape: eraserShape || 'square',
-        scale: state.scale,
-        bounds: {
-            minX: Infinity,
-            minY: Infinity,
-            maxX: -Infinity,
-            maxY: -Infinity
-        },
-        variableWidths: []
-    };
-    
-    state.currentPressure = 0.5;
-    state.currentLineWidth = DRAW_CONFIG.penWidth * invScale;
-    state.lastLineWidth = DRAW_CONFIG.penWidth * invScale;
-    
-    state.cachedDrawType = type;
-    state.cachedDrawColor = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
-    const startScale = main_fetch_safe_scale();
-    state.cachedDrawLineWidth = type === 'draw' ? DRAW_CONFIG.penWidth / startScale : DRAW_CONFIG.eraserSize / startScale;
-    
-    batchDrawManager.eraserShape = state.currentStroke.eraserShape;
-    batchDrawManager.batch_draw_init_start();
-}
-
-function main_save_stroke_point(fromX, fromY, toX, toY, pressure = 0.5) {
-    const stroke = state.currentStroke;
-    if (!stroke) return;
-    
-    const bounds = stroke.bounds;
-    if (fromX < bounds.minX) bounds.minX = fromX;
-    if (toX < bounds.minX) bounds.minX = toX;
-    if (fromY < bounds.minY) bounds.minY = fromY;
-    if (toY < bounds.minY) bounds.minY = toY;
-    if (fromX > bounds.maxX) bounds.maxX = fromX;
-    if (toX > bounds.maxX) bounds.maxX = toX;
-    if (fromY > bounds.maxY) bounds.maxY = fromY;
-    if (toY > bounds.maxY) bounds.maxY = toY;
-    
-    let currentWidth = stroke.lineWidth;
-    const currentScale = main_fetch_safe_scale();
-    
-    if (stroke.type === 'draw') {
-        state.currentPressure = pressure;
-        state.lastLineWidth = state.currentLineWidth;
-        currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
-        state.currentLineWidth = currentWidth;
-        state.cachedDrawLineWidth = DRAW_CONFIG.penWidth / currentScale;
-    } else if (stroke.type === 'erase') {
-        state.cachedDrawLineWidth = DRAW_CONFIG.eraserSize / currentScale;
-    }
-    
-    stroke.variableWidths.push(currentWidth);
-    
-    const points = stroke.points;
-    points.push({ fromX, fromY, toX, toY });
-}
-
+/**
+ * 收尾主画布挂起的绘制状态。
+ *
+ * 主画布**没有实时预览覆盖层**：笔迹直接落到瓦片层，不存在"把当前笔画提交为
+ * DrawCommand"的路径。历史上那套 main_start_stroke / main_save_stroke_point
+ * 随覆盖层一起失去调用者，已删除。
+ * 阅读器与小黑板在切入各自模式前会调用本函数，目的是确保共享的
+ * batchDrawManager 不留挂起命令。
+ *
+ * 注意：batch_draw_handle_end() 内部已包含 flush，此处无需重复调用。
+ */
 async function main_submit_stroke() {
-    if (state.currentStroke && state.currentStroke.points.length > 0) {
-        // 强制刷新待处理命令，确保 _storedWidths 包含所有段的线宽
-        batchDrawManager.batch_draw_handle_flush();
-        // limited 模式：末尾添加收尾渐变
-        const penMode = window.get_pen_effect_mode ? window.get_pen_effect_mode() : 'off';
-        if (penMode === 'limited' && batchDrawManager._storedWidths.length > 0) {
-            const baseW = state.currentStroke.lineWidth || DRAW_CONFIG.penWidth || 5;
-            batchDrawManager._apply_speed_taper(batchDrawManager._storedWidths, state.currentStroke.points, baseW);
-        }
-        // 捕获实时绘制的逐段宽度，确保离线渲染与实时预览一致
-        const storedWidths = batchDrawManager._storedWidths;
-        if (storedWidths && storedWidths.length === state.currentStroke.points.length) {
-            state.currentStroke.storedWidths = [...storedWidths];
-        }
-        
-        const halfWidth = Math.max(state.currentStroke.lineWidth || 5, state.currentStroke.eraserSize || 5) / 2;
-        const strokeBounds = state.currentStroke && state.currentStroke.bounds
-            ? {
-                minX: state.currentStroke.bounds.minX - halfWidth,
-                minY: state.currentStroke.bounds.minY - halfWidth,
-                maxX: state.currentStroke.bounds.maxX + halfWidth,
-                maxY: state.currentStroke.bounds.maxY + halfWidth
-            } : null;
-        
-        const cmd = new DrawCommand({
-            stroke: state.currentStroke,
-            strokeHistoryRef: state.strokeHistory,
-            redrawFn: () => main_render_all_strokes(strokeBounds)
-        });
-        await history_execute_command(cmd, false);
-
-        if (state.currentStroke.type === 'erase') {
-            if (window.tileRenderer) {
-                await main_render_all_strokes(strokeBounds);
-            }
-        } else {
-            if (window.tileRenderer) {
-                await window.tileRenderer.add_stroke(state.currentStroke);
-            }
-        }
-
-        if (history_validate_compact()) {
-            main_init_compact();
-        }
-    }
-    state.currentStroke = null;
-
     await batchDrawManager.batch_draw_handle_end();
-
     batchDrawManager.batch_draw_delete_all();
 }
 
@@ -2607,27 +2715,87 @@ function main_update_context_state(ctx, s) { updateContextState(ctx, s); }
 window.main_update_context_state = main_update_context_state;
 
 /**
+ * 作废全部「按笔画对象缓存」的渲染几何缓存（笔锋细分 + 常量宽度 Path2D）。
+ *
+ * ⚠️ 这是**唯一入口**。这些缓存都以笔画对象标识作键、看不到对象内部的变化，
+ * 因此任何对已有 stroke.points / lineWidth 的**原地改写**都必须调用本函数，
+ * 否则渲染会继续沿用改写前的几何 —— 表现为批注画在旧位置，位移大到越出
+ * 所属瓦片时整块瓦片空白（reader 缩放窗口/页内缩放后批注消失即此因）。
+ *
+ * 现有调用点：
+ *  - document_reader._scale_page_annotations（窗口尺寸变化后缩放批注坐标）
+ *  - main_handle_undo（撤销会换上克隆出的笔画对象）
+ *  - settings 切笔锋模式（penEffectMode 决定走哪条渲染分支）
+ */
+function main_invalidate_stroke_geometry_caches() {
+    realPenManager.invalidate_cache();
+    invalidate_stroke_path_cache();
+}
+window.main_invalidate_stroke_geometry_caches = main_invalidate_stroke_geometry_caches;
+
+/**
  * 按原始顺序逐个绘制笔画：draw/comment 用 source-over，erase 用 destination-out
  * @param {CanvasRenderingContext2D} ctx
  * @param {Array} strokes - 笔画数组
  */
 async function main_render_strokes_to_context(ctx, strokes) {
     return renderStrokesToContext(ctx, strokes, {
-        renderScale: main_fetch_safe_scale(),
         penManager: realPenManager
     });
 }
 window.main_render_strokes_to_context = main_render_strokes_to_context;
 
-function main_init_compact() { historyCompactor.initCompaction(); }
-
 async function main_handle_undo() {
     historyCompactor.cancelCompaction();
     state.baseImageLoadId++;
     state.compactSnapshotId = (state.compactSnapshotId || 0) + 1;
-    realPenManager.invalidate_cache();
+    main_invalidate_stroke_geometry_caches();
     await history_handle_undo();
+    historyCompactor.initCompaction();
     console.log('撤销操作');
+}
+
+async function main_handle_redo() {
+    historyCompactor.cancelCompaction();
+    state.baseImageLoadId++;
+    state.compactSnapshotId = (state.compactSnapshotId || 0) + 1;
+    main_invalidate_stroke_geometry_caches();
+    await history_handle_redo();
+    historyCompactor.initCompaction();
+    console.log('重做操作');
+}
+window.main_handle_undo = main_handle_undo;
+window.main_handle_redo = main_handle_redo;
+
+/**
+ * 主画布全局撤销/重做快捷键（Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z）。
+ * 黑板与阅读器各自有同款快捷键与专属历史，打开时让位；
+ * 输入框聚焦、设置面板覆盖时不劫持。
+ */
+function main_setup_undo_keyboard() {
+    document.addEventListener('keydown', (e) => {
+        const target = document.activeElement;
+        const tag = target?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+        if (window.blackboardManager?.is_open) return;
+        if (window.documentReaderManager?.is_open) return;
+        const sp = document.getElementById('settingsPanel');
+        if (sp && sp.style.display === 'flex') return;
+
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            if (e.shiftKey) {
+                if (history_validate_redo()) main_handle_redo();
+            } else if (history_validate_undo()) {
+                main_handle_undo();
+            }
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+            e.preventDefault();
+            if (history_validate_redo()) main_handle_redo();
+        }
+    });
 }
 
 function main_update_history_button_status() {
@@ -2639,9 +2807,6 @@ function main_delete_draw_canvas() {
     if (window.tileRenderer) {
         window.tileRenderer.destroy_all();
         window.tileRenderer.init_tiles(dom.canvasWrapper);
-    }
-    if (window.batchDrawManager) {
-        window.batchDrawManager.clear_overlay();
     }
     main_reset_context_state();
 }
@@ -2673,13 +2838,16 @@ async function main_delete_all_drawings() {
         loadBaseImageFn: (url) => main_load_base_image(url)
     });
     await history_execute_command(cmd);
-    
+
     main_delete_draw_canvas();
-    
+
     if (currentSourceId) {
         main_save_current_source_data();
     }
-    
+
+    // 清空后检查是否需要后台压缩（超过 MAX_HISTORY_STEPS 时 idle 期合并命令）
+    historyCompactor.initCompaction();
+
     if (state.drawMode === 'eraser') {
         main_update_mode('comment');
     }
@@ -2708,10 +2876,6 @@ function main_load_base_image(url) {
     img.src = url;
 }
 
-// 保存画布截图
-function main_save_photo() {
-    main_save_merged_canvas();
-}
 
 function main_save_merged_canvas() {
     console.log('执行拍照功能');
@@ -2865,30 +3029,6 @@ async function main_open_folder() {
     }
 }
 
-async function main_update_image_rotation(direction) {
-    if (!state.currentImage) {
-        console.log('没有图片可旋转');
-        return;
-    }
-
-    const rotatedDataUrl = main_update_image_rotation_fallback(state.currentImage, direction);
-    
-    const rotatedImg = new Image();
-    rotatedImg.onload = () => {
-        state.currentImage = rotatedImg;
-        
-        if (state.currentImageIndex >= 0 && state.currentImageIndex < state.imageList.length) {
-            state.imageList[state.currentImageIndex].full = rotatedImg.src;
-            state.imageList[state.currentImageIndex].thumbnail = rotatedImg.src;
-            state.imageList[state.currentImageIndex].width = rotatedImg.width;
-            state.imageList[state.currentImageIndex].height = rotatedImg.height;
-        }
-        
-        main_render_image_centered(rotatedImg);
-        console.log(`图片已向${direction === 'left' ? '左' : '右'}旋转`);
-    };
-    rotatedImg.src = rotatedDataUrl;
-}
 
 function main_update_image_rotation_fallback(img, direction) {
     const canvas = document.createElement('canvas');
@@ -2960,113 +3100,6 @@ function main_show_error_dialog(title, message, retryCallback = null) {
 // === 图像导入功能 ===
 // 图片导入、拍照保存、PDF处理
 
-/**
- * 导入图片文件（支持多选，批量导入时用 Rust 并行生成缩略图）
- */
-async function main_load_image() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.multiple = true;
-    
-    input.onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        if (files.length === 0) return;
-        
-        // 保存当前源数据，确保切换前批注不丢失
-        if (currentSourceId) {
-            main_save_current_source_data();
-        }
-        
-        const hasLargeImage = files.some(file => file.size > 2.5 * 1024 * 1024);
-        
-        // 如果有大图片或者多个文件，显示加载动画
-        if (files.length > 1 || hasLargeImage) {
-            main_show_loading_overlay(window.i18n?.format_translate('loading.readingImages') || '正在读取图片...');
-        }
-        
-        const imageDataList = [];
-        
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            
-            if (files.length > 1 || file.size > 2.5 * 1024 * 1024) {
-                main_update_loading_progress(window.i18n?.format_translate('loading.readingImage', { current: i + 1, total: files.length }) || `正在读取图片 ${i + 1}/${files.length}...`);
-            }
-            
-            const blobUrl = URL.createObjectURL(file);
-            
-            const imageName = file.name || window.i18n?.format_translate('sidebar.imageAlt', { n: state.imageList.length + imageDataList.length + 1 }) || `图片${state.imageList.length + imageDataList.length + 1}`;
-            imageDataList.push({
-                data: blobUrl,
-                blob: file,
-                name: imageName
-            });
-        }
-        
-        for (let i = 0; i < imageDataList.length; i++) {
-            const imgData = imageDataList[i];
-            const isLast = (i === imageDataList.length - 1);
-            
-            const img = new Image();
-            await new Promise((resolve) => {
-                img.onload = () => resolve();
-                img.onerror = () => {
-                    console.error(`加载图片失败: ${imgData.name}`);
-                    resolve();
-                };
-                img.src = imgData.data;
-            });
-            
-            const newImgData = {
-                full: imgData.data,
-                thumbnail: imgData.data,
-                name: imgData.name,
-                width: img.width,
-                height: img.height,
-                strokeHistory: [],
-                baseImageURL: null,
-                viewState: {
-                    scale: 1,
-                    canvasX: -(DRAW_CONFIG.canvasW - DRAW_CONFIG.screenW) / 2,
-                    canvasY: -(DRAW_CONFIG.canvasH - DRAW_CONFIG.screenH) / 2
-                },
-                sourceId: main_create_source_id('pic')
-            };
-            
-            state.imageList.push(newImgData);
-            state.currentImageIndex = state.imageList.length - 1;
-            state.currentImage = img;
-            state.currentFolderIndex = -1;
-            state.currentFolderPageIndex = -1;
-            
-            main_delete_draw_canvas();
-            state.strokeHistory = [];
-            state.baseImageURL = null;
-            state.baseImageObj = null;
-            history_delete_all();
-            state.scale = 1;
-            state.canvasX = -(DRAW_CONFIG.canvasW - DRAW_CONFIG.screenW) / 2;
-            state.canvasY = -(DRAW_CONFIG.canvasH - DRAW_CONFIG.screenH) / 2;
-            main_update_move_bound();
-            main_update_canvas_transform();
-            main_update_history_button_status();
-            
-            if (isLast) {
-                main_render_image_centered(img);
-            }
-        }
-        
-        // 如果显示了加载动画，无论文件数量多少，都需要隐藏
-        if (files.length > 1 || hasLargeImage) {
-            main_hide_loading_overlay();
-        }
-        
-        console.log(`已导入 ${imageDataList.length} 张图片`);
-    };
-    
-    input.click();
-}
 
 async function main_save_image_to_list_no_highlight(img, name, captureFilter) {
     const blob = await fetch(img.src).then(r => r.blob());
@@ -3275,6 +3308,8 @@ window.main_setup_all_events = main_setup_all_events;
 window.main_setup_pdf_file_open = main_setup_pdf_file_open;
 window.main_show_error_dialog = main_show_error_dialog;
 window.main_handle_resize = main_handle_resize;
+window.main_sync_screen_size = main_sync_screen_size;
+window.main_apply_canvas_geometry = main_apply_canvas_geometry;
 window.main_submit_stroke = main_submit_stroke;
 window.main_update_mode = main_update_mode;
 window.main_update_canvas_bg_color = main_update_canvas_bg_color;
@@ -3319,12 +3354,3 @@ if (document.readyState === 'loading') {
 } else {
     setTimeout(main_update_tabs, 100);
 }
-
-/**
- * 同步所有渲染上下文的分辨率（主界面 + 阅读器 + 黑板）。
- * 原先此处逐处手写三份 overlay 尺寸赋值，易与各上下文自身逻辑脱节；
- * 现改为由 ResolutionController 向已注册上下文统一分发。
- */
-window.sync_all_overlay_dpr = function () {
-    window.ResolutionController?.refresh_all(true);
-};

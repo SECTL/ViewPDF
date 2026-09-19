@@ -308,7 +308,7 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
                 window.batchDrawManager.ellipseMode = enabled;
             }
             // 同步到阅读器和黑板的独立 batch_draw 实例
-            const docReader = window.__documentReaderManager;
+            const docReader = window.documentReaderManager;
             if (docReader?.batch_draw) {
                 docReader.batch_draw.ellipseMode = enabled;
             }

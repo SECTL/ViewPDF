@@ -1357,15 +1357,6 @@ body {
     image-rendering: auto;
 }
 
-.draw-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 4;
-    pointer-events: none;
-    background-color: transparent;
-}
-
 .canvas-wrapper.drawing {
     cursor: crosshair;
 }
