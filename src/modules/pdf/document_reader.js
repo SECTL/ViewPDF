@@ -5178,6 +5178,16 @@ class DocumentReaderManager {
                         setTimeout(() => {
                             this._zoom_wrapper.classList.remove('smooth-transform');
                             this._zoom_wrapper.style.transitionDuration = '';
+                            // 回弹落点补扫（勿删）：transform 回弹是 CSS 过渡动画，
+                            // 上面 _dr_apply_scale 的可见性扫描发生在 t≈0（弹性越界
+                            // 位置）——落点处真正可见的页被判 hidden 并记入 800ms
+                            // 回收定时器，随后被虚拟化卸载；且动画期间无任何 rAF
+                            // transform 写入（纯 CSS 插值），不补扫就永远没有下一次
+                            // 扫描 → 表现为「缩放时移动松手后文档整片消失，点一下才恢复」。
+                            // 动画结束位置与逻辑值已一致，但 _dr_transform_changed 为
+                            // false 会让扫描复用 t≈0 的过期容器矩形，必须强制重测。
+                            this._dr_transform_changed = true;
+                            this._check_page_visibility();
                         }, 250);
                     }
                     this._dr_schedule_disable_smooth_transform();
