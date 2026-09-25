@@ -219,6 +219,17 @@ class DocumentReaderManager {
         // 已初始化 tile 的页面索引集合（_dr_apply_scale 仅遍历此集合，跳过无 tile 页面）
         this._pages_with_tiles = new Set();
 
+        // ====== 增量回收（分批执行，防全量清理尖峰） ======
+        // 旧实现：每页隐藏定时器触发一次 O(N) 全量扫描+当场回收——快滑 40 页
+        // 实测 35 次扫描、单次最大 57.7ms 的主线程尖峰（longtask）。
+        // 新实现：扫描只「收集」待回收项入队列，每批 ≤6 页经 rIC 分批执行；
+        // 多个页的到期定时器由 400ms 节流合并成一次收集。
+        this._recycle_worklist = [];      // 待执行项 [{i, kind: tiles|unmount|virtualize|blob}]
+        this._recycle_keys = new Set();   // 去重：kind:i
+        this._recycle_last_run = 0;       // 上次收集时间（节流）
+        this._recycle_queued = false;     // 节流窗口内已有尾随重跑在排队
+        this._recycle_batch_max = 3;      // 每批执行上限（单页回收最重 ~12ms，批内累加须低于帧预算）
+
         this._open_seq = Promise.resolve();
         this._preload_idle_id = null;
         // 跨页并发渲染上限：限制同时在途的 PDF.js 渲染数，摊平首屏/滚动时
@@ -1056,6 +1067,11 @@ class DocumentReaderManager {
             clearTimeout(this._doc_cleanup_timer);
             this._doc_cleanup_timer = null;
         }
+
+        // 清空增量回收队列：换文档后旧页索引不得被回收逻辑触达
+        this._recycle_worklist.length = 0;
+        this._recycle_keys.clear();
+        this._recycle_queued = false;
 
         if (this._preload_idle_id !== null) {
             if (window.cancelIdleCallback) {
@@ -2437,6 +2453,27 @@ class DocumentReaderManager {
     _cleanup_hidden_page_gpu() {
         if (!this.page_manager?.pages_list) return;
 
+        // 节流合并：多个页的隐藏定时器相继到期时，只做一次收集（其余登记尾随重跑）。
+        // 全量扫描本身很便宜，贵的是逐页回收（tile 销毁/图层释放/DOM 卸载，
+        // 实测单页最大 ~6ms）——成本控制靠下面的分批执行。
+        const now = performance.now();
+        if (now - this._recycle_last_run < 400) {
+            if (!this._recycle_queued) {
+                this._recycle_queued = true;
+                const rerun = () => {
+                    this._recycle_queued = false;
+                    this._cleanup_hidden_page_gpu();
+                };
+                if (window.requestIdleCallback) {
+                    window.requestIdleCallback(rerun, { timeout: 2000 });
+                } else {
+                    setTimeout(rerun, 400);
+                }
+            }
+            return;
+        }
+        this._recycle_last_run = now;
+
         const pages = this.page_manager.pages_list;
 
         // ［性能］tile 销毁仅遍历实际有 tile 的页面，跳过大量无 tile 页
@@ -2444,7 +2481,7 @@ class DocumentReaderManager {
             const pd = pages[i];
             if (!pd || pd.is_visible || i === this.active_page_index) continue;
             if (!this._is_page_near_active(i, this._tile_keep_distance)) {
-                this._destroy_page_tiles(i);
+                this._recycle_enqueue(i, 'tiles');
             }
         }
 
@@ -2458,13 +2495,82 @@ class DocumentReaderManager {
                 // 远于包裹窗口：释放图层/图片并彻底卸载出文档树（仅留缓存坐标），
                 // 是当前标签内 DOM 节点数最小化的关键——373 页文档常态仅 ~17 个包裹常驻。
                 // 仅虚拟化模式执行：非虚拟化(flex 流)下无绝对定位补偿，卸载会导致页面消失
-                this._virtualize_page(i);
-                this._unmount_page_element(i);
+                this._recycle_enqueue(i, 'unmount');
             } else if (!this._is_page_near_active(i, this._image_keep_distance)) {
-                this._virtualize_page(i);
+                this._recycle_enqueue(i, 'virtualize');
             } else if (!this._is_page_near_active(i, this._blob_keep_distance)) {
-                this._release_page_blob_url(i);
+                this._recycle_enqueue(i, 'blob');
             }
+        }
+
+        this._drain_recycle_worklist();
+    }
+
+    /** 登记一项待回收任务（去重；页已回可见则丢弃） */
+    _recycle_enqueue(page_index, kind) {
+        const key = kind + ':' + page_index;
+        if (this._recycle_keys.has(key)) return;
+        const pd = this.page_manager.pages_list[page_index];
+        if (!pd || pd.is_visible || page_index === this.active_page_index) return;
+        this._recycle_keys.add(key);
+        this._recycle_worklist.push({ i: page_index, kind });
+    }
+
+    /**
+     * 分批执行回收队列。每批 ≤ _recycle_batch_max 页，批间让出主线程（rIC）。
+     * 手势期顺延（回收的 tile 销毁/卸载落在滑行帧是可感卡顿源）——但长滑下
+     * 队列积压超过 24 页时改为小批快泄（setTimeout 间隔），避免内存无界增长。
+     */
+    _drain_recycle_worklist() {
+        if (this._recycle_draining) return;
+        if (!this._recycle_worklist.length) return;
+
+        const gesture = this._dr_renders_paused();
+        if (gesture && this._recycle_worklist.length <= 24) {
+            // 完整顺延：由 _dr_on_render_resume 在手势结束后触发续批
+            return;
+        }
+
+        this._recycle_draining = true;
+        const batch = this._recycle_worklist.splice(0, gesture ? 3 : this._recycle_batch_max);
+        for (const w of batch) {
+            this._recycle_keys.delete(w.kind + ':' + w.i);
+            this._recycle_execute(w);
+        }
+        this._recycle_draining = false;
+
+        if (this._recycle_worklist.length > 0) {
+            const run = () => this._drain_recycle_worklist();
+            if (gesture) {
+                // 手势期泄洪：宏任务间隔执行，不占用 rAF 帧预算
+                setTimeout(run, 48);
+            } else if (window.requestIdleCallback) {
+                window.requestIdleCallback(run, { timeout: 2000 });
+            } else {
+                setTimeout(run, 0);
+            }
+        }
+    }
+
+    /** 执行单项回收（执行时重验状态：页可能已在批间排队期回到可见区） */
+    _recycle_execute(w) {
+        const pages = this.page_manager.pages_list;
+        const pd = pages[w.i];
+        if (!pd || pd.is_visible || w.i === this.active_page_index) return;
+        switch (w.kind) {
+            case 'tiles':
+                this._destroy_page_tiles(w.i);
+                break;
+            case 'unmount':
+                this._virtualize_page(w.i);
+                this._unmount_page_element(w.i);
+                break;
+            case 'virtualize':
+                this._virtualize_page(w.i);
+                break;
+            case 'blob':
+                this._release_page_blob_url(w.i);
+                break;
         }
     }
 
