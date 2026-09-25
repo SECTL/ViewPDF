@@ -237,6 +237,21 @@ class DocumentReaderManager {
         this._render_in_flight = 0;
         this._RENDER_MAX = 2;
 
+        // ====== 手势期渲染暂停（平移/缩放流畅优先） ======
+        // _render_pause_until 之前不启动新渲染、挂起渲染结果提交：
+        // 平移/惯性/滚轮的每帧都会续期该期限，静默 120ms 后由
+        // _dr_on_render_resume 补扫可见性恢复渲染（零遗漏，见方法注释）
+        this._render_pause_until = 0;
+        this._render_resume_timer = null;
+        // 手势期挂起的渲染提交（page_index -> job）：多兆像素换帧不落在手势帧内
+        this._deferred_commits = new Map();
+        // 节流门挂起提交的自动回贴调度（rAF 幂等）；手势期挂起不调度，
+        // 交给 _dr_on_render_resume 统一回贴（见 _dr_defer_commit 注释）
+        this._dr_flush_scheduled = false;
+        // 手势期延后初始化批注瓦片的页队列（错峰补建，见 _dr_defer_tile_init）
+        this._dr_tile_init_queue = new Set();
+        this._dr_tile_init_draining = false;
+
         // 阅读器内加载层（打开/切标签时显示，首屏 DOM 真正渲染完成才隐藏）
         this._reader_loading_el = null;
         this._pending_first_render = false;
@@ -955,6 +970,21 @@ class DocumentReaderManager {
             this._zoom_complete_timer = null;
         }
         this._dr_is_zooming = false;
+
+        // 手势期渲染暂停状态收尾：恢复定时器与挂起提交（位图按归属释放）
+        if (this._render_resume_timer !== null) {
+            clearTimeout(this._render_resume_timer);
+            this._render_resume_timer = null;
+        }
+        this._render_pause_until = 0;
+        for (const job of this._deferred_commits.values()) {
+            this._dr_discard_commit_job(job);
+        }
+        this._deferred_commits.clear();
+        // 手势期延后的批注瓦片队列一并作废（下次打开由可见性扫描重新驱动）
+        this._dr_tile_init_queue.clear();
+        this._dr_tile_init_draining = false;
+        this._render_host?.set_throttled?.(false);
 
         // 清理预渲染队列
         this._cancel_prerender();
@@ -2222,18 +2252,55 @@ class DocumentReaderManager {
         const step = dir > 0 ? 1 : -1;
         const lo = Math.min(active, active + dir * span);
         const hi = Math.max(active, active + dir * span);
+        // 手势期（滚动/惯性）切换泵的产出形态：1x 预渲染成果在停稳前既不上屏
+        // 也不入位图缓存（提交挂起），对滑行中的前缘页毫无即时价值；改派
+        // 0.5x 占位预渲染——占位豁免手势门控与提交挂起，完成立即上屏（页
+        // 尚未入视口就先画好），入视口瞬间有内容，停稳后恢复补扫统一升清。
+        // 占位位图小（0.25 面积）+ worker 队首优先派发，前缘覆盖随泵逐页推进。
+        const gesture = this._dr_renders_paused();
+
+        // DOM 预挂载（每 tick 至多 1 页，成本摊到帧间）：滚动方向前缘若存在
+        // 尚无包裹元素的页（被回收卸载过/虚拟化清理过），先重建骨架。只预挂
+        // wrapper_keep 窗口内的页——与回收窗口对齐，避免「预挂载→立刻被回收」
+        // 的对抗抖动。挂载后这些页进入占位预渲染候选，且入视口时
+        // _on_page_visible 的同步建层成本随之消失。
+        if (this._dom_virtualize() && this._zoom_wrapper) {
+            const keep = this._wrapper_keep_distance;
+            const plo = Math.min(active, active + dir * keep);
+            const phi = Math.max(active, active + dir * keep);
+            for (let i = active + step; i >= plo && i <= phi; i += step) {
+                const pd = pages[i];
+                if (!pd || pd.is_visible || pd.page_element) continue;
+                if (pd.render_mode !== 'pdfjs' && !pd.loaded && !pd.image_url) continue;
+                this._ensure_page_element(i);
+                break;
+            }
+        }
 
         let target = -1;
         for (let i = active + step; i >= lo && i <= hi; i += step) {
             const pd = pages[i];
             if (!pd) continue;
+            if (pd.is_visible || pd.is_virtualized || pd.pdf_render_promise ||
+                pd._dr_commit_pending) continue;
+            if (gesture) {
+                // 占位只服务 pdfjs 页（渲染入口对其它模式直接 return，选它会
+                // 每帧空转同一目标），且要求元素已挂载（渲染入口硬性前置条件）
+                if (pd.render_mode !== 'pdfjs' || !pd.page_element) continue;
+                // 平移手势中 css_w 恒定：守卫非空 = 已有任何内容（含低清旧占位），
+                // 不重画，继续向前找真正空白的页——泵的意义是前缘覆盖；
+                // 变清晰/换参数由停稳后的恢复补扫统一处理
+                if (pd.pdf_render_css_width > 0) continue;
+                target = i;
+                break;
+            }
             const can_pre = pd.render_mode === 'pdfjs'
                 ? true
                 : !!(pd._img_el && pd._img_el.dataset && pd._img_el.dataset.src);
-            // 已可见/正在渲染的页跳过；未发起过渲染(pdf_render_promise 为空)的页
-            // 纳入前瞻预渲染。已 loaded(缓存命中)的页同样需要预渲染——其守卫会在
-            // 重复调用时安全 no-op，不会重复栅格化。
-            if (can_pre && !pd.is_visible && !pd.pdf_render_promise) {
+            // 非手势（结算尾段）：维持原 1x 预渲染。已渲染达标的页跳过
+            // （渲染完成后承诺即清空，仅凭承诺判重会每帧空转）；
+            // 未发起过渲染的页纳入前瞻预渲染。
+            if (can_pre && !this._prerender_already_adequate(i, pd)) {
                 target = i;
                 break;
             }
@@ -2251,7 +2318,10 @@ class DocumentReaderManager {
 
         this._dr_prerender_pump_raf = requestAnimationFrame(() => {
             this._dr_prerender_pump_raf = null;
-            this._prerender_page(target).catch(() => {}).finally(() => {
+            const work = gesture
+                ? this._render_pdf_page_direct(target, false, false, true)
+                : this._prerender_page(target);
+            Promise.resolve(work).catch(() => {}).finally(() => {
                 if (this._dr_prerender_pumping) {
                     this._dr_prerender_pump_raf = requestAnimationFrame(() => {
                         this._dr_prerender_pump_raf = null;
@@ -2293,9 +2363,20 @@ class DocumentReaderManager {
                 // 窗口 resize 发生在该页无 tile 期间时，批注坐标仍是旧基准；
                 // 先对齐布局（尺寸未变时为幂等操作）再初始化 tile，
                 // 避免 tile 用新宽度而笔画坐标是旧值导致批注错位/越界不可见
-                this._resize_page_layout(page_index, this._get_page_base_width());
-                this._init_page_tiles(page_index);
-                this._update_overlay_size(page_index);
+                //
+                // 手势期延后：批注瓦片初始化 = TileRenderer 创建 + 全部笔迹
+                // rebuild_all 栅格化，重批注页同步成本可达数十 ms——落在滚动帧内
+                // 就是可感卡顿（快速滑动的最大单点开销）。PDF 背景（0.5x 占位）
+                // 不依赖瓦片层可先行上屏；停稳后恢复补扫重入本分支，经错峰队列补建
+                // （首屏豁免：打开后立即拖动不推迟首屏批注）。
+                if ((this._dr_renders_paused() || this._dr_tile_init_draining) &&
+                    !(this._pending_first_render && page_index === this.active_page_index)) {
+                    this._dr_defer_tile_init(page_index);
+                } else {
+                    this._resize_page_layout(page_index, this._get_page_base_width());
+                    this._init_page_tiles(page_index);
+                    this._update_overlay_size(page_index);
+                }
             }
             // 背景渲染必须放在盒尺寸对齐之后：_ensure_page_runtime_dom 会把盒宽
             // 暂时置回 coord_width（旧基准，见 2471 行），先渲染会把 canvas CSS
@@ -2311,6 +2392,26 @@ class DocumentReaderManager {
             const have_w = inflight ? inflight.css_w : (page_data.pdf_render_css_width || 0);
             const have_dpr = inflight ? (inflight.dpr || 0) : (page_data.pdf_render_dpr || 0);
             const need_sharp = have_w !== want.css_w || have_dpr < want.target_dpr - 0.001;
+
+            // 滑动低清占位：手势期（滚动/惯性）渲染启动被统一门控挂起，此处若
+            // 直接触发升清只会静默 return——未加载页在整个手势期都是白屏。
+            // 页面完全无内容（守卫为空 = 从未渲染或已虚拟化卸载、无在途渲染、
+            // 无待回贴提交）时，立即按 0.5x 渲染并即时上屏；渲染线程返回的
+            // ImageBitmap 走预渲染的提交豁免，手势帧内 1~3ms 换帧完成。
+            // 停稳后恢复补扫：inflight/守卫 dpr=0.5 < want → need_sharp force 升清。
+            // _dr_placeholder_done 防止手势期每次可见性扫描重复触发
+            // （位图缓存命中路径/占位渲染承诺已给出内容）。
+            if (need_sharp &&
+                this._dr_renders_paused() &&
+                !page_data.pdf_render_promise &&
+                !page_data._dr_commit_pending &&
+                !page_data.pdf_render_css_width &&
+                !page_data._dr_placeholder_done) {
+                page_data._dr_placeholder_done = true;
+                this._render_pdf_page_direct(page_index, false, false, true);
+                return;
+            }
+
             this._render_pdf_page_direct(page_index, need_sharp);
             return;
         }
@@ -2805,9 +2906,15 @@ class DocumentReaderManager {
     }
 
     /** 计算某页当前期望的 PDF 渲染参数（渲染起点与完成后收敛检查共用，避免两处漂移） */
-    _pdf_desired_render_params(page_index, page_data, is_prerender) {
+    _pdf_desired_render_params(page_index, page_data, is_prerender, is_placeholder = false) {
         const css_w = Math.round(parseFloat(page_data.page_element.style.width)) || page_data.page_element.clientWidth || 800;
         const scale = this.dr_scale || 1;
+        if (is_placeholder) {
+            // 滑动占位：手势期新进入视口的未加载页立即按固定 0.5x 栅格化——
+            // 成本极低且提交豁免手势期挂起，滚动中就能上屏（先有内容再谈清晰）；
+            // 停稳后由恢复补扫的 need_sharp force 判定接管升清（0.5x < 目标必触发）
+            return { css_w, target_dpr: 0.5 };
+        }
         if (is_prerender) {
             // 预渲染分级：与活动页相邻的页（翻页立即看到的页）直接按全量 DPR
             // 栅格化——翻页瞬间无需再等一次高清重渲染；更远的页才降 1x 省资源
@@ -2890,6 +2997,8 @@ class DocumentReaderManager {
         // 避免对已达标渲染重复 force 造成取消-重启抖动
         const my_inflight = { css_w, dpr: target_dpr };
         page_data.pdf_render_inflight = my_inflight;
+        // 真实渲染（非占位）已启动：手势占位使命完成，恢复触发资格
+        if (!is_placeholder && !is_prerender) page_data._dr_placeholder_done = false;
 
         // 记录被本次调用覆盖前的旧渲染 promise：force 路径下会 cancel 旧渲染任务，
         // 旧任务以 RenderingCancelledException reject。本调用自身用本地 const 引用其 promise，
@@ -3153,6 +3262,128 @@ class DocumentReaderManager {
             }
         }
         return true;
+    }
+
+    // ====== 手势期渲染暂停机制 ======
+    // 目标：平移/缩放手势帧内不做任何重渲染启动与兆像素换帧，渲染让路给
+    // transform 合成。三件事：
+    //   1) _render_pdf_page_direct 入口按 _dr_renders_paused() 挂起新渲染；
+    //   2) 渲染完成的结果提交（commit）在手势期挂起，静默后逐帧回贴；
+    //   3) 渲染线程并发上限在手势期降到 1，限制后台栅格化的 CPU/GPU 争用。
+    // 恢复通道：手势帧每次都会续期 120ms 静默期限并武装 _dr_on_render_resume
+    // 定时器；触发时先逐帧回贴挂起提交，再补扫可见性——_check_page_visibility
+    // 对每个可见页重触发 _on_page_visible（含升清 force 判定），被挂起的
+    // 渲染全部恢复，无状态丢失。
+
+    _dr_renders_paused() {
+        return this._dr_is_zooming || performance.now() < this._render_pause_until;
+    }
+
+    /** 手势帧标记：平移/惯性/滚轮每帧调用，续期静默期限并确保恢复定时器在途 */
+    _dr_mark_render_gesture() {
+        this._render_pause_until = performance.now() + 120;
+        this._render_host?.set_throttled?.(true);
+        if (this._render_resume_timer === null) {
+            this._render_resume_timer = setTimeout(() => {
+                this._render_resume_timer = null;
+                this._dr_on_render_resume();
+            }, 170);
+        }
+    }
+
+    _dr_on_render_resume() {
+        if (!this.is_open) return;
+        if (this._dr_renders_paused()) {
+            // 手势仍在继续（期限被后续手势帧续期）：顺延到下一轮静默窗口
+            this._render_resume_timer = setTimeout(() => {
+                this._render_resume_timer = null;
+                this._dr_on_render_resume();
+            }, 170);
+            return;
+        }
+        this._render_host?.set_throttled?.(false);
+        // 先回贴挂起提交（逐帧限量）
+        this._dr_flush_deferred_commits();
+        // 再启动瓦片错峰排空（同步置 draining 标志）——顺序关键：随后的补扫
+        // 发现的新页会因 draining=true 入队而非同步初始化，全部走每帧一页
+        this._dr_drain_tile_init_queue();
+        // 最后补扫恢复被挂起的渲染启动 + 把新可见页送入瓦片错峰队列
+        this._check_page_visibility();
+        // 补扫之后再续批回收——用 rIC 让出：恢复帧已有挂起提交回贴+瓦片错峰
+        // 两件事，回收批（单页最重 ~12ms）叠上去会突破帧预算。执行时重验
+        // is_visible，已回可见页自动跳过。
+        if (this._recycle_worklist.length > 0) {
+            const drain_fn = () => this._drain_recycle_worklist();
+            if (window.requestIdleCallback) {
+                window.requestIdleCallback(drain_fn, { timeout: 1000 });
+            } else {
+                setTimeout(drain_fn, 0);
+            }
+        }
+    }
+
+    /** 手势期记录一页待补建的批注瓦片（去重；补建于恢复后错峰执行） */
+    _dr_defer_tile_init(page_index) {
+        // 无笔迹页零成本出队：直接标记 deferred 不入队（与 _init_page_tiles
+        // 的空页判定同一条件）。快滑常连续穿过数十个无批注页，入队会让它们
+        // 以 1页/帧 的排空速度挤占有批注页的初始化窗口。
+        // 缓存未就绪时不做此判定：批注可能稍后经缓存恢复，仍入队由
+        // _init_page_tiles 的真实判定兜底（那里 cache_ready=false 会原样返回）。
+        const page_data = this.page_manager.pages_list[page_index];
+        if (page_data && page_data.render_mode === 'pdfjs' && this._cache_ready &&
+            page_data.stroke_history.length === 0) {
+            page_data.is_tiles_initialized = true;
+            page_data._tiles_deferred = true;
+            return;
+        }
+        this._dr_tile_init_queue.add(page_index);
+    }
+
+    /**
+     * 错峰排空延后的批注瓦片初始化：每帧最多一页（rebuild_all 无法抢占，
+     * 按页分段是唯一的错峰手段）。手势再次开始时暂停排空，等下一轮恢复。
+     * 已滚离视口的页跳过（滚回时 _on_page_visible 会重新入队或直接同步建）。
+     */
+    _dr_drain_tile_init_queue() {
+        if (this._dr_tile_init_draining) return;
+        if (this._dr_tile_init_queue.size === 0) return;
+        this._dr_tile_init_draining = true;
+        const step = () => {
+            this._dr_tile_init_draining = false;
+            if (!this.is_open) {
+                this._dr_tile_init_queue.clear();
+                return;
+            }
+            // 新手势开始：剩余页等下一轮恢复补扫再排空
+            if (this._dr_renders_paused()) return;
+            // 同帧连续出队零成本页：无笔迹（→标记 deferred）、不可见、已初始化
+            // 的页直接跳过不占帧槽；只有真实初始化（布局对齐 + TileRenderer 创建
+            // + 全量栅格化）才占用当帧（每帧一页）。否则快滑穿过大量无批注页后，
+            // 排空会先花几十帧消化空页，真正有批注的页迟迟建不了瓦片。
+            while (true) {
+                let page_index = -1;
+                for (const i of this._dr_tile_init_queue) { page_index = i; break; }
+                if (page_index < 0) break;
+                this._dr_tile_init_queue.delete(page_index);
+                const pd = this.page_manager.pages_list[page_index];
+                if (!pd || !pd.is_visible || pd.is_tiles_initialized
+                    || pd.render_mode !== 'pdfjs') continue;
+                if (this._cache_ready && pd.stroke_history.length === 0) {
+                    pd.is_tiles_initialized = true;
+                    pd._tiles_deferred = true;
+                    continue;
+                }
+                this._resize_page_layout(page_index, this._get_page_base_width());
+                this._init_page_tiles(page_index);
+                this._update_overlay_size(page_index);
+                break;
+            }
+            if (this._dr_tile_init_queue.size > 0) {
+                this._dr_tile_init_draining = true;
+                requestAnimationFrame(step);
+            }
+        };
+        requestAnimationFrame(step);
     }
 
     /** 渲染成功：清除该页重试计数与全局连败计数 */
@@ -4163,6 +4394,15 @@ class DocumentReaderManager {
             const page_data = this.page_manager.pages_list[page_index];
             if (!page_data?.is_tiles_initialized) {
                 this._on_page_visible(page_index);
+                // 手势静默窗口/错峰排空中，上面的调用可能只把本页送进了延后
+                // 队列而没有真正建瓦片。落笔前瓦片必须就位（单页同步成本
+                // 可接受，且仅发生在与滚动窗口竞态的罕见时刻）：
+                if (page_data && !page_data.is_tiles_initialized) {
+                    this._dr_tile_init_queue.delete(page_index);
+                    this._resize_page_layout(page_index, this._get_page_base_width());
+                    this._init_page_tiles(page_index);
+                    this._update_overlay_size(page_index);
+                }
             }
 
             this.active_page_index = page_index;
@@ -5652,6 +5892,9 @@ class DocumentReaderManager {
         // 纯平移不冻结，平移中新进入视野的瓦片按可见块立即补齐分辨率
         if (this._dr_last_transform.scale !== this.dr_scale) {
             window.ResolutionController?.mark_interaction();
+        } else {
+            // 纯平移帧（含惯性滚动）：续期渲染暂停窗口，渲染让路给合成
+            this._dr_mark_render_gesture();
         }
         this._zoom_wrapper.style.transform = 'translate3d(' + this.dr_canvas_x + 'px, ' + this.dr_canvas_y + 'px, 0) scale(' + this.dr_scale + ')';
         this._dr_last_transform.x = this.dr_canvas_x;
@@ -5672,6 +5915,9 @@ class DocumentReaderManager {
                     // 仅缩放标记交互（理由同 _dr_sync_transform）
                     if (this._dr_last_transform.scale !== pt.scale) {
                         window.ResolutionController?.mark_interaction();
+                    } else {
+                        // 纯平移帧（触摸拖拽）：续期渲染暂停窗口
+                        this._dr_mark_render_gesture();
                     }
                     this._zoom_wrapper.style.transform = 'translate3d(' + pt.x + 'px, ' + pt.y + 'px, 0) scale(' + pt.scale + ')';
                     this._dr_last_transform.x = pt.x;
@@ -5733,6 +5979,8 @@ class DocumentReaderManager {
 
     /** 标记缩放进行中，延迟 300ms 后触发批量重绘 */
     _dr_set_zooming() {
+        // 手势期渲染暂停：续期静默期限 + 限流渲染线程 + 武装恢复定时器
+        this._dr_mark_render_gesture();
         if (!this._dr_is_zooming) {
             this._dr_is_zooming = true;
             if (this.batch_draw) {
@@ -5750,19 +5998,32 @@ class DocumentReaderManager {
             }
             // 缩放结束后批量重绘可见页 + 更新 tile DPR
             this._check_page_visibility();
+            // 先回贴手势期挂起的渲染结果（此时静默窗口已过，同步回贴；
+            // 否则 _dr_commit_pending 守卫会挡住下方批量刷新）
+            this._dr_flush_deferred_commits();
+            this._render_host?.set_throttled?.(false);
             for (const i of this._pages_with_tiles) {
                 const pd = this.page_manager.pages_list[i];
                 if (pd && (pd.is_visible || this._is_page_near_active(i, this._tile_keep_distance))) {
                     pd.tile_renderer?.update_visible_tile_dpr(this.dr_scale, false, true);
                 }
             }
-            // PDF 背景：按新缩放刷新可见页分辨率（非强制；守卫过滤参数未变化的页）
-            const pages = this.page_manager.pages_list;
-            const lo = Math.max(0, this.active_page_index - this._image_keep_distance);
-            const hi = Math.min(pages.length - 1, this.active_page_index + this._image_keep_distance);
-            for (let i = lo; i <= hi; i++) {
-                const pd = pages[i];
-                if (pd?.is_visible && pd.render_mode === 'pdfjs') {
+            // PDF 背景：按新缩放刷新可见页分辨率（非强制；守卫过滤参数未变化的页）。
+            // 派发顺序 = 活动页最先：worker 队列是 unshift 插队（后调用先派发），
+            // 因此按「距活动页由远到近」发起，让活动页最后入队、最先渲染——
+            // 频繁缩放后用户视线所在页立即升清，边缘页随后跟上
+            {
+                const pages = this.page_manager.pages_list;
+                const lo = Math.max(0, this.active_page_index - this._image_keep_distance);
+                const hi = Math.min(pages.length - 1, this.active_page_index + this._image_keep_distance);
+                const cands = [];
+                for (let i = lo; i <= hi; i++) {
+                    const pd = pages[i];
+                    if (pd?.is_visible && pd.render_mode === 'pdfjs') cands.push(i);
+                }
+                cands.sort((a, b) =>
+                    Math.abs(b - this.active_page_index) - Math.abs(a - this.active_page_index));
+                for (const i of cands) {
                     this._render_pdf_page_direct(i);
                 }
             }
@@ -5782,6 +6043,11 @@ class DocumentReaderManager {
             if (this.batch_draw) {
                 this.batch_draw.overlay.show();
             }
+            // 捏合被取消（翻页/撤销等强制路径）：挂起的渲染结果与暂停窗口
+            // 一并收尾，否则 _dr_commit_pending 守卫会让页面滞留在旧画面
+            this._render_pause_until = 0;
+            this._render_host?.set_throttled?.(false);
+            this._dr_flush_deferred_commits();
         }
     }
     _dr_enable_smooth_transform() {
@@ -5920,6 +6186,9 @@ class DocumentReaderManager {
             const new_s = Math.max(min_s, Math.min(max_s, this.dr_scale + delta));
 
             if (new_s !== this.dr_scale) {
+                // 手势期渲染暂停（缩放全程由 _dr_is_zooming 门控，
+                // 此处续期静默期限并限流渲染线程）
+                this._dr_mark_render_gesture();
                 const old_s = this.dr_scale;
                 const ratio = new_s / old_s;
 
@@ -5955,6 +6224,8 @@ class DocumentReaderManager {
         } else {
             // 普通滚轮 = 上下平移（clamp 由 rAF 中 _dr_apply_scale 处理，避免同步布局）
             e.preventDefault();
+            // 手势期渲染暂停：平移期间新页渲染与结果提交全部挂起
+            this._dr_mark_render_gesture();
             const scroll_speed = 2;
             this.dr_canvas_y -= e.deltaY * scroll_speed;
 
