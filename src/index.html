@@ -16,6 +16,7 @@
                 await Promise.all([
                     import('./modules/canvas/resolution-controller.js'),
                     import('./modules/canvas/overlay-manager.js'),
+                    import('./modules/perf/loaf-monitor.js'),   // 长帧归因观测（纯诊断，零依赖）
                 ]);
                 // Wave 1: independent modules in parallel
                 await Promise.all([
