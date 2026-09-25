@@ -32,6 +32,10 @@ class ResolutionController {
         // 内存压力阈值：堆占用超过此值时页面栅格化降级到 1x，避免 OOM
         this._memoryGuardBytes = 500 * 1024 * 1024;
 
+        // 覆盖层（绘画时 DPR）显式设置值的硬上限。设置面板提供的最高档即 6x；
+        // 超过它画面无增益、显存爆炸，导入设置时也在此处兜底
+        this.OVERLAY_DPR_HARD_MAX = 6;
+
         // 显示 DPR 变化监听器（跨显示器 / 系统缩放变更）
         this._dprWatcher = null;
     }
@@ -185,10 +189,16 @@ class ResolutionController {
      * 线宽 = scale * overlayDpr —— 故 overlayDpr 取显示 DPR 即足够清晰，
      * 超过显示 DPR 对显示无增益、仅浪费显存。
      * 此前 dynamic 开启时错误地恒返回 1，导致高分屏 / 放大下实时预览发虚。
+     *
+     * 显式设置值允许到 6x（绘画时 DPR）：1x 屏上超采样可以让笔迹预览
+     * 边缘更细腻，但必须钳制在 [0.5, 6]——导入的异常大值会把覆盖层
+     * 画布的像素尺寸放大到失控（1920×1080 @6x ≈ 75M 像素）。
      */
     calc_overlay_dpr(scale) {
         const cfg = this._cfg();
-        if (cfg.overlayDpr != null && cfg.overlayDpr > 0) return cfg.overlayDpr;
+        if (cfg.overlayDpr != null && cfg.overlayDpr > 0) {
+            return Math.min(Math.max(cfg.overlayDpr, 0.5), this.OVERLAY_DPR_HARD_MAX);
+        }
         if (cfg.dynamicDprEnabled === false) {
             return Math.min(this.static_dpr(), 2);
         }
