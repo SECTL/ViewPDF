@@ -225,7 +225,13 @@
     "pdfDefaultRemoved": "PDF のデフォルト設定が解除されました",
     "wordDefaultSetSuccess": "Word がデフォルトに設定されました",
     "wordDefaultSetFailed": "Word をデフォルトに設定できませんでした",
-    "wordDefaultRemoved": "Word のデフォルト設定が解除されました"
+    "wordDefaultRemoved": "Word のデフォルト設定が解除されました",
+    "restoreSaveStrokes": "筆跡の保存",
+    "restoreSavePreview": "閲覧状況",
+    "restoreSavePreviewHint": "ページ番号・ズーム・位置を保存し、起動時に復元します",
+    "strokesOptionSave": "保存する",
+    "strokesOptionDiscard": "保存しない",
+    "strokesOptionAsk": "終了時に毎回確認"
   },
   "oobe": {
     "welcome": "ViewPDF へようこそ",
@@ -366,5 +372,11 @@
   "config": {
     "recoveryTitle": "設定が復元されました",
     "recoveryMessage": "以下の設定が無効だったため、デフォルトに復元されました："
+  },
+  "closeDialog": {
+    "title": "アプリを終了",
+    "message": "今回の批注筆跡を保存して、次回起動時に復元しますか？",
+    "save": "保存して終了",
+    "discard": "保存せずに終了"
   }
 }

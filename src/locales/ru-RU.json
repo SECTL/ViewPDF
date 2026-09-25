@@ -225,7 +225,13 @@
     "pdfDefaultRemoved": "Настройка PDF по умолчанию удалена",
     "wordDefaultSetSuccess": "Word установлен по умолчанию",
     "wordDefaultSetFailed": "Не удалось установить Word по умолчанию",
-    "wordDefaultRemoved": "Настройка Word по умолчанию удалена"
+    "wordDefaultRemoved": "Настройка Word по умолчанию удалена",
+    "restoreSaveStrokes": "Сохранение штрихов",
+    "restoreSavePreview": "Прогресс чтения",
+    "restoreSavePreviewHint": "Сохраняет страницу, масштаб и положение, восстанавливаемые при запуске",
+    "strokesOptionSave": "Сохранять",
+    "strokesOptionDiscard": "Не сохранять",
+    "strokesOptionAsk": "Спрашивать при каждом закрытии"
   },
   "oobe": {
     "welcome": "Добро пожаловать в ViewPDF",
@@ -366,5 +372,11 @@
   "config": {
     "recoveryTitle": "Настройки восстановлены",
     "recoveryMessage": "Следующие настройки были недействительны и восстановлены до значений по умолчанию:"
+  },
+  "closeDialog": {
+    "title": "Закрыть приложение",
+    "message": "Сохранить штрихи этого сеанса и восстановить их при следующем запуске?",
+    "save": "Сохранить и закрыть",
+    "discard": "Закрыть без сохранения"
   }
 }

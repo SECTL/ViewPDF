@@ -226,7 +226,13 @@
     "pdfDefaultRemoved": "已取消 PDF 默认打开方式设置",
     "wordDefaultSetSuccess": "Word 文档已设置为默认打开方式",
     "wordDefaultSetFailed": "设置 Word 默认打开方式失败",
-    "wordDefaultRemoved": "已取消 Word 文档默认打开方式设置"
+    "wordDefaultRemoved": "已取消 Word 文档默认打开方式设置",
+    "restoreSaveStrokes": "笔迹保存",
+    "restoreSavePreview": "浏览记录",
+    "restoreSavePreviewHint": "保存页码、缩放与位置，启动时恢复",
+    "strokesOptionSave": "保存",
+    "strokesOptionDiscard": "不保存",
+    "strokesOptionAsk": "每次关闭时询问"
   },
   "oobe": {
     "welcome": "欢迎使用 ViewPDF",
@@ -370,5 +376,11 @@
   "config": {
     "recoveryTitle": "配置已恢复",
     "recoveryMessage": "以下配置项存在异常，已自动恢复为默认值："
+  },
+  "closeDialog": {
+    "title": "关闭应用",
+    "message": "是否保存本次批注笔迹，下次启动时恢复？",
+    "save": "保存并关闭",
+    "discard": "不保存关闭"
   }
 }

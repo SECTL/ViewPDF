@@ -250,6 +250,25 @@ fn app_confirm_close(app: tauri::AppHandle) {
     }
 }
 
+/// Tauri IPC 命令：前端即将弹出「是否保存」关闭询问对话框时调用。
+/// 置位对话框模式让 6 秒保存兜底让位，并启动对话框专用的 10 分钟兜底
+/// （用户长期不响应 / webview 冻结时仍能强制退出，避免永远关不掉）。
+#[tauri::command]
+fn app_close_dialog_mode(app: tauri::AppHandle) {
+    CLOSE_DIALOG_MODE.store(true, Ordering::SeqCst);
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(600));
+        if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+            log::warn!("app-close 询问对话框 10 分钟未确认，强制关闭主窗口");
+            CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
+            if let Some(w) = app_handle.get_webview_window("main") {
+                let _ = w.close();
+            }
+        }
+    });
+}
+
 /// Tauri IPC 命令：检查是否达到自动清理缓存的间隔，若达到则执行清理
 #[tauri::command]
 fn cache_validate_auto_clear(app: tauri::AppHandle) -> Result<bool, String> {
@@ -1050,6 +1069,10 @@ static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 /// 主窗口关闭确认标志：前端保存批注/位置完成后由 app_confirm_close 置位，
 /// on_window_event 据此放行 CloseRequested（否则拦截并通知前端先保存）
 static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
+/// 关闭询问对话框模式：开启「每次关闭时询问」后，前端弹窗等待用户决策，
+/// 远超 6 秒保存兜底。前端弹窗前调用 app_close_dialog_mode 置位，
+/// 6 秒兜底计时器据此让位给对话框专用的 10 分钟长兜底。
+static CLOSE_DIALOG_MODE: AtomicBool = AtomicBool::new(false);
 
 /// config.json 读-改-写互斥锁。
 /// `settings_save_all` 与 `cache_validate_auto_clear` / `word_cache_validate_auto_clear`
@@ -3781,7 +3804,11 @@ pub fn app_init_run() {
                 let app = window.app_handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(6));
-                    if !CLOSE_CONFIRMED.load(Ordering::SeqCst) {
+                    // 对话框模式下让位：前端在等待用户对「是否保存」做决策，
+                    // 由 app_close_dialog_mode 启动的 10 分钟长兜底负责超时强退
+                    if !CLOSE_CONFIRMED.load(Ordering::SeqCst)
+                        && !CLOSE_DIALOG_MODE.load(Ordering::SeqCst)
+                    {
                         log::warn!("app-close-requested 6 秒未确认，强制关闭主窗口");
                         CLOSE_CONFIRMED.store(true, Ordering::SeqCst);
                         if let Some(w) = app.get_webview_window("main") {
@@ -3838,6 +3865,7 @@ pub fn app_init_run() {
             main_check_loaded,
             app_submit_exit,
             app_confirm_close,
+            app_close_dialog_mode,
             file_fetch_stat,
             office_detect_all,
             office_check_runtime,

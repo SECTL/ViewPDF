@@ -225,7 +225,13 @@
     "pdfDefaultRemoved": "El ajuste predeterminado de PDF se ha eliminado",
     "wordDefaultSetSuccess": "Word establecido como predet.",
     "wordDefaultSetFailed": "Error al establecer Word como predet.",
-    "wordDefaultRemoved": "El ajuste predeterminado de Word se ha eliminado"
+    "wordDefaultRemoved": "El ajuste predeterminado de Word se ha eliminado",
+    "restoreSaveStrokes": "Guardar trazos",
+    "restoreSavePreview": "Progreso de lectura",
+    "restoreSavePreviewHint": "Guarda página, zoom y posición, restaurados al iniciar",
+    "strokesOptionSave": "Guardar",
+    "strokesOptionDiscard": "No guardar",
+    "strokesOptionAsk": "Preguntar en cada cierre"
   },
   "oobe": {
     "welcome": "Bienvenido a ViewPDF",
@@ -366,5 +372,11 @@
   "config": {
     "recoveryTitle": "Ajustes recuperados",
     "recoveryMessage": "Los siguientes ajustes no eran válidos y se han restaurado a los valores predeterminados:"
+  },
+  "closeDialog": {
+    "title": "Cerrar aplicación",
+    "message": "¿Guardar las anotaciones de esta sesión y restaurarlas en el próximo inicio?",
+    "save": "Guardar y cerrar",
+    "discard": "Cerrar sin guardar"
   }
 }

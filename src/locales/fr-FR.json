@@ -225,7 +225,13 @@
     "pdfDefaultRemoved": "Le paramètre par défaut du PDF a été supprimé",
     "wordDefaultSetSuccess": "Word a été défini comme valeur par défaut",
     "wordDefaultSetFailed": "Échec de la définition de Word par défaut",
-    "wordDefaultRemoved": "Le paramètre par défaut de Word a été supprimé"
+    "wordDefaultRemoved": "Le paramètre par défaut de Word a été supprimé",
+    "restoreSaveStrokes": "Enregistrement des annotations",
+    "restoreSavePreview": "Progression de lecture",
+    "restoreSavePreviewHint": "Enregistre la page, le zoom et la position, restaurés au démarrage",
+    "strokesOptionSave": "Enregistrer",
+    "strokesOptionDiscard": "Ne pas enregistrer",
+    "strokesOptionAsk": "Demander à chaque fermeture"
   },
   "oobe": {
     "welcome": "Bienvenue sur ViewPDF",
@@ -366,5 +372,11 @@
   "config": {
     "recoveryTitle": "Paramètres récupérés",
     "recoveryMessage": "Les paramètres suivants étaient invalides et ont été restaurés aux valeurs par défaut :"
+  },
+  "closeDialog": {
+    "title": "Fermer l'application",
+    "message": "Enregistrer les annotations de cette session pour les restaurer au prochain démarrage ?",
+    "save": "Enregistrer et fermer",
+    "discard": "Fermer sans enregistrer"
   }
 }

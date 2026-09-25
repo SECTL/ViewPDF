@@ -291,9 +291,41 @@ async function initSettings() {
                 settings_update_default_dots('pen');
                 settings_update_default_dots('eraser');
 
-                const restoreLastDocToggle = document.getElementById('restoreLastDocToggle');
-                if (restoreLastDocToggle) {
-                    restoreLastDocToggle.checked = settings.restoreLastDoc !== false;
+                // 恢复上次文档状态：笔迹保存为三选一（保存/不保存/每次关闭时询问），
+                // 浏览记录（页码/缩放/位置）为纯开关、不参与弹窗询问。
+                // 旧键迁移链：restoreStrokesMode → restoreSaveStrokes/restoreAskOnClose
+                // → restoreLastDoc，逐级回退，保证升级后行为与旧版一致
+                {
+                    const legacyRestore = settings.restoreLastDoc !== false;
+                    let strokesMode;
+                    if (settings.restoreStrokesMode !== undefined) {
+                        strokesMode = settings.restoreStrokesMode;
+                    } else if (settings.restoreSaveStrokes !== undefined) {
+                        strokesMode = settings.restoreSaveStrokes ? 'save' : 'discard';
+                    } else if (settings.restoreAskOnClose === true) {
+                        strokesMode = 'ask';
+                    } else {
+                        strokesMode = legacyRestore ? 'save' : 'discard';
+                    }
+                    const savePreview = settings.restoreSavePreview !== undefined
+                        ? settings.restoreSavePreview : legacyRestore;
+                    const restoreStrokesSelected = document.getElementById('restoreStrokesSelected');
+                    const restoreStrokesOptions = document.getElementById('restoreStrokesOptions');
+                    if (restoreStrokesSelected && restoreStrokesOptions) {
+                        restoreStrokesOptions.querySelectorAll('.sp-select-option').forEach(option => {
+                            if (option.dataset.value === strokesMode) {
+                                restoreStrokesSelected.textContent = option.textContent;
+                                option.classList.add('sp-selected');
+                            } else {
+                                option.classList.remove('sp-selected');
+                            }
+                        });
+                    }
+                    const restorePreviewToggle = document.getElementById('restoreSavePreviewToggle');
+                    if (restorePreviewToggle) restorePreviewToggle.checked = savePreview;
+                    // 全局标志：启动恢复门控与退出保存流程都读这里
+                    // （设置面板可能从未打开，init.js 会先算一份同结构的默认值）
+                    window.__restoreFlags = { strokesMode, preview: savePreview };
                 }
 
                 const frameRateModeGroup = document.getElementById('frameRateModeGroup');
@@ -1137,19 +1169,42 @@ async function initSettings() {
         });
     }
 
-    // 恢复上次文档状态开关
-    const restoreLastDocToggle = document.getElementById('restoreLastDocToggle');
-    if (restoreLastDocToggle) {
-        restoreLastDocToggle.addEventListener('change', async () => {
-            const enabled = restoreLastDocToggle.checked;
-            await settings_save_all_local({ restoreLastDoc: enabled });
-            window.__restoreLastDocEnabled = enabled;
-            // 关闭时立即清理保存的文档状态和缓存
-            if (!enabled) {
+    // 恢复上次文档状态：笔迹保存三选一（保存/不保存/每次关闭时询问）
+    const restoreStrokesSelect = document.getElementById('restoreStrokesSelect');
+    const restoreStrokesSelected = document.getElementById('restoreStrokesSelected');
+    const restoreStrokesOptions = document.getElementById('restoreStrokesOptions');
+    if (restoreStrokesSelect && restoreStrokesSelected && restoreStrokesOptions) {
+        restoreStrokesOptions.addEventListener('click', async (e) => {
+            const option = e.target.closest('.sp-select-option');
+            if (!option) return;
+            const mode = option.dataset.value;
+            restoreStrokesSelected.textContent = option.textContent;
+            restoreStrokesOptions.querySelectorAll('.sp-select-option').forEach(opt => opt.classList.remove('sp-selected'));
+            option.classList.add('sp-selected');
+            closeSelect(restoreStrokesSelect);
+            await settings_save_all_local({ restoreStrokesMode: mode });
+            if (window.__restoreFlags) window.__restoreFlags.strokesMode = mode;
+            // 切到「不保存」：立即清理已保存的批注缓存（与旧版关闭总开关行为一致）
+            const flags = window.__restoreFlags;
+            if (mode === 'discard' && window.documentReaderManager) {
+                await window.documentReaderManager.delete_annotation_cache_files?.();
+            }
+            // 笔迹不保存且浏览记录也关 = 不再恢复任何内容，清掉残留的文档标识
+            if (flags && mode === 'discard' && flags.preview === false) {
                 await settings_save_all_local({ lastOpenDoc: null });
-                if (window.documentReaderManager) {
-                    await window.documentReaderManager.delete_annotation_cache_files?.();
-                }
+            }
+        });
+    }
+    // 浏览记录（页码/缩放/位置）：纯开关，不参与关闭弹窗
+    const restorePreviewToggle = document.getElementById('restoreSavePreviewToggle');
+    if (restorePreviewToggle) {
+        restorePreviewToggle.addEventListener('change', async () => {
+            const enabled = restorePreviewToggle.checked;
+            await settings_save_all_local({ restoreSavePreview: enabled });
+            if (window.__restoreFlags) window.__restoreFlags.preview = enabled;
+            const flags = window.__restoreFlags;
+            if (flags && flags.strokesMode === 'discard' && !enabled) {
+                await settings_save_all_local({ lastOpenDoc: null });
             }
         });
     }

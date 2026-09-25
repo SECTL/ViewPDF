@@ -1161,6 +1161,14 @@ class DocumentReaderManager {
         // 门闩：open() 未完整走完（切换加载中/刚放弃的打开）时禁止写缓存，
         // 否则会把未恢复完成的空批注状态写回，清空该文档历史数据
         if (!this._save_ready) return;
+        // 细分开关（恢复上次文档状态）：
+        //   includeStrokes  保存笔迹（stroke_history + undo/redo）
+        //   includeViewport 保存预览状态（页码/缩放/位置）
+        // 仅「应用退出」路径按用户设置传值；会话内的翻页/关闭阅读器保存
+        // 恒全量（否则面板关闭再打开会丢失本次会话笔迹——缓存同时承担
+        // 会话连续性职责，不能被跨重启的持久化开关误伤）
+        const include_strokes = options.includeStrokes !== false;
+        const include_viewport = options.includeViewport !== false;
         const await_idle = options?.awaitIdle !== false;
         const config_dir = window.configDir;
         if (!config_dir) return;
@@ -1197,23 +1205,25 @@ class DocumentReaderManager {
             version: 5,
             folder_index: this.folder_index,
             file_md5: folder?.fileMd5 || null,
-            active_page_index: this.active_page_index,
-            dr_scale: this.dr_scale,
-            dr_canvas_x: this.dr_canvas_x,
-            dr_canvas_y: this.dr_canvas_y,
+            // 预览状态关闭时写 -1：open() 以 active_page_index >= 0 判定
+            // 是否恢复页码/缩放/位置，-1 即整体跳过视口恢复
+            active_page_index: include_viewport ? this.active_page_index : -1,
+            dr_scale: include_viewport ? this.dr_scale : null,
+            dr_canvas_x: include_viewport ? this.dr_canvas_x : null,
+            dr_canvas_y: include_viewport ? this.dr_canvas_y : null,
             // 视图偏移的坐标基准（_get_page_base_width）：恢复时据此判断窗口尺寸
             // 是否变化，变化则丢弃绝对偏移、由 _scroll_to_page 重新锚定
             view_base_w: this._get_page_base_width(),
             last_open_date: today,
             pages: pages.map(p => ({
-                stroke_history: p.stroke_history,
+                stroke_history: include_strokes ? p.stroke_history : [],
                 // v5：记录每页批注的坐标基准。窗口尺寸跨会话变化时，
                 // 恢复后首次进入页面由 _resize_page_layout 完成一次性补偿缩放
                 coord_width: p.coord_width || null,
                 coord_height: p.coord_height || null
             })),
-            undo_stack: history_state.undo_list.map(serialize_cmd).filter(Boolean),
-            redo_stack: history_state.redo_list.map(serialize_cmd).filter(Boolean)
+            undo_stack: include_strokes ? history_state.undo_list.map(serialize_cmd).filter(Boolean) : [],
+            redo_stack: include_strokes ? history_state.redo_list.map(serialize_cmd).filter(Boolean) : []
         };
         this._dr_diag('save', {
             active: this.active_page_index + 1,
@@ -1385,22 +1395,39 @@ class DocumentReaderManager {
         return this.folder_index >= 0 ? `index_${this.folder_index}` : null;
     }
 
-    /** 保存最后打开的文档信息到 config.json（用于重启后恢复） */
-    async _save_last_doc_state() {
+    /**
+     * 保存最后打开的文档信息到 config.json（用于重启后恢复）。
+     * options.includeViewport: 是否写入预览状态（页码/缩放/位置）；
+     * 缺省时按细分设置 restoreSavePreview 决定。文档标识（folder_index/
+     * file_md5/文件名）始终写入——笔迹恢复也需要知道上次打开的是哪个文档。
+     * 两个细分开关都关时整体跳过（由退出流程负责清理残留）。
+     */
+    async _save_last_doc_state(options = {}) {
         const folder = this._get_active_folder();
         if (!folder) return;
+
+        const flags = window.__restoreFlags || { strokesMode: 'save', preview: true };
+        const include_viewport = options.includeViewport !== undefined
+            ? options.includeViewport
+            : flags.preview !== false;
+        if (options.includeViewport === undefined &&
+            flags.strokesMode === 'discard' && flags.preview === false) {
+            return;
+        }
 
         const today = new Date().toISOString().split('T')[0];
         const lastDoc = {
             folder_index: this.folder_index,
             file_name: folder.name || null,
             file_md5: folder.fileMd5 || null,
-            page_index: this.active_page_index,
-            dr_scale: this.dr_scale,
-            dr_canvas_x: this.dr_canvas_x,
-            dr_canvas_y: this.dr_canvas_y,
             last_open_date: today
         };
+        if (include_viewport) {
+            lastDoc.page_index = this.active_page_index;
+            lastDoc.dr_scale = this.dr_scale;
+            lastDoc.dr_canvas_x = this.dr_canvas_x;
+            lastDoc.dr_canvas_y = this.dr_canvas_y;
+        }
 
         try {
             if (window.__TAURI__?.core?.invoke) {
@@ -1431,7 +1458,7 @@ class DocumentReaderManager {
         const lastDoc = await this._load_last_doc_state();
         if (!lastDoc) return false;
 
-        const { folder_index, file_md5, page_index, dr_scale, dr_canvas_x, dr_canvas_y } = lastDoc;
+        const { folder_index, file_name, file_md5, page_index, dr_scale, dr_canvas_x, dr_canvas_y } = lastDoc;
 
         // 查找匹配的文件夹（优先用 md5 匹配，其次用 index）
         let target_index = -1;
@@ -1453,8 +1480,10 @@ class DocumentReaderManager {
         // 打开文档并恢复状态
         await this.open(target_index, page_index || 0);
 
-        // open() 内部已从缓存恢复了缩放/位置，但如果缓存不存在则使用 config 中的值
-        if (this.dr_scale === 1 && this.dr_canvas_x === 0 && this.dr_canvas_y === 0 &&
+        // open() 内部已从缓存恢复了缩放/位置，但如果缓存不存在则使用 config 中的值。
+        // 「保存预览状态」关闭时 lastOpenDoc 不含视口字段（dr_scale 为 undefined），整段跳过
+        if (lastDoc.dr_scale != null &&
+            this.dr_scale === 1 && this.dr_canvas_x === 0 && this.dr_canvas_y === 0 &&
             (dr_scale !== 1 || dr_canvas_x !== 0 || dr_canvas_y !== 0)) {
             this.dr_scale = dr_scale || 1;
             this.dr_canvas_x = dr_canvas_x || 0;

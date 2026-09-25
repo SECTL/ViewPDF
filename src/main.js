@@ -3102,6 +3102,43 @@ function main_show_error_dialog(title, message, retryCallback = null) {
     DocLoader.show_error_dialog(title, message, retryCallback);
 }
 
+/**
+ * 关闭应用询问对话框（笔迹保存选「每次关闭时询问」时由退出流程调用）。
+ * 只询问笔迹——浏览记录由自身开关决定，不参与弹窗。
+ * 复用 error-dialog 主题样式；返回 Promise<'save'|'discard'>。
+ * 刻意不提供点空白关闭/取消：用户此刻的意图就是关闭应用，只需决定存不存。
+ */
+function main_show_close_confirm_dialog() {
+    return new Promise((resolve) => {
+        const t = (key, fallback) => window.i18n?.format_translate?.(key) || fallback;
+        const existing = document.getElementById('closeConfirmDialog');
+        if (existing) existing.remove();
+
+        const dialog = document.createElement('div');
+        dialog.id = 'closeConfirmDialog';
+        dialog.className = 'error-dialog-overlay';
+        dialog.innerHTML = `
+            <div class="error-dialog">
+                <div class="error-title">${t('closeDialog.title', '关闭应用')}</div>
+                <div class="error-message">${t('closeDialog.message', '是否保存本次批注笔迹，下次启动时恢复？')}</div>
+                <div class="error-buttons">
+                    <button class="error-btn error-btn-retry" id="closeConfirmSave">${t('closeDialog.save', '保存并关闭')}</button>
+                    <button class="error-btn error-btn-close" id="closeConfirmDiscard">${t('closeDialog.discard', '不保存关闭')}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(dialog);
+
+        const done = (choice) => {
+            dialog.remove();
+            resolve(choice);
+        };
+        document.getElementById('closeConfirmSave')?.addEventListener('click', () => done('save'));
+        document.getElementById('closeConfirmDiscard')?.addEventListener('click', () => done('discard'));
+    });
+}
+window.main_show_close_confirm_dialog = main_show_close_confirm_dialog;
+
 // === 图像导入功能 ===
 // 图片导入、拍照保存、PDF处理
 

@@ -225,7 +225,13 @@
     "pdfDefaultRemoved": "PDF-Standardeinstellung wurde entfernt",
     "wordDefaultSetSuccess": "Word wurde als Standard festgelegt",
     "wordDefaultSetFailed": "Word konnte nicht als Standard festgelegt werden",
-    "wordDefaultRemoved": "Word-Standardeinstellung wurde entfernt"
+    "wordDefaultRemoved": "Word-Standardeinstellung wurde entfernt",
+    "restoreSaveStrokes": "Notizen speichern",
+    "restoreSavePreview": "Leseposition",
+    "restoreSavePreviewHint": "Speichert Seite, Zoom und Position, Wiederherstellung beim Start",
+    "strokesOptionSave": "Speichern",
+    "strokesOptionDiscard": "Nicht speichern",
+    "strokesOptionAsk": "Bei jedem Schließen fragen"
   },
   "oobe": {
     "welcome": "Willkommen bei ViewPDF",
@@ -366,5 +372,11 @@
   "config": {
     "recoveryTitle": "Einstellungen wiederhergestellt",
     "recoveryMessage": "Die folgenden Einstellungen waren ungültig und wurden auf die Standardwerte zurückgesetzt:"
+  },
+  "closeDialog": {
+    "title": "Anwendung schließen",
+    "message": "Die Anmerkungen dieser Sitzung speichern und beim nächsten Start wiederherstellen?",
+    "save": "Speichern & schließen",
+    "discard": "Ohne Speichern schließen"
   }
 }

@@ -226,7 +226,13 @@
     "pdfDefaultRemoved": "PDF default setting has been removed",
     "wordDefaultSetSuccess": "Word has been set as default",
     "wordDefaultSetFailed": "Failed to set Word as default",
-    "wordDefaultRemoved": "Word default setting has been removed"
+    "wordDefaultRemoved": "Word default setting has been removed",
+    "restoreSaveStrokes": "Stroke Saving",
+    "restoreSavePreview": "Reading Position",
+    "restoreSavePreviewHint": "Saves page, zoom and position, restored at startup",
+    "strokesOptionSave": "Save",
+    "strokesOptionDiscard": "Don't Save",
+    "strokesOptionAsk": "Ask on Every Close"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",
@@ -370,5 +376,11 @@
   "config": {
     "recoveryTitle": "Settings Recovered",
     "recoveryMessage": "The following settings were invalid and have been restored to defaults:"
+  },
+  "closeDialog": {
+    "title": "Close Application",
+    "message": "Save the annotations made this session and restore them next time?",
+    "save": "Save & Close",
+    "discard": "Close without Saving"
   }
 }

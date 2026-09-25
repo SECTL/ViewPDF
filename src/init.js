@@ -764,11 +764,29 @@ async function main_init_all() {
         // 才 ensure_loaded + open，启动期不再构建整套面板/工具栏 DOM 与瓦片，
         // 缩短冷启动并降低空板内存峰值。
 
-        // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）
-        // 同步初始化退出保存分支使用的标志（此前只在设置面板切换时赋值，
+        // 恢复上次打开的文档（复用已获取的 settings，省掉重复 IPC）。
+        // 笔迹保存三选一（save/discard/ask），浏览记录（页码/缩放/位置）纯开关。
+        // 旧键迁移链：restoreStrokesMode → restoreSaveStrokes/restoreAskOnClose
+        // → restoreLastDoc，与 settings.js 的加载逻辑保持一致。
+        // 此处同步初始化退出保存分支使用的标志（此前只在设置面板切换时赋值，
         // 导致每次启动后直接关窗会误入"删除批注缓存"分支）
-        window.__restoreLastDocEnabled = settings?.restoreLastDoc !== false;
-        if (window.documentReaderManager && window.__restoreLastDocEnabled) {
+        const legacyRestore = settings?.restoreLastDoc !== false;
+        let strokesMode;
+        if (settings?.restoreStrokesMode !== undefined) {
+            strokesMode = settings.restoreStrokesMode;
+        } else if (settings?.restoreSaveStrokes !== undefined) {
+            strokesMode = settings.restoreSaveStrokes ? 'save' : 'discard';
+        } else if (settings?.restoreAskOnClose === true) {
+            strokesMode = 'ask';
+        } else {
+            strokesMode = legacyRestore ? 'save' : 'discard';
+        }
+        window.__restoreFlags = {
+            strokesMode,
+            preview: settings?.restoreSavePreview !== undefined ? settings.restoreSavePreview : legacyRestore
+        };
+        if (window.documentReaderManager &&
+            (window.__restoreFlags.strokesMode !== 'discard' || window.__restoreFlags.preview)) {
             window.documentReaderManager.restore_last_document().catch(e => {
                 console.log('[init] 恢复上次文档失败:', e);
             });
@@ -822,11 +840,43 @@ function init_app_close_flow() {
         if (_closing) return;
         _closing = true;
         try {
+            const flags = window.__restoreFlags || { strokesMode: 'save', preview: true };
+            const mode = flags.strokesMode || 'save';
+            // 笔迹保存：仅 mode==='ask' 时弹窗；浏览记录永远由自身开关决定，
+            // 不参与弹窗（「每次关闭时询问」只针对笔迹）
+            let save_strokes;
+            if (mode === 'ask') {
+                // 对话框会阻塞远超 6 秒：先通知 Rust 切换到对话框专用的长兜底计时
+                try { await invoke('app_close_dialog_mode'); } catch (_) {}
+                const choice = await window.main_show_close_confirm_dialog?.();
+                // 对话框缺失/异常时按不保存处理（保守：不写也不删）
+                save_strokes = choice === 'save';
+            } else {
+                save_strokes = mode === 'save';
+            }
+            const save_preview = flags.preview !== false;
+
             const reader = window.documentReaderManager;
-            if (reader) {
+            if (reader && (save_strokes || save_preview)) {
                 // 退出路径跳过空闲调度立即写盘（高负载下 idle 回调可能被长期饥饿）
-                await reader._save_annotations_to_cache?.({ awaitIdle: false });
-                await reader._save_last_doc_state?.();
+                if (save_strokes) {
+                    await reader._save_annotations_to_cache?.({
+                        awaitIdle: false,
+                        includeStrokes: true,
+                        includeViewport: save_preview
+                    });
+                } else {
+                    // 不保存笔迹：覆盖写会保留旧笔迹，必须清掉缓存文件，
+                    // 否则下次启动旧笔迹在「笔迹保存已关」的状态下复活
+                    await reader.delete_annotation_cache_files?.();
+                }
+                await reader._save_last_doc_state?.({ includeViewport: save_preview });
+            } else if (reader) {
+                // 笔迹与浏览记录都不保存 = 等同旧版关闭总开关：清理残留状态
+                await reader.delete_annotation_cache_files?.();
+                try {
+                    await invoke('settings_save_all', { settings: { lastOpenDoc: null } });
+                } catch (_) {}
             }
             // 标记已完成，beforeunload 兜底保存可跳过（避免大文档退出时双倍序列化+写盘）
             window.__appCloseSaveDone = true;
@@ -848,11 +898,23 @@ function init_app_close_flow() {
 // close-flow 已成功保存时跳过，避免大文档退出时双倍序列化+写盘
 document.addEventListener('beforeunload', () => {
     if (window.__appCloseSaveDone) return;
+    const flags = window.__restoreFlags;
+    const mode = flags?.strokesMode || 'save';
+    // 询问模式：笔迹保存与否由关闭对话框决定，兜底路径不得擅自替用户做主写盘
+    if (mode === 'ask') return;
+    const save_strokes = mode === 'save';
+    const save_preview = !flags || flags.preview !== false;
     const reader = window.documentReaderManager;
     if (!reader) return;
     try {
-        reader._save_annotations_to_cache?.({ awaitIdle: false });
-        reader._save_last_doc_state?.();
+        if (save_strokes || save_preview) {
+            if (save_strokes) {
+                reader._save_annotations_to_cache?.({ awaitIdle: false, includeViewport: save_preview });
+            } else {
+                reader.delete_annotation_cache_files?.();
+            }
+            reader._save_last_doc_state?.({ includeViewport: save_preview });
+        }
     } catch (e) {
         console.error('[beforeunload] 保存失败:', e);
     }
