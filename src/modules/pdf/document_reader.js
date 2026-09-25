@@ -22,6 +22,26 @@ import {
     history_state
 } from '../history.js';
 
+/**
+ * 页面栅格化 DPR 阶梯：请求渲染时向上取整到最近一档。
+ *
+ * 目的：连续缩放时 dr_scale 每步都在变，若按原始值逐次请求渲染，
+ * 每次 150ms 缩放停顿都会触发全部可见页重新栅格化（频繁缩放的卡顿主因）。
+ * 量化到阶梯后，只有跨越一档（约 ±20~30% 缩放）才真正重新渲染，
+ * 档内缩放由 CSS transform 升/降采样覆盖，肉眼无感知差异。
+ *
+ * 边界：DPR 目标值仍唯一来自 ResolutionController（不引入第二份 DPR 公式），
+ * 此处只量化「本次请求的栅格化密度」；向上取整保证清晰度永不低于控制器目标。
+ */
+const PDF_DPR_LADDER = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
+
+function _pdf_quantize_render_dpr(d) {
+    for (const r of PDF_DPR_LADDER) {
+        if (r >= d - 1e-6) return r;
+    }
+    return d; // 超出阶梯上限（理论不会发生，dprMax 兜底）：原样返回
+}
+
 class DocumentReaderManager {
     constructor() {
         this.is_open = false;
@@ -2689,36 +2709,67 @@ class DocumentReaderManager {
             if (dist > 1) return { css_w, target_dpr: 1 };
             return {
                 css_w,
-                target_dpr: this._calculate_adaptive_dpr(scale, false, true)
+                target_dpr: _pdf_quantize_render_dpr(this._calculate_adaptive_dpr(scale, false, true))
             };
         }
         return {
             css_w,
-            target_dpr: this._calculate_adaptive_dpr(
-                scale,
-                page_index === this.active_page_index,
-                !!page_data.is_visible
+            target_dpr: _pdf_quantize_render_dpr(
+                this._calculate_adaptive_dpr(
+                    scale,
+                    page_index === this.active_page_index,
+                    !!page_data.is_visible
+                )
             )
         };
     }
 
-    async _render_pdf_page_direct(page_index, force = false, is_prerender = false) {
+    async _render_pdf_page_direct(page_index, force = false, is_prerender = false, is_placeholder = false) {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data || page_data.render_mode !== 'pdfjs') return;
 
-        // 缩放进行中不触发 PDF 重绘，由缩放结束后的批量刷新处理
-        if (this._dr_is_zooming && !force) return;
+        // 手势期暂停渲染启动：缩放全程 + 平移/惯性静默窗口（120ms）内，
+        // 新渲染与升清接管一律挂起，把手势帧完整让给 transform 合成。
+        // 恢复零遗漏：_check_page_visibility 每次都对可见页重触发
+        // _on_page_visible，静默后由 _dr_on_render_resume / 缩放结束批量刷新
+        // 统一补扫；失败重试、收敛跟进等 force 路径同样挂起（各自有补扫通道）。
+        // 首屏渲染豁免：打开后的首帧内容不因用户立刻拖动而延迟。
+        // 预渲染不暂停：低 DPR 后台栅格化是防白屏机制（紧急预渲染泵依赖它）。
+        // 低清占位不暂停：滑动到未加载页时白屏整段手势期不可接受，
+        // 0.5x 占位渲染由 _on_page_visible 显式发起（触发点自控频次）。
+        if (!is_prerender && !is_placeholder &&
+            !(this._pending_first_render && page_index === this.active_page_index) &&
+            this._dr_renders_paused()) {
+            return;
+        }
 
         if (page_data.pdf_render_promise && !force) return page_data.pdf_render_promise;
+
+        // 该页渲染已完成但结果提交仍挂起（手势期）：位图待回贴、守卫值即将写入，
+        // 不必（也不应）对相同参数重复栅格化
+        if (!force && page_data._dr_commit_pending) return;
 
         const folder = this._get_active_folder();
         if (!folder?.pdfDoc || !page_data.page_element) return;
 
         this._create_pdf_page_layers(page_data);
-        const { css_w, target_dpr } = this._pdf_desired_render_params(page_index, page_data, is_prerender);
+        const { css_w, target_dpr } = this._pdf_desired_render_params(page_index, page_data, is_prerender, is_placeholder);
         if (!force &&
             page_data.pdf_render_css_width === css_w &&
             page_data.pdf_render_dpr === target_dpr &&
+            page_data.pdf_canvas?.width > 0) {
+            return;
+        }
+
+        // 降档滞回：缩小时若现有渲染仅高出目标一档以内（最多多花约 1.7 倍像素），
+        // 保留现有位图不降档——阶梯边界附近来回缩放时，若每次跨界都重渲染，
+        // 「放大↔缩小」振荡会让全部可见页反复栅格化。清晰度无损（现有渲染
+        // 密度高于目标），只多占显存；跨页虚拟化卸载与位图缓存预算最终回收。
+        // 放大方向不设滞回：模糊可感知，升清永远执行。
+        if (!force && !is_prerender &&
+            page_data.pdf_render_css_width === css_w &&
+            page_data.pdf_render_dpr > target_dpr &&
+            page_data.pdf_render_dpr <= target_dpr * 1.35 &&
             page_data.pdf_canvas?.width > 0) {
             return;
         }
