@@ -282,6 +282,13 @@ class DocumentReaderManager {
         this._maint_host = null;
         this._maint_host_loading = null;
 
+        // 已渲染页位图缓存（字节预算 LRU）：页面被虚拟化卸载时把渲染结果
+        // 收进缓存，翻回时直接回贴——「卸载后反复重新渲染」的根治点
+        this._page_bitmap_cache = new Map();   // page_index -> {bitmap, css_w, dpr, bytes, last_use}
+        this._bitmap_cache_bytes = 0;
+        this._bitmap_cache_max_bytes = 128 * 1024 * 1024;
+        this._bitmap_cache_max_entries = 10;
+
         // 文档级 cleanup 去抖定时器
         this._doc_cleanup_timer = null;
 
@@ -1006,6 +1013,8 @@ class DocumentReaderManager {
 
         // 渲染线程：关闭文档（丢弃渲染线程侧字节副本与在途请求，worker 保留复用）
         this._render_host?.close_document();
+        // 位图缓存整体作废（逐条 bitmap.close() 释放）
+        this._bitmap_cache_clear();
 
         // 移除键盘事件监听器
         if (this._bound_handle_keydown) {
@@ -3074,6 +3083,40 @@ class DocumentReaderManager {
             return;
         }
 
+        // 位图缓存快速路径：该页曾以相同参数渲染、后被虚拟化卸载（守卫已清零，
+        // 画布可能是 width=0 的旧元素或新建的默认 300px 元素）
+        // → 直接回贴缓存位图，零重栅格化。卸载-重访循环不再触发重渲染。
+        if (page_data.pdf_canvas && !page_data.pdf_render_css_width) {
+            const cached = this._bitmap_cache_get(page_index, css_w, target_dpr);
+            if (cached) {
+                const my_seq0 = (page_data.pdf_render_seq = (page_data.pdf_render_seq || 0) + 1);
+                // cacheable=false：位图本就在缓存中，commit 不得重复入缓存
+                this._pdf_commit_render_result(
+                    page_index, page_data, cached.bitmap,
+                    cached.bitmap.width, cached.bitmap.height,
+                    css_w, target_dpr, my_seq0, is_prerender || is_placeholder, false, is_placeholder);
+                return;
+            }
+            // 防白屏：同宽度、较低 DPR 的旧位图先回贴占位，
+            // 高清渲染在途期间该页立即有内容（翻页升清无空白窗口）
+            const stale = this._bitmap_cache_peek(page_index, css_w);
+            if (stale) {
+                const c0 = page_data.pdf_canvas;
+                if (c0.width !== stale.bitmap.width || c0.height !== stale.bitmap.height) {
+                    c0.width = stale.bitmap.width;
+                    c0.height = stale.bitmap.height;
+                }
+                const ctx0 = c0.getContext('2d', { alpha: false });
+                ctx0.setTransform(1, 0, 0, 1, 0, 0);
+                ctx0.drawImage(stale.bitmap, 0, 0);
+                c0.style.width = Math.ceil(css_w) + 'px';
+                c0.style.height = Math.ceil(css_w / this._get_page_aspect(page_data)) + 'px';
+                // 占位请求到此为止：缓存位图密度必然 >= 0.5x 占位目标，
+                // 再跑一次 0.5x 渲染纯属浪费，还会把刚回贴的高清位图反向降级
+                if (is_placeholder) return;
+            }
+        }
+
         // 渲染序列号：异步渲染期间若又启动了更新的渲染（连续缩放/可见化接管），
         // 旧结果在完成后必须丢弃——否则低分辨率的旧任务会反向覆盖新画面，
         // 或把守卫值改写成过期参数（表现为动态分辨率时好时坏、无法稳定复现）
@@ -3708,6 +3751,71 @@ class DocumentReaderManager {
         return JSON.parse(json_str);
     }
 
+    // ====== 已渲染页位图缓存（字节预算 LRU） ======
+    // 目标：页面被虚拟化卸载（_release_pdf_page_render）时把渲染结果收进缓存，
+    // 翻回时直接回贴——卸载不再意味着重新栅格化。ImageBitmap 常驻 GPU/共享内存，
+    // 回贴只是一次 drawImage，远比重新解析+栅格化便宜；总字节有硬上限。
+
+    /** 精确命中：参数（css_w、dpr）完全一致才返回 */
+    _bitmap_cache_get(page_index, css_w, dpr) {
+        const e = this._page_bitmap_cache.get(page_index);
+        if (!e || e.css_w !== css_w || e.dpr !== dpr) return null;
+        e.last_use = performance.now();
+        return e;
+    }
+
+    /** 宽松命中：只要求 css_w 一致（用于低清占位防白屏） */
+    _bitmap_cache_peek(page_index, css_w) {
+        const e = this._page_bitmap_cache.get(page_index);
+        if (!e || e.css_w !== css_w) return null;
+        e.last_use = performance.now();
+        return e;
+    }
+
+    _bitmap_cache_put(page_index, bitmap, css_w, dpr, width, height) {
+        if (!bitmap || !(width > 0) || !(height > 0)) return;
+        // 同页旧条目作废（参数已变化，保留无意义）
+        this._bitmap_cache_delete(page_index);
+        const bytes = width * height * 4;
+        this._page_bitmap_cache.set(page_index, {
+            bitmap, css_w, dpr, bytes, last_use: performance.now()
+        });
+        this._bitmap_cache_bytes += bytes;
+        this._bitmap_cache_evict();
+    }
+
+    _bitmap_cache_delete(page_index) {
+        const e = this._page_bitmap_cache.get(page_index);
+        if (!e) return;
+        this._page_bitmap_cache.delete(page_index);
+        this._bitmap_cache_bytes -= e.bytes;
+        try { e.bitmap.close(); } catch (_) {}
+    }
+
+    _bitmap_cache_evict() {
+        const over_budget = () => this._bitmap_cache_bytes > this._bitmap_cache_max_bytes
+            || this._page_bitmap_cache.size > this._bitmap_cache_max_entries;
+        if (!over_budget()) return;
+        const entries = [...this._page_bitmap_cache.entries()]
+            .sort((a, b) => a[1].last_use - b[1].last_use);
+        // 两轮驱逐：先跳过可见页/活动页（回访概率最高），仍超预算才动它们
+        for (const pass of [0, 1]) {
+            for (const [idx] of entries) {
+                if (!over_budget()) return;
+                if (!this._page_bitmap_cache.has(idx)) continue;
+                const pd = this.page_manager?.pages_list?.[idx];
+                if (pass === 0 && (pd?.is_visible || idx === this.active_page_index)) continue;
+                this._bitmap_cache_delete(idx);
+            }
+        }
+    }
+
+    _bitmap_cache_clear() {
+        for (const idx of [...this._page_bitmap_cache.keys()]) {
+            this._bitmap_cache_delete(idx);
+        }
+    }
+
     /** 渲染成功：清除该页重试计数与全局连败计数 */
     _note_render_success() {
         this._render_fail_streak = 0;
@@ -4009,22 +4117,45 @@ class DocumentReaderManager {
             // 兜底吞掉被取消任务 promise 的预期 reject（见 _render_pdf_page_direct 同类处理）
             try { page_data.pdf_render_promise?.catch(() => {}); } catch (_) {}
         }
-        if (page_data.pdf_canvas) {
-            page_data.pdf_canvas.width = 0;
-            page_data.pdf_canvas.height = 0;
+        // 渲染线程在途请求一并取消（释放 worker 渲染槽位）
+        if (page_data._dr_render_worker_active) {
+            this._render_host?.cancel_render(page_data.page_num);
+            page_data._dr_render_worker_active = false;
+        }
+
+        // 位图留档：虚拟化卸载前把已渲染内容收进字节预算缓存，
+        // 翻回该页时直接回贴（零重栅格化）——卸载不再意味着重渲染。
+        // 同参数条目已存在时跳过（复用缓存，不产生第二份位图）
+        const canvas = page_data.pdf_canvas;
+        if (canvas && canvas.width > 0 && canvas.height > 0
+            && page_data.pdf_render_css_width > 0 && page_data.pdf_render_dpr > 0
+            && !this._bitmap_cache_peek(page_index, page_data.pdf_render_css_width)) {
+            const css_w = page_data.pdf_render_css_width;
+            const dpr = page_data.pdf_render_dpr;
+            const w = canvas.width, h = canvas.height;
+            try {
+                createImageBitmap(canvas).then(bm => {
+                    this._bitmap_cache_put(page_index, bm, css_w, dpr, w, h);
+                }).catch(() => { /* 快照失败按无缓存处理 */ });
+            } catch (_) { /* createImageBitmap 不可用：按无缓存处理 */ }
+        }
+
+        if (canvas) {
+            canvas.width = 0;
+            canvas.height = 0;
         }
         page_data.pdf_render_css_width = 0;
         // 关键：必须清空渲染守卫 promise，否则页面被虚拟化卸载后重建时，
         // _render_pdf_page_direct 会因 pdf_render_promise 残留（truthy）而直接
         // return 旧 promise、跳过重新栅格化 → 已浏览/翻回的页永久空白（下滑翻页失效）
         page_data.pdf_render_promise = null;
+        page_data._dr_render_worker_active = false;
+        // 滑动占位资格复位：页面重新滚回视口时允许再次 0.5x 占位
+        page_data._dr_placeholder_done = false;
 
-        // 释放缓存的 PDFPage 对象
-        const cached = this._pdf_page_cache.get(page_index);
-        if (cached) {
-            cached.cleanup?.();
-            this._pdf_page_cache.delete(page_index);
-        }
+        // PDFPage 不再随虚拟化驱逐：由 _pdf_page_cache 的 LRU（上限 12）统一管理。
+        // 虚拟化是高频路径，驱逐意味着翻回该页必须重新 getPage + 解析 + 栅格化
+        // ——正是「卸载后反复重新渲染」的来源之一；LRU 上限已保证内存有界。
     }
 
     /** LRU 驱逐：超出上限时清理最久未访问的 PDFPage */
