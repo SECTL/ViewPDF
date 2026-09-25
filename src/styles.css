@@ -1330,6 +1330,10 @@ body {
     background-color: var(--color-surface-elevated);
     contain: layout style paint;
     touch-action: none;
+    /* 平移/缩放走纯合成器（与 Edge 滚动同机制）：常驻提示避免 Chromium
+       在手势中重定光栅比例造成整层重栅化突发。子瓦片本来就是独立合成层，
+       这里只提升包装器自身，显存代价可忽略。 */
+    will-change: transform;
 }
 
 .canvas-wrapper.dragging {

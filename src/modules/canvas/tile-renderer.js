@@ -348,7 +348,12 @@ class TileRenderer {
         canvas.style.left = rect.x + 'px';
         canvas.style.top = rect.y + 'px';
 
-        const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
+        // GPU 光栅化（对齐 Edge/Chromium 默认）：willReadFrequently 会把画布
+        // 强制回退成软件光栅（CPU 画完再整块上传纹理），是瓦片滚动/缩放期间
+        // GPU 占用与上传带宽的结构性来源。产品热路径没有「从瓦片读像素」的
+        // 需求（blackboard 读回已停用；diag 读回走独立 48×48 探针画布，
+        // drawImage 的缩放在 GPU 侧做，读回量极小），可安全去掉。
+        const ctx = canvas.getContext('2d', { alpha: true });
         ctx.imageSmoothingEnabled = false;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -670,6 +675,16 @@ class TileRenderer {
             else clearTimeout(this._dirtyDrainIdleId);
             this._dirtyDrainIdleId = null;
         }
+    }
+
+    /**
+     * 更新画布内容尺寸（窗口 resize 等场景）。
+     * 固定瓦片尺寸下不需要重建渲染器：改完尺寸后调 resize_grid(wrapper)
+     * 增删边缘块即可，既有瓦片的内容与底图缓存继续有效。
+     */
+    set_canvas_size(w, h) {
+        this._canvasW = Math.max(1, w);
+        this._canvasH = Math.max(1, h);
     }
 
     /**
