@@ -120,7 +120,7 @@ class DocumentReaderManager {
         this._prerender_urgent_span = 8;        // 活动滚动时向前预渲染的紧急页数窗口（与 _wrapper_keep_distance 对齐，避免预渲染后即被卸载）
         // 滚动方向/速度感知：用于让预渲染窗口向滚动方向前倾，使用户即将到达的页
         // 在入场前就已栅格化（低 DPR 预渲染），消除下滑翻页时的白屏/卡顿感知。
-        this._dr_scroll_dir = 1;                // 当前滚动方向：1=向下/-右， -1=向上/左
+        this._dr_scroll_dir = 1;                // 当前滚动方向：1=向文档后方（页码增大，dr_canvas_y 递减），-1=向文档开头
         this._dr_scroll_vel = 0;                // 本帧画布位移量(px)
         this._dr_last_vis_y = undefined;        // 上一次可见性扫描时的 dr_canvas_y
         this._dr_last_scroll_t = 0;             // 最后一次有效位移时间戳
@@ -988,6 +988,9 @@ class DocumentReaderManager {
 
         // 清理预渲染队列
         this._cancel_prerender();
+        // 可见性差集状态作废：换文档后旧页码不得参与下一份文档的 hidden 判定
+        this._dr_prev_visible = null;
+
 
         // 移除键盘事件监听器
         if (this._bound_handle_keydown) {
@@ -1881,13 +1884,17 @@ class DocumentReaderManager {
 
         // 滚动方向/速度感知：活动滚动时让预渲染窗口向滚动方向前倾，
         // 使即将到达的页在入场前就完成栅格化（低 DPR 预渲染），避免白屏/卡顿被用户察觉。
+        // 方向约定（与初始化注释、紧急预渲染泵一致）：1=向文档后方（页码增大，
+        // dr_canvas_y 递减），-1=向文档开头。此前写成 dy>0→1 与约定相反，
+        // 导致下滑时紧急泵向「已滚过的后方页」预渲染——那些页随即被虚拟化
+        // 清理，再预渲染再清理，是快滑期间 mount/unmount 循环的直接燃料。
         const now = performance.now();
         let dir = 0;
         let moving = false;
         if (this._dr_last_vis_y !== undefined) {
             const dy = this.dr_canvas_y - this._dr_last_vis_y;
             if (dy !== 0) {
-                dir = dy > 0 ? 1 : -1;
+                dir = dy < 0 ? 1 : -1;
                 this._dr_scroll_dir = dir;
                 this._dr_scroll_vel = Math.abs(dy);
                 this._dr_last_scroll_t = now;
@@ -1909,6 +1916,9 @@ class DocumentReaderManager {
 
         let visible_pages = [];
         let prerender_pages = [];
+        // 本帧可见集：hidden 改为差集式触发（见扫描循环后的说明），
+        // is_intersecting 的页先收集，扫描结束后与上一帧集合对比
+        const cur_visible = new Set();
 
         // 退化防御：正常文档的扫描必然产出最近页（nearest 对所有扫描页无条件更新）。
         // 全空只可能是位置缓存失效（如面板离屏/content-visibility 未布局时读到的
@@ -1955,12 +1965,12 @@ class DocumentReaderManager {
 
                 if (is_intersecting) {
                     visible_pages.push(i);
+                    cur_visible.add(i);
                     this._on_page_visible(i);
                 } else if (is_in_prerender_range && this._prerender_enabled) {
                     prerender_pages.push(i);
-                    this._on_page_hidden(i);
-                } else {
-                    this._on_page_hidden(i);
+                    // hidden 不在此处调用：窗口外的页永远扫不到、窗口内的页会被
+                    // 每帧无条件 hidden（重置清理定时器）——统一由扫描后的差集处理
                 }
 
                 const visual_center = (visual_top + visual_bottom) / 2;
@@ -1993,9 +2003,25 @@ class DocumentReaderManager {
             const act = this.active_page_index;
             if (this.page_manager.pages_list[act]?.page_element) {
                 this._dr_diag('visibility-active-fallback', { page: act + 1 });
+                cur_visible.add(act);
                 this._on_page_visible(act);
             }
         }
+
+        // ===== 精确 hidden（差集式） =====
+        // 扫描用二分起点 + 提前 break，只覆盖预渲染窗口内的页：窗口外的页永远
+        // 不会被 _on_page_hidden 扫到，is_visible 卡在 true（僵尸可见页）——逃过
+        // tile 销毁/虚拟化/blob 释放等全部 GPU 清理，DOM 与画布层只增不减，长文档
+        // 快速滚动时合成层内存暴涨（真机滑动卡顿的主源）；而窗口内的非可见页又被
+        // 每帧无条件 hidden，_gpu_cleanup_delay_ms 防抖定时器被反复重置、形同虚设。
+        // 改为：上帧可见、本帧不在可见集 → 才算真正离开视口，hidden 恰好一次。
+        const prev_visible = this._dr_prev_visible;
+        if (prev_visible) {
+            for (const i of prev_visible) {
+                if (!cur_visible.has(i)) this._on_page_hidden(i);
+            }
+        }
+        this._dr_prev_visible = cur_visible;
 
         // 主动预加载 keep_distance 范围内的图片（避免滚动到时白屏）
         this._preload_nearby_images(nearest_page);
@@ -2096,7 +2122,21 @@ class DocumentReaderManager {
         const sorted = page_indices
             .filter(i => {
                 const pd = this.page_manager.pages_list[i];
-                return pd && !pd.is_visible && !pd.pdf_render_promise;
+                if (!pd || pd.is_visible || pd.pdf_render_promise) return false;
+                // 已虚拟化卸载的页不预渲染：主动重建（挂载→渲染）会被
+                // _cleanup_hidden_page_gpu 再次卸载，快滑期间形成每页多次的
+                // mount/unmount 循环（实测 40 页文档下滑一次 ~320 次无效挂载）。
+                // 滚回需要时由位图缓存快速回贴兜底，无需提前重建。
+                if (pd.is_virtualized || !pd.page_element) return false;
+                // 已渲染达标（或密度更高）的页不重复预渲染
+                if (this._prerender_already_adequate(i, pd)) return false;
+                // 已滚离视口（滚动方向后方）的页不预渲染：用户经过时已渲染过，
+                // 此处重渲染的成果只会被随后的虚拟化清掉。方向未知时放行
+                //（此时队列多来自静态 idle 补扫，无方向性浪费）。
+                const dir = this._dr_scroll_dir || 0;
+                if (dir > 0 && i < this.active_page_index) return false;
+                if (dir < 0 && i > this.active_page_index) return false;
+                return true;
             })
             .sort((a, b) => Math.abs(a - active_page) - Math.abs(b - active_page));
 
@@ -2164,6 +2204,14 @@ class DocumentReaderManager {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data || page_data.is_visible || page_data.pdf_render_promise) return;
 
+        // 已虚拟化/已滚离的页不预渲染（理由同 _schedule_prerender 的过滤）：
+        // 重建成果会被虚拟化清理再次卸载，形成 mount/unmount 循环
+        if (page_data.is_virtualized) return;
+        if (this._dom_virtualize() &&
+            !this._is_page_near_active(page_index, this._wrapper_keep_distance)) return;
+        // 已有不低于预渲染目标的成图：重复派发只会空转一轮守卫判定
+        if (this._prerender_already_adequate(page_index, page_data)) return;
+
         // 确保页面 DOM 已创建：虚拟化下须先建外层包裹（page_element），
         // 否则 _render_pdf_page_direct 会因 page_element 为 null 直接 return（白预渲染）
         if (this._dom_virtualize()) this._ensure_page_element(page_index);
@@ -2202,6 +2250,22 @@ class DocumentReaderManager {
         if (prerender_indices.length > 0) {
             this._schedule_prerender(prerender_indices, target_index);
         }
+    }
+
+    /**
+     * 该页是否已有不低于预渲染目标的成图（预渲染调度去重判据）。
+     * 渲染完成后 pdf_render_promise 会被 finally 清空，「无在途承诺」
+     * 不能推出「没渲染过」——泵/队列若不加此判据，每帧都会把已渲染页
+     * 重新捞出来空转一轮（虚拟化过的页更会引发重渲染循环）。
+     */
+    _prerender_already_adequate(page_index, page_data) {
+        if (!page_data.page_element) return false;
+        // 提交挂起中（手势期）：成图已在路上，回贴时才写守卫参数
+        if (page_data._dr_commit_pending) return true;
+        if (!(page_data.pdf_render_css_width > 0)) return false;
+        const want = this._pdf_desired_render_params(page_index, page_data, true);
+        return page_data.pdf_render_css_width === want.css_w &&
+            (page_data.pdf_render_dpr || 0) >= want.target_dpr - 0.001;
     }
 
     /** 取消所有预渲染任务 */
@@ -3709,11 +3773,27 @@ class DocumentReaderManager {
         const folder = this._get_active_folder();
         if (!folder?.pdfDoc?.getPage) return;
 
+        // 预载窗口与 _pdf_page_cache 上限对齐（2r+1 必须显著小于上限）：
+        // 旧实现半径 10（21 页）> 缓存上限 12，预载自己会把自己装载的页
+        // 不断驱逐出去——getPage 反复装载/清理，纯浪费且抖动解析缓存
+        const radius = Math.min(6, Math.max(3, (this._pdf_page_cache_max >> 1) - 1)); // 12 → 5
+        let yield_count = 0;
+
         const preload_fn = () => {
             const total = this.page_manager?.pages_list?.length || 0;
-            if (total === 0) return;
+            if (total === 0 || !this.is_open) return;
 
-            const radius = 10; // 前后各 10 页，共 21 页
+            // 活动滚动期让路：与可见性扫描/紧急预渲染泵抢主线程得不偿失，
+            // 推迟到滚动静止后的空闲窗口（最多让路 3 次，长滚动下不至永不执行）
+            if (performance.now() - (this._dr_last_scroll_t || 0) < 400) {
+                if (yield_count++ < 3) {
+                    this._preload_idle_id = window.requestIdleCallback
+                        ? window.requestIdleCallback(preload_fn, { timeout: 3000 })
+                        : setTimeout(preload_fn, 500);
+                }
+                return;
+            }
+
             const start = Math.max(0, center_page - radius);
             const end = Math.min(total - 1, center_page + radius);
             const pages_to_load = [];
