@@ -2952,8 +2952,6 @@ class DocumentReaderManager {
 
                 const render_w = Math.ceil(render_viewport.width);
                 const render_h = Math.ceil(render_viewport.height);
-                const css_w_px = Math.ceil(css_viewport.width) + 'px';
-                const css_h_px = Math.ceil(css_viewport.height) + 'px';
 
                 // 离屏预渲染：先渲染到临时 canvas，保留显示 canvas 旧内容避免白屏
                 const tempCanvas = this._acquire_temp_canvas(render_w, render_h);
@@ -2972,66 +2970,13 @@ class DocumentReaderManager {
                     await render_task.promise;
                     page_data.pdf_render_task = null;
 
-                    // 过期结果丢弃：渲染期间又启动了更新的渲染（seq 已前移）。
-                    // 不换画布、不写守卫，避免旧任务反向覆盖新画面/污染守卫参数
-                    if (page_data.pdf_render_seq !== my_seq) return;
-
-                    // 页面已不在视口 → 跳过 swap，保留旧内容（后续 virtualization 会清理）
-                    if (!page_data.is_visible && !is_prerender) return;
-
-                    // 渲染完成后原子交换到显示 canvas（resize + drawImage 在同一帧完成）
-                    canvas.width = render_w;
-                    canvas.height = render_h;
-                    const ctx = canvas.getContext('2d', { alpha: false });
-                    ctx.setTransform(1, 0, 0, 1, 0, 0);
-                    ctx.drawImage(tempCanvas, 0, 0);
-                    canvas.style.width = css_w_px;
-                    canvas.style.height = css_h_px;
-
-                    page_data.pdf_render_css_width = css_w;
-                    page_data.pdf_render_dpr = target_dpr;
-                    // 渲染成功：清零重试与连败计数
-                    page_data._render_retry_count = 0;
-                    this._note_render_success();
-
-                    // 真实页面宽高已确定（2700 行处赋值），按真实宽高比校页盒：
-                    // 导入期除首页外全部按首页尺寸估算（folder._pages_estimated），
-                    // 而后台回填只处理当时已挂载的页——渲染时才发现真实比例的页，
-                    // 页盒仍是估算比例，画布 CSS 却是真实比例，表现为页面下方
-                    // 留白/内容越出页盒（窗口 resize 后用估算比例重算盒高会固化错位）。
-                    // 走 _resize_page_layout 完成对齐：含批注纵向补偿、tile 重建与
-                    // 布局重算；宽高比一致时差值 <=1px，直接跳过（幂等空操作）
-                    if (!this._open_prerender_locked && this.is_open
-                        && this.page_manager?.pages_list?.[page_index] === page_data
-                        && page_data.page_element) {
-                        const box_w = parseFloat(page_data.page_element.style.width) || 0;
-                        const box_h = parseFloat(page_data.page_element.style.height) || 0;
-                        const want_h = box_w > 0 ? Math.round(box_w / this._get_page_aspect(page_data)) : 0;
-                        if (want_h > 0 && box_h > 0 && Math.abs(box_h - want_h) > 1) {
-                            this._resize_page_layout(page_index, this._get_page_base_width());
-                        }
-                    }
-
-                    // 首屏 DOM 加载完成：当前活动页真正渲染到显示 canvas 后，
-                    // 隐藏阅读器内加载层（满足"等待 DOM 加载成功才算加载成功"）
-                    if (this._pending_first_render && page_index === this.active_page_index) {
-                        this._pending_first_render = false;
-                        this._hide_reader_loading();
-                    }
-
-                    // 收敛检查：异步渲染期间缩放继续变化 → 参数已过期，
-                    // 安排一次跟进重渲染（参数一致时空转，连续缩放由 zooming 门控拦截）
-                    if (!is_prerender && !this._dr_is_zooming) {
-                        const want = this._pdf_desired_render_params(page_index, page_data, false);
-                        if (want.css_w !== css_w || want.target_dpr !== target_dpr) {
-                            requestAnimationFrame(() => {
-                                if (!this.is_open || this._dr_is_zooming) return;
-                                if (this.page_manager.pages_list[page_index] !== page_data) return;
-                                if (page_data.render_mode !== 'pdfjs') return;
-                                this._render_pdf_page_direct(page_index);
-                            });
-                        }
-                    }
+                    // 结果收尾统一走 _pdf_commit_render_result（与渲染线程路径共用）：
+                    // 过期丢弃 → 原子换帧 → 守卫参数写入 → 位图缓存 → 页盒校验 →
+                    // 首屏收尾 → 收敛检查
+                    const committed = this._pdf_commit_render_result(
+                        page_index, page_data, tempCanvas, render_w, render_h,
+                        css_w, target_dpr, my_seq, is_prerender || is_placeholder, false, is_placeholder);
+                    if (!committed) return;
                 } finally {
                     // 确保 tempCanvas 始终归还池中，避免泄露
                     this._release_temp_canvas(tempCanvas);
@@ -3066,6 +3011,148 @@ class DocumentReaderManager {
                 page_data.pdf_render_inflight = null;
             }
     }
+    }
+
+    /**
+     * 渲染结果统一收尾（主线程路径 / 渲染线程路径共用，避免两处漂移）：
+     * 过期丢弃 → 原子换帧 → 守卫参数写入 → 位图缓存 → 页盒校验 → 首屏收尾 → 收敛检查。
+     * @param {Canvas|ImageBitmap} source - 已完成的渲染结果（tempCanvas 或 worker 位图）
+     * @param {boolean} cacheable - 是否把该结果存入位图缓存（worker 位图 true；
+     *                              主线程 tempCanvas/已在缓存中的位图 false）
+     * @returns {boolean} 是否已提交。false = 结果过期（seq 前移）或页面已不可见，
+     *                    调用方必须释放位图等资源，不得写守卫参数
+     */
+    _pdf_commit_render_result(page_index, page_data, source, src_w, src_h,
+                              css_w, target_dpr, my_seq, is_prerender, cacheable, is_placeholder = false) {
+        // 过期结果丢弃：渲染期间又启动了更新的渲染（seq 已前移）。
+        // 不换画布、不写守卫，避免旧任务反向覆盖新画面/污染守卫参数
+        if (page_data.pdf_render_seq !== my_seq) return false;
+
+        // 页面已不在视口 → 跳过 swap，保留旧内容（后续 virtualization 会清理）
+        if (!page_data.is_visible && !is_prerender) return false;
+
+        // 手势期挂起提交：canvas 重分配 + 大位图 drawImage 落在手势帧内是
+        // 平移/缩放掉帧的直接来源之一。仅挂起可安全持有的 ImageBitmap 结果
+        // （渲染线程路径 / 位图缓存回贴路径）；主线程 tempCanvas 路径不可持有
+        // （池化回收），且其渲染启动已被门控，到达提交的量极少。
+        // 预渲染提交同样挂起（快滑实测 ~2.3 次换帧/手势帧，全幅位图 realloc+
+        // drawImage 是可感阻塞的剩余大头）：停稳后 _dr_flush_deferred_commits
+        // 以 6ms/帧回贴；溢出/过期的位图收入位图缓存，成果不白做。
+        // 0.5x 占位豁免：它服务的是用户正在看的页（防白屏），位图小
+        // （0.5x ≈ 0.25 面积），换帧 1~3ms 必须立即上屏。
+        // 仅挂起 cacheable 位图（渲染线程产出、提交路径独占所有权）：
+        // cacheable=false 的位图归位图缓存所有（缓存命中回贴路径），
+        // 随时可能被 LRU 驱逐 close——挂起它会在回贴时拿到已分离位图。
+        // 返回 true = 本次调用已接管位图生命周期（调用方不得 close）。
+        if (!is_placeholder && cacheable && this._dr_renders_paused() &&
+            typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
+            page_data._dr_commit_pending = true;
+            this._dr_defer_commit({ page_index, page_data, source, src_w, src_h,
+                css_w, target_dpr, my_seq, is_prerender, cacheable, is_placeholder });
+            return true;
+        }
+
+        // 全局提交节流（2026-09-25 真机数据驱动，勿删）：非手势期的全幅提交
+        // 洪峰同样打爆合成器上传管线——真机实测每条「重分配+全幅 drawImage」
+        // commit（8~20MB 纹理）前后跟随 300~600ms rAF 帧饿（rAF空洞计数随
+        // commit 同步增长；主线程全程空闲：无脚本/无任务/无 GC，瓶颈在
+        // 合成器/GPU 进程纹理上传排队）。政策：非占位全幅提交之间强制
+        // ≥48ms（≈3 帧）间距；占位豁免（防白屏，1MB 级）；回贴路径经
+        // _dr_flushing_commits 豁免本门（节奏由 flush 循环自身控制，防自递归）。
+        // 挂起复用手势期机制：同页新结果取代旧结果、溢出入位图缓存、
+        // seq 失效自动丢弃，位图生命周期语义不变。
+        if (!is_placeholder && cacheable && !this._dr_flushing_commits &&
+            typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
+            const now_ms = performance.now();
+            if (now_ms - (this._dr_last_full_commit_at || 0) < 48) {
+                page_data._dr_commit_pending = true;
+                this._dr_defer_commit({ page_index, page_data, source, src_w, src_h,
+                    css_w, target_dpr, my_seq, is_prerender, cacheable, is_placeholder });
+                return true;
+            }
+            this._dr_last_full_commit_at = now_ms;
+        }
+
+        const canvas = page_data.pdf_canvas;
+        if (!canvas) return false;
+
+        // 原子交换到显示 canvas（resize + drawImage 在同一帧完成）。
+        // 同尺寸不重赋 width/height：canvas 尺寸赋值会重置并重新分配 backing
+        // store（GPU 纹理），是快滑期间同参数重复提交时最大的单点开销；
+        // 跳过赋值保留旧像素，下方 drawImage 为不透明全幅覆盖，像素级等价
+        //
+        // ⚠️ 占位零重分配（2026-09-25 真机数据，勿回退）：真机实测 1.1MB 占位
+        // commit 与 19.8MB 全幅 commit 引起的帧饿同为 ~200ms——与上传体积无关，
+        // 元凶是 canvas width/height 重分配本身（合成器层纹理重建）。
+        // 占位本就是模糊上采样：直接把占位位图按画布现有尺寸 drawImage 拉伸
+        // 覆盖，视觉与「小画布 CSS 放大」等价（同为双线性），管线零重分配。
+        // pdf_render_dpr 仍记录 target_dpr（0.5）——它是内容质量语义（升清
+        // 判定用），画布物理尺寸不参与任何判定。画布无尺寸（新页首挂）才分配。
+        const _ph_stretch = is_placeholder && canvas.width > 0 && canvas.height > 0;
+        if (!_ph_stretch && (canvas.width !== src_w || canvas.height !== src_h)) {
+            canvas.width = src_w;
+            canvas.height = src_h;
+        }
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        if (_ph_stretch) {
+            ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+        } else {
+            ctx.drawImage(source, 0, 0);
+        }
+        canvas.style.width = Math.ceil(css_w) + 'px';
+        // css 高 = css_w / 宽高比（与 css_viewport.height 同值，见 _get_page_aspect）
+        canvas.style.height = Math.ceil(css_w / this._get_page_aspect(page_data)) + 'px';
+
+        page_data.pdf_render_css_width = css_w;
+        page_data.pdf_render_dpr = target_dpr;
+        // 渲染成功：清零重试与连败计数
+        page_data._render_retry_count = 0;
+        this._note_render_success();
+
+        if (cacheable && src_w > 0) {
+            this._bitmap_cache_put(page_index, source, css_w, target_dpr, src_w, src_h);
+        }
+
+        // 真实页面宽高已确定（渲染前赋值），按真实宽高比校页盒：
+        // 导入期除首页外全部按首页尺寸估算（folder._pages_estimated），
+        // 而后台回填只处理当时已挂载的页——渲染时才发现真实比例的页，
+        // 页盒仍是估算比例，画布 CSS 却是真实比例，表现为页面下方
+        // 留白/内容越出页盒（窗口 resize 后用估算比例重算盒高会固化错位）。
+        // 走 _resize_page_layout 完成对齐：含批注纵向补偿、tile 重建与
+        // 布局重算；宽高比一致时差值 <=1px，直接跳过（幂等空操作）
+        if (!this._open_prerender_locked && this.is_open
+            && this.page_manager?.pages_list?.[page_index] === page_data
+            && page_data.page_element) {
+            const box_w = parseFloat(page_data.page_element.style.width) || 0;
+            const box_h = parseFloat(page_data.page_element.style.height) || 0;
+            const want_h = box_w > 0 ? Math.round(box_w / this._get_page_aspect(page_data)) : 0;
+            if (want_h > 0 && box_h > 0 && Math.abs(box_h - want_h) > 1) {
+                this._resize_page_layout(page_index, this._get_page_base_width());
+            }
+        }
+
+        // 首屏 DOM 加载完成：当前活动页真正渲染到显示 canvas 后，
+        // 隐藏阅读器内加载层（满足"等待 DOM 加载成功才算加载成功"）
+        if (this._pending_first_render && page_index === this.active_page_index) {
+            this._pending_first_render = false;
+            this._hide_reader_loading();
+        }
+
+        // 收敛检查：异步渲染期间缩放继续变化 → 参数已过期，
+        // 安排一次跟进重渲染（参数一致时空转，连续缩放由 zooming 门控拦截）
+        if (!is_prerender && !this._dr_is_zooming) {
+            const want = this._pdf_desired_render_params(page_index, page_data, false);
+            if (want.css_w !== css_w || want.target_dpr !== target_dpr) {
+                requestAnimationFrame(() => {
+                    if (!this.is_open || this._dr_is_zooming) return;
+                    if (this.page_manager.pages_list[page_index] !== page_data) return;
+                    if (page_data.render_mode !== 'pdfjs') return;
+                    this._render_pdf_page_direct(page_index);
+                });
+            }
+        }
+        return true;
     }
 
     /** 渲染成功：清除该页重试计数与全局连败计数 */
