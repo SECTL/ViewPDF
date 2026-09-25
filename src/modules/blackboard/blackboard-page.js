@@ -25,13 +25,12 @@ export class BlackboardPageManager {
     }
 
     add_page() {
+        // 笔画 stroke_history 是唯一源数据：瓦片内容随时可由它重建，
+        // 不再保留任何像素级快照字段（旧 tile_snapshots/snapshot_* 已删）
         const page = {
             stroke_history: [],
-            snapshot_url: null,
             undo_list: [],
             redo_list: [],
-            tile_snapshots: null,
-            snapshot_dirty: true,
         };
         this.pages_list.push(page);
         this.current_index = this.pages_list.length - 1;

@@ -80,6 +80,8 @@
     left: 0;
     transform-origin: 0 0;
     touch-action: none;
+    /* 与主画布 .canvas-wrapper 同理：平移/缩放走纯合成器 */
+    will-change: transform;
 }
 
 .bb-canvas-wrapper.smooth-transform {

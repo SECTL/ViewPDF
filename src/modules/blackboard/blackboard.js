@@ -106,7 +106,9 @@ class BlackboardManager {
         this.screen_w = 0;
         this.screen_h = 0;
         this._last_loaded_index = -1;
-        this._tiles_changed_since_snapshot = false;
+        // 页面加载令牌：_load_page_strokes 是 async，快速连续翻页/切文档时
+        // 两次加载可能交错，令牌让被取代的加载在恢复点提前退出
+        this._page_load_token = 0;
 
         // 弹性 overscroll 状态
         this._is_overscrolling = false;
@@ -417,6 +419,29 @@ class BlackboardManager {
         }, duration);
     }
 
+    /**
+     * 立即结束 bb_wrapper 的平滑变换过渡（快进到终态）。
+     *
+     * _sync_bb_transform_smooth 先写 bb_state（终态）再靠 CSS transition
+     * 把 DOM 从旧变换过渡过去 —— 过渡期间 gBCR 是中间态而 bb_state 是终态。
+     * 此刻起笔，笔画坐标按「终态缩放 × 中间态 rect」折算，落点整体偏移，
+     * 且偏移被烘焙进 stroke.points（提交后永久错位）。滚轮缩放后立即书写
+     * 即触发。故在起笔入口无条件快进：清除过渡、DOM 直接落到终态。
+     */
+    _bb_snap_smooth_transform() {
+        const w = this.bb_wrapper;
+        if (!w || !w.classList.contains('smooth-transform')) return;
+        if (this._animate_timer_id !== null) {
+            clearTimeout(this._animate_timer_id);
+            this._animate_timer_id = null;
+        }
+        w.classList.remove('smooth-transform');
+        w.style.transitionDuration = '';
+        const s = this.bb_state;
+        w.style.transform = 'translate3d(' + s.canvas_x + 'px, ' + s.canvas_y + 'px, 0) scale(' + s.scale + ')';
+        s.last_transform = { x: s.canvas_x, y: s.canvas_y, scale: s.scale };
+    }
+
     // ====== 惯性系统 ======
 
     _cancel_momentum() {
@@ -595,14 +620,8 @@ class BlackboardManager {
         const panel = this._el.panel;
         if (!panel) return;
 
-        // 面板 fixed inset:0 全屏，几何基准直接取视口尺寸
-        // （CSS 异步加载期读面板 clientWidth/Height 会得到未布局的过渡值）
-        this.screen_w = Math.max(1, window.innerWidth);
-        this.screen_h = Math.max(1, window.innerHeight);
-
-        // 黑板画布大小为屏幕两倍
-        this.bb_state.canvas_w = Math.floor(this.screen_w * 2);
-        this.bb_state.canvas_h = Math.floor(this.screen_h * 2);
+        // 板面几何唯一写入者（视口尺寸 → screen/canvas/缓存失效）
+        this._apply_viewport_geometry(window.innerWidth, window.innerHeight);
 
         const canvas_wrap = this._el.canvasWrap;
 
@@ -617,12 +636,10 @@ class BlackboardManager {
         // 延迟到首次 open() 中初始化，减少应用启动时不必要的 canvas 创建
         this.tile_renderer = null;
 
-        // 初始化状态位置：居中画布
-        const init_x = -(this.bb_state.canvas_w - this.screen_w) / 2;
-        const init_y = -(this.bb_state.canvas_h - this.screen_h) / 2;
-        this.bb_state.canvas_x = init_x;
-        this.bb_state.canvas_y = init_y;
-        this.bb_state.scale = 1;
+        // 初始位置：板面居中（板面为视口 2 倍大，居中即显示板面中央区域）
+        const s = this.bb_state;
+        s.canvas_x = (this.screen_w - s.canvas_w * s.scale) / 2;
+        s.canvas_y = (this.screen_h - s.canvas_h * s.scale) / 2;
         this._update_move_bound();
         this._update_canvas_position();
         this._sync_bb_transform();
@@ -679,21 +696,30 @@ class BlackboardManager {
         this._update_page_indicator();
     }
 
-    /** 延迟初始化 Canvas 层：tile_renderer、overlay、DrawingEngine 子模块 */
-    _lazy_init_canvas() {
+    /**
+     * 延迟创建画布层（首次 open 时调用一次）：tile_renderer、overlay、
+     * DrawingEngine 子模块、分辨率上下文注册。
+     * 关键点：瓦片网格按「当前缩放」建 —— 初建即拿到正确的目标 DPR，
+     * 不依赖后续 transform 事件自愈（旧实现硬编码初始缩放 1，若板在
+     * 非 1 缩放下首次建层，首屏全部按错误 DPR 光栅化）。
+     */
+    _ensure_canvas_layers() {
         if (this.tile_renderer) return; // 已初始化
 
         const canvas_wrap = this._el.canvasWrap;
+        const s = this.bb_state;
+        const scale = s.scale || 1;
 
-        // 分块渲染器
+        // 分块渲染器（多页架构：strokeHistoryRef 随页切换在
+        // _activate_page_strokes 中绑定，此处先绑当前页）
         this.tile_renderer = new window.TileRenderer({
-            strokeHistoryRef: null,
+            strokeHistoryRef: this.page_manager.get_current_page()?.stroke_history || null,
             getVisibleRect: () => this._fetch_visible_rect(),
-            canvasW: this.bb_state.canvas_w,
-            canvasH: this.bb_state.canvas_h,
+            canvasW: s.canvas_w,
+            canvasH: s.canvas_h,
             skipBaseCache: true
         });
-        this.tile_renderer.init_tiles(this.bb_wrapper, 1);
+        this.tile_renderer.init_tiles(this.bb_wrapper, scale);
 
         // 覆盖层（实时预览，独立于分块包装器之外）。
         // 创建后立即交给 OverlayManager 托管：CSS/像素尺寸与 DPR 都在 attach 内
@@ -729,6 +755,11 @@ class BlackboardManager {
 
         // 橡皮擦提示
         this.drawing_engine.init_eraser_hint(canvas_wrap);
+
+        // 建层完成后立即按当前缩放收敛一次瓦片 DPR 与覆盖层变换：
+        // 旧实现在此之前调用的 _sync_bb_transform（tile_renderer 尚为 null）
+        // 不会触达任何一层，首次变换事件到来前瓦片停留在初建 DPR。
+        this.tile_renderer.update_visible_tile_dpr(scale, true, true);
 
         // 历史管理器由 open() 中 push_history_isolate 负责初始化，此处不重复调用
     }
@@ -904,8 +935,17 @@ class BlackboardManager {
         }
     }
 
+    /**
+     * 打开黑板。重写后的加载时序（各阶段职责单一、顺序固定）：
+     *   0 串行化：等上一次 close 收尾，防历史隔离快照被覆盖
+     *   1 切板：按文档恢复板状态 + 主画布收尾 + 历史隔离
+     *   2 滑入：CSS 就绪 → 提交初始态 → .active → 让出一帧
+     *   3 几何对齐：视口尺寸自检 + 板面居中（先于一切画布层工作）
+     *   4 画布层：瓦片网格（按当前缩放）+ 覆盖层 + DPR 收敛
+     *   5 并发收尾：笔画加载与面板过渡并行，绘制解禁前两者都就绪
+     */
     async open() {
-        // 正在关闭（面板滑出动画 + 提交未完成笔画）：等它收尾完成再开。
+        // ---- 阶段 0：正在关闭（面板滑出动画 + 提交未完成笔画）时等它收尾。
         // 不等的话 open() 会在 close() 的 await 处插进去 push_history_isolate，
         // 覆盖掉 close() 待恢复的全局历史快照。
         if (this._closing && this._close_promise) {
@@ -913,7 +953,7 @@ class BlackboardManager {
         }
         if (this.is_open) return;
 
-        // 小黑板按文档隔离：打开前切换到当前 PDF 标签对应的板状态
+        // ---- 阶段 1：按文档隔离切板 + 主画布收尾 + 历史隔离
         if (this._bb_per_doc()) {
             this._bb_switch_md5(this._bb_current_pdf_md5());
         }
@@ -937,11 +977,9 @@ class BlackboardManager {
         this.drawing_engine.set_painting_allowed(false);
 
         this.is_open = true;
-        this._tiles_changed_since_snapshot = false;
 
-        // 首次打开时 blackboard.css 可能仍在加载：滑入动画的初始态与
-        // transition 都由它定义，就绪前添加 .active 会直接跳到终态。
-        // 等样式表就绪后再提交初始态并触发过渡
+        // ---- 阶段 2：滑入。首次打开时 blackboard.css 可能仍在加载：滑入动画的
+        // 初始态与 transition 都由它定义，就绪前添加 .active 会直接跳到终态。
         if (this._bb_css_ready) {
             await this._bb_css_ready;
         }
@@ -954,37 +992,17 @@ class BlackboardManager {
         panel.classList.add('active');
 
         // 让出一帧：浏览器先绘制面板滑入起点，再对齐几何/建瓦片，
-        // 避免 _lazy_init_canvas 的 16 瓦片构建阻塞动画首帧（首笔延迟↓）
+        // 避免 16 瓦片构建阻塞动画首帧（首笔延迟↓）
         await new Promise(r => requestAnimationFrame(r));
 
-        // ===== 几何对齐：面板 fixed inset:0 全屏，几何基准 = 视口尺寸 =====
-        // 不读 panel.clientWidth：init 与 open 同任务执行时 CSS 可能尚未
-        // 加载，面板处于未布局状态（高度只有画布默认的 150px），读到过渡
-        // 尺寸会让位置落到角落。视口尺寸与 CSS 加载时序无关，任何时刻都正确
-        {
-            const w = Math.max(1, window.innerWidth);
-            const h = Math.max(1, window.innerHeight);
-            if (w !== this.screen_w || h !== this.screen_h) {
-                this.resize(w, h);
-            }
-        }
+        // ---- 阶段 3：几何对齐（面板 fixed inset:0 全屏，几何基准 = 视口尺寸，
+        // 与 CSS 加载时序无关）
+        this._align_geometry_on_open();
 
-        // 打开时板面始终定位在面板正中央（内容/页数/缩放按文档记忆，
-        // 位置不记忆）。板面为视口 2 倍大，居中即显示板面中央区域
-        {
-            const s = this.bb_state;
-            s.canvas_x = (this.screen_w - s.canvas_w * s.scale) / 2;
-            s.canvas_y = (this.screen_h - s.canvas_h * s.scale) / 2;
-            this._cached_move_bound_scale = null;
-            this._update_move_bound();
-            this._update_canvas_position();
-            s.last_transform = { x: null, y: null, scale: null };
-            this._sync_bb_transform();
-        }
+        // ---- 阶段 4：面板已激活、几何对齐后再建瓦片/overlay
+        this._ensure_canvas_layers();
 
-        // 面板已激活、几何对齐后再建瓦片/overlay
-        this._lazy_init_canvas();
-
+        // ---- 阶段 5：并发收尾
         // 监听 CSS transition 实际结束，替代固定 400ms 等待
         const transition_promise = new Promise(resolve => {
             let resolved = false;
@@ -1026,6 +1044,29 @@ class BlackboardManager {
 
         this._update_page_indicator();
         this._update_button_status();
+    }
+
+    /**
+     * 打开时的几何对齐（阶段 3）：
+     *   - 视口尺寸自检：板关闭期间的窗口 resize 无人处理（重量通道有
+     *     is_open 门控），在此补一次完整对齐；
+     *   - 板面定位：打开时始终居中（内容/页数/缩放按文档记忆，位置不记忆）。
+     */
+    _align_geometry_on_open() {
+        const w = Math.max(1, window.innerWidth);
+        const h = Math.max(1, window.innerHeight);
+        if (w !== this.screen_w || h !== this.screen_h) {
+            this.resize(w, h);
+        }
+
+        const s = this.bb_state;
+        s.canvas_x = (this.screen_w - s.canvas_w * s.scale) / 2;
+        s.canvas_y = (this.screen_h - s.canvas_h * s.scale) / 2;
+        this._cached_move_bound_scale = null;
+        this._update_move_bound();
+        this._update_canvas_position();
+        s.last_transform = { x: null, y: null, scale: null };
+        this._sync_bb_transform();
     }
 
     async close() {
@@ -1206,6 +1247,8 @@ class BlackboardManager {
             if (!this.is_open) return;
             this._cancel_momentum();
             this.bb_state.cached_inv_scale = 1 / this._fetch_safe_scale();
+            // 平滑缩放过渡中起笔：快进到终态，防止笔画坐标按中间态 rect 折算错位
+            this._bb_snap_smooth_transform();
 
             // 起笔即收纳笔工具面板（与阅读器一致；触屏/手写笔无兼容 mousedown）
             window.main_hide_pen_control_panel?.();
@@ -1673,104 +1716,80 @@ class BlackboardManager {
         this._touch_schedule_disable_gpu();
     }
 
-    // ====== 快照 ======
-
-    _save_tile_snapshots() {
-        // 已停用：关闭/翻页时不再对 16 块做 getImageData 读回（GPU→CPU 同步 stall，关闭卡顿主因）。
-        // 笔画 stroke_history 始终为源数据，下次进入页面走 _rebuild_from_history 即时重建即可，
-        // 像素级快照既无必要、又引入同步卡顿，故此处恒返回 null。
-        return null;
-    }
-
-    _restore_tile_snapshots(snapshots) {
-        const tr = this.tile_renderer;
-        if (!tr || !snapshots) return false;
-        for (let i = 0; i < tr.tileInfos.length; i++) {
-            const info = tr.tileInfos[i];
-            const snap = snapshots[i];
-            if (snap && info.canvas && snap.width === info.canvas.width && snap.height === info.canvas.height) {
-                info.ctx.putImageData(snap, 0, 0);
-            }
-        }
-        return true;
-    }
-
     // ====== 渲染 — 使用主渲染管线 ======
+    //
+    // 坐标约定：笔画 points/bounds 全部是「板面内容坐标」，瓦片重建
+    // （rebuild_tile）按各块自己的 dpr 做变换，渲染函数
+    // （main_render_strokes_to_context）不读取任何全局缩放 —— 因此这里
+    // **不需要也不允许**临时改写 window.state.scale（旧实现的交换 hack
+    // 会泄漏进 idle 分片回调，是潜在的全局渲染污染源）。
 
+    /** 笔画提交 / 撤销 / 重做 / 清空后的重绘入口（DrawingEngine 回调） */
     async _render_all_strokes(bounds) {
         const page = this.page_manager.get_current_page();
-        if (!page) return;
+        const tr = this.tile_renderer;
+        if (!page || !tr) return;
 
-        if (this.tile_renderer) {
-            const orig_scale = window.state.scale;
-            window.state.scale = this.bb_state.scale;
+        tr._strokeHistoryRef = page.stroke_history;
+        tr.mark_strokes_changed();
 
-            window.main_reset_context_state();
-            this.tile_renderer._strokeHistoryRef = page.stroke_history;
-            this.tile_renderer.mark_strokes_changed();
-
-            if (bounds && isFinite(bounds.minX) && isFinite(bounds.minY) &&
-                          isFinite(bounds.maxX) && isFinite(bounds.maxY)) {
-                const infos = this.tile_renderer.infos_for_segment(
-                    bounds.minX, bounds.minY,
-                    bounds.maxX, bounds.maxY
-                );
-                for (const info of infos) {
-                    this.tile_renderer.dirty.add(info.key);
-                }
-            } else {
-                this.tile_renderer.mark_all();
+        if (bounds && isFinite(bounds.minX) && isFinite(bounds.minY) &&
+                      isFinite(bounds.maxX) && isFinite(bounds.maxY)) {
+            const infos = tr.infos_for_segment(
+                bounds.minX, bounds.minY,
+                bounds.maxX, bounds.maxY
+            );
+            for (const info of infos) {
+                tr.dirty.add(info.key);
             }
-
-            try {
-                // 仅重建可视区瓦片，其余 dirty 块由 idle 兜底补建（避免全量重绘 16 块）
-                const keys = this.tile_renderer.get_visible_keys();
-                this.tile_renderer.rebuild_visible(keys);
-                this.tile_renderer._drain_dirty_tiles(keys);
-            } finally {
-                window.state.scale = orig_scale;
-            }
+        } else {
+            tr.mark_all();
         }
-        page.snapshot_dirty = true;
+
+        // 仅重建可视区瓦片，其余 dirty 块由 idle 兜底补建（避免全量重绘 16 块）
+        const keys = tr.get_visible_keys();
+        tr.rebuild_visible(keys);
+        tr._drain_dirty_tiles(keys);
     }
 
-    _save_page_tile_snapshots(page) {
-        const snapshots = this._save_tile_snapshots();
-        if (snapshots) {
-            page.tile_snapshots = snapshots;
-            page.snapshot_dirty = false;
-        }
+    /**
+     * 把 tile_renderer 切换到目标页并重建内容。
+     * 加载 / 翻页 / 按文档切板的唯一渲染入口。
+     *
+     * 顺序敏感：先 force 对齐可见瓦片 DPR（越过交互冻结），再 mark_all +
+     * 重建 —— 旧实现既不对齐 DPR 也不复位变换，靠 settle 定时器事后自愈，
+     * 期间可视内容停留在旧分辨率 / 旧页内容上。
+     *
+     * @param {object} page 目标页
+     * @param {number} token 加载令牌（_load_page_strokes 传入，被更新的加载取代时提前退出）
+     */
+    async _activate_page_strokes(page, token) {
+        const tr = this.tile_renderer;
+        if (!tr || !page) return;
+        if (token !== undefined && token !== this._page_load_token) return;
+
+        tr._strokeHistoryRef = page.stroke_history;
+        tr.mark_strokes_changed();
+        tr.update_visible_tile_dpr(this.bb_state.scale || 1, true, true);
+        tr.mark_all();
+
+        if (token !== undefined && token !== this._page_load_token) return;
+
+        // 仅重建与可视区相交的瓦片（首开/翻页不必全量重绘 16 块）；
+        // 其余块保持 dirty，由 tile_renderer 的 idle 兜底（_drain_dirty_tiles）分片补建
+        const keys = tr.get_visible_keys();
+        tr.rebuild_visible(keys);
+        tr._drain_dirty_tiles(keys);
     }
 
-    _restore_page_tile_snapshots(page) {
-        const restored = this._restore_tile_snapshots(page.tile_snapshots);
-        if (restored) this._tiles_changed_since_snapshot = true;
-        return restored;
-    }
-
-    async _rebuild_from_history(page) {
-        if (!this.tile_renderer) return;
-
-        const orig_scale = window.state.scale;
-        window.state.scale = this.bb_state.scale;
-
-        window.main_reset_context_state();
-        this.tile_renderer._strokeHistoryRef = page.stroke_history;
-        this.tile_renderer.mark_strokes_changed();
-        this.tile_renderer.mark_all();
-
-        try {
-            // 仅重建与可视区相交的瓦片（首开/翻页不必全量重绘 16 块）；
-            // 其余块保持 dirty，由 tile_renderer 的 idle 兜底（_drain_dirty_tiles）分片补建
-            const keys = this.tile_renderer.get_visible_keys();
-            this.tile_renderer.rebuild_visible(keys);
-            this.tile_renderer._drain_dirty_tiles(keys);
-        } finally {
-            window.state.scale = orig_scale;
-        }
-    }
-
+    /**
+     * 加载指定页：交接 undo/redo 历史 → 激活该页笔画。
+     * async 入口配 _page_load_token 令牌：快速连续翻页 / 翻页与切文档并发时，
+     * 被取代的加载在检查点提前退出，避免旧页的历史/内容晚到覆盖新页。
+     */
     async _load_page_strokes(index) {
+        const token = ++this._page_load_token;
+
         // 保存当前页的 undo/redo 历史（笔画源数据在 stroke_history，无需 tile 像素快照）
         if (this._last_loaded_index >= 0 && this._last_loaded_index < this.page_manager.pages_list.length) {
             const prev_page = this.page_manager.pages_list[this._last_loaded_index];
@@ -1787,8 +1806,8 @@ class BlackboardManager {
         history_state.redo_list = page.redo_list || [];
         history_reset_executing();
 
-        // 始终从 stroke_history 重建（引用共享、零深拷贝；空闲兜底补全不可见瓦片）
-            await this._rebuild_from_history(page);
+        await this._activate_page_strokes(page, token);
+        if (token !== this._page_load_token) return;
         this._update_button_status();
     }
 
@@ -1850,7 +1869,6 @@ class BlackboardManager {
         await this._load_page_strokes(new_idx);
         this._update_page_indicator();
         this._sync_page_buttons();
-        this._update_page_indicator();
         this._update_button_status();
     }
 
@@ -1867,6 +1885,30 @@ class BlackboardManager {
         if (this._el.pageAdd) this._el.pageAdd.disabled = false;
     }
 
+    /** 视口尺寸 → 板面几何的唯一写入者（screen/canvas 尺寸、包装器盒、缓存失效） */
+    _apply_viewport_geometry(w, h) {
+        this.screen_w = Math.max(1, w);
+        this.screen_h = Math.max(1, h);
+
+        // 黑板画布大小为屏幕两倍
+        const s = this.bb_state;
+        s.canvas_w = Math.floor(this.screen_w * 2);
+        s.canvas_h = Math.floor(this.screen_h * 2);
+
+        // 同步包装器盒尺寸（瓦片网格按新画布尺寸对齐，盒子必须一致）
+        if (this.bb_wrapper) {
+            this.bb_wrapper.style.width = s.canvas_w + 'px';
+            this.bb_wrapper.style.height = s.canvas_h + 'px';
+        }
+
+        this._cached_move_bound_scale = null;
+        this._cached_visible_rect = null;
+        this._cached_visible_rect_scale = null;
+        this._cached_visible_rect_x = null;
+        this._cached_visible_rect_y = null;
+        this._cached_container_rect = null;
+    }
+
     resize(screen_w, screen_h) {
         const s = this.bb_state;
         const old_sw = this.screen_w;
@@ -1875,77 +1917,46 @@ class BlackboardManager {
         const old_cy = s.canvas_y;
         const scale = s.scale || 1;
 
-        this.screen_w = screen_w;
-        this.screen_h = screen_h;
-
-        // 重新计算画布大小
-        s.canvas_w = Math.floor(screen_w * 2);
-        s.canvas_h = Math.floor(screen_h * 2);
-
         // 保持视口中心对应的内容点不变：否则既有批注会因重新居中产生"位移"
         const center_cx = (old_sw / 2 - old_cx) / scale;
         const center_cy = (old_sh / 2 - old_cy) / scale;
+
+        // 几何唯一写入者：screen/canvas 尺寸 + 包装器盒 + 缓存失效
+        this._apply_viewport_geometry(screen_w, screen_h);
+
         s.canvas_x = screen_w / 2 - center_cx * scale;
         s.canvas_y = screen_h / 2 - center_cy * scale;
 
-        // 同步包装器盒尺寸（瓦片网格已按新画布尺寸重建，盒子必须一致）
-        if (this.bb_wrapper) {
-            this.bb_wrapper.style.width = s.canvas_w + 'px';
-            this.bb_wrapper.style.height = s.canvas_h + 'px';
-        }
-
-        // 瓦片网格尺寸在构造时固定，画布尺寸变化后必须重建，
-        // 否则新区域的笔画落在网格之外（提交后不可见）
+        // 固定内容尺寸瓦片（512×512）：画布尺寸变化只增删边缘块，
+        // 既有瓦片的矩形与内容保持有效、零重光栅化。旧实现 destroy + new +
+        // init_tiles 全量重建，是 512 瓦片重构前（主画布 resize 冻结 ~700ms）
+        // 的老路径，黑板这里是对应的最后残留。
         if (this.tile_renderer && this.bb_wrapper) {
-            const cur = this.page_manager.get_current_page();
-            this.tile_renderer.destroy();
-            this.tile_renderer = new window.TileRenderer({
-                strokeHistoryRef: cur?.stroke_history || null,
-                getVisibleRect: () => this._fetch_visible_rect(),
-                canvasW: s.canvas_w,
-                canvasH: s.canvas_h,
-                skipBaseCache: true
-            });
-            if (this.drawing_engine?.batch_draw) {
-                this.drawing_engine.batch_draw._tileRenderer = this.tile_renderer;
-            }
-            this.tile_renderer.init_tiles(this.bb_wrapper, scale);
+            this.tile_renderer.set_canvas_size(s.canvas_w, s.canvas_h);
+            this.tile_renderer.resize_grid(this.bb_wrapper);
         }
 
         // 覆盖层在首次 open() 前不存在，首次 open 时才会创建。
         // 尺寸与 DPR 一律交给 OverlayManager.resize：它会按 ResolutionController
         // 重算 DPR、保留旧内容快照，并把展示尺寸记回自身。
-        // 此前在外层手写像素尺寸与倍率，绕过了快照逻辑（resize 即白清空、
-        // 笔迹闪断），也让展示尺寸在管理器里失真。
         if (this.drawing_engine?.batch_draw?.overlay?.canvas) {
             this.drawing_engine.batch_draw.overlay.resize(screen_w, screen_h);
         }
 
-        this._cached_move_bound_scale = null;
-        this._cached_visible_rect = null;
-        this._cached_visible_rect_scale = null;
-        this._cached_visible_rect_x = null;
-        this._cached_visible_rect_y = null;
         this._update_move_bound();
         this._update_canvas_position();
         this._sync_bb_transform();
 
         if (this.tile_renderer) {
             const page = this.page_manager.get_current_page();
-            const orig_scale = window.state.scale;
-            window.state.scale = scale;
-
-            window.main_reset_context_state();
             if (page) this.tile_renderer._strokeHistoryRef = page.stroke_history;
-            this.tile_renderer.mark_all();
 
-            try {
-                // 仅重建可视区瓦片：resize 后非可见块保持 dirty，由 idle/进入视野时补全，
-                // 避免 16 块 canvas 全量重绘（拖拽窗口结束时的卡顿主因）
-                this.tile_renderer.rebuild_visible();
-            } finally {
-                window.state.scale = orig_scale;
-            }
+            // 网格增删产生的边缘脏块：可见区同步补齐，其余 idle 分片；
+            // 屏幕尺寸变化可能改变目标 DPR，交由渐进队列分帧对齐
+            const keys = this.tile_renderer.get_visible_keys();
+            this.tile_renderer.rebuild_visible(keys);
+            this.tile_renderer._drain_dirty_tiles(keys);
+            this.tile_renderer.update_visible_tile_dpr(scale, false, false);
         }
     }
 
