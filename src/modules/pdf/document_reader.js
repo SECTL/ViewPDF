@@ -269,6 +269,12 @@ class DocumentReaderManager {
         this._pdf_page_cache = new Map();
         this._pdf_page_cache_max = 12; // LRU 上限：保留最近使用的 12 个 PDFPage
 
+        // 渲染线程宿主（懒创建，见 _ensure_render_host）：
+        // 栅格化在独立线程完成，主线程只做参数守卫与画布换帧——
+        // 滚动/缩放期间 pdf.js 栅格化不再阻塞主线程（卡顿根治点）
+        this._render_host = null;
+        this._render_host_loading = null;
+
         // 文档级 cleanup 去抖定时器
         this._doc_cleanup_timer = null;
 
@@ -991,6 +997,8 @@ class DocumentReaderManager {
         // 可见性差集状态作废：换文档后旧页码不得参与下一份文档的 hidden 判定
         this._dr_prev_visible = null;
 
+        // 渲染线程：关闭文档（丢弃渲染线程侧字节副本与在途请求，worker 保留复用）
+        this._render_host?.close_document();
 
         // 移除键盘事件监听器
         if (this._bound_handle_keydown) {
@@ -3099,12 +3107,74 @@ class DocumentReaderManager {
                 // 此处兜底吞掉，避免旧调用方缺失 catch 时产生 Uncaught (in promise)
                 try { prev_render_promise?.catch(() => {}); } catch (_) {}
             }
+            // force 取消：渲染线程在途请求一并停掉（旧结果同样会被 seq 丢弃，
+            // 提前取消是为了释放 worker 渲染槽位给新请求）
+            if (force && page_data._dr_render_worker_active) {
+                this._render_host?.cancel_render(page_data.page_num);
+                page_data._dr_render_worker_active = false;
+            }
+
+            // ====== 渲染线程路径：栅格化完全离开主线程 ======
+            // 任何失败（未创建成功/打开失败/渲染出错）都落回下方主线程 pdf.js 路径，
+            // 渲染线程是纯加速层，不承担正确性。
+            {
+                const worker_host = (this._render_host && this._render_host.available)
+                    ? this._render_host
+                    : await this._ensure_render_host();
+                let worker_done = false;
+                if (worker_host && page_data.pdf_render_seq === my_seq) {
+                    const opened = await worker_host.ensure_document(folder.pdfDoc);
+                    if (opened && page_data.pdf_render_seq === my_seq) {
+                        page_data._dr_render_worker_active = true;
+                        try {
+                            const res = await worker_host.render(
+                                // 占位按可见页优先级派发（unshift 队首 + 不可被预渲染抢占）：
+                                // 它服务的是用户正看着的页面，不能排在预渲染后面
+                                page_data.page_num, css_w, target_dpr, is_prerender && !is_placeholder);
+                            page_data._dr_render_worker_active = false;
+                            // 渲染期间又被更新的渲染接管 → 丢弃结果（含位图）
+                            if (page_data.pdf_render_seq !== my_seq) {
+                                try { res.bitmap.close(); } catch (_) {}
+                                return;
+                            }
+                            // 真实页面尺寸对齐（与主线程路径 base_viewport 赋值等价）
+                            if (res.pageW && (page_data.page_width !== res.pageW ||
+                                              page_data.page_height !== res.pageH)) {
+                                page_data.page_width = res.pageW;
+                                page_data.page_height = res.pageH;
+                                this._refresh_page_aspect(page_data);
+                            }
+                            const committed = this._pdf_commit_render_result(
+                                page_index, page_data, res.bitmap, res.width, res.height,
+                                // 占位复用预渲染的提交豁免：手势期 ImageBitmap 立即换帧上屏
+                                css_w, target_dpr, my_seq, is_prerender || is_placeholder, true, is_placeholder);
+                            if (!committed) {
+                                // 位图未入缓存（过期/不可见）：必须显式释放
+                                try { res.bitmap.close(); } catch (_) {}
+                            }
+                            worker_done = true;
+                        } catch (err) {
+                            page_data._dr_render_worker_active = false;
+                            if (err?.name === 'RenderingCancelledException') {
+                                throw err; // 取消属预期路径，交给上层统一吞掉
+                            }
+                            console.warn('[DocumentReader] 渲染线程失败，本页回退主线程:', err);
+                        }
+                    }
+                }
+                if (worker_done) return;
+                // else：走下方主线程路径
+            }
 
             let pdf_page = this._pdf_page_cache.get(page_index);
             if (!pdf_page) {
                 pdf_page = await folder.pdfDoc.getPage(page_data.page_num);
                 this._pdf_page_cache.set(page_index, pdf_page);
                 this._pdf_page_cache_evict();
+            } else {
+                // 真 LRU touch：Map 迭代序 = 插入序，命中不重插会退化为 FIFO 驱逐
+                this._pdf_page_cache.delete(page_index);
+                this._pdf_page_cache.set(page_index, pdf_page);
             }
             try {
                 const base_viewport = pdf_page.getViewport({ scale: 1 });
@@ -3555,6 +3625,33 @@ class DocumentReaderManager {
         step();
     }
 
+    // ====== 渲染线程宿主（栅格化卸载到独立线程） ======
+
+    /**
+     * 懒加载渲染线程宿主。任何失败（Worker 不可用/脚本加载失败）返回 null，
+     * 调用方回退主线程渲染路径。宿主崩溃后 available=false，本方法返回 null。
+     */
+    async _ensure_render_host() {
+        if (this._render_host) {
+            return this._render_host.available ? this._render_host : null;
+        }
+        if (!this._render_host_loading) {
+            this._render_host_loading = import('./render-worker-host.js')
+                .then(m => {
+                    this._render_host = new m.PdfRenderWorkerHost();
+                    return this._render_host.available ? this._render_host : null;
+                })
+                .catch(e => {
+                    console.warn('[DocumentReader] 渲染线程不可用，回退主线程渲染:', e);
+                    this._render_host = null;
+                    return null;
+                })
+                .finally(() => { this._render_host_loading = null; });
+        }
+        return this._render_host_loading;
+    }
+
+    /**
     /** 渲染成功：清除该页重试计数与全局连败计数 */
     _note_render_success() {
         this._render_fail_streak = 0;
@@ -3733,6 +3830,11 @@ class DocumentReaderManager {
 
             const ok = await window.main_ensure_folder_doc?.(folder);
             if (!ok || !this.is_open) return;
+
+            // 重载后 pdfDoc 是新对象：渲染线程侧旧字节与位图缓存一并作废，
+            // 避免按旧文档渲染的结果被当作新文档内容复用
+            this._render_host?.close_document();
+            this._bitmap_cache_clear();
 
             // 渲染缓存守卫失效化 + 清空残缺画布，强制全部重建
             for (const pd of this.page_manager.pages_list) {
@@ -5836,10 +5938,25 @@ class DocumentReaderManager {
             page.sidebar_thumbnail_loading = true;
             try {
                 await this._render_page_sidebar_pdf_thumbnail(page_index, img);
+                page._thumb_retry = 0;
             } catch (error) {
                 // 快速滚动时缩略图渲染被取消属预期，静默处理
                 if (error?.name !== 'RenderingCancelledException') {
                     console.error(`渲染 PDF 缩略图 ${page_index + 1} 失败:`, error);
+                } else {
+                    // 渲染线程预渲染队列拥挤时缩略图请求可能被降级丢弃
+                    // （is_prerender 队列超限丢最旧）：有限次延迟重试，
+                    // 避免快速滚侧边栏后留下永久空白缩略图
+                    page._thumb_retry = (page._thumb_retry || 0) + 1;
+                    if (page._thumb_retry <= 3) {
+                        setTimeout(() => {
+                            if (!this._sidebar_thumbnail_cache.has(page_index) &&
+                                this.page_manager.pages_list[page_index] === page) {
+                                this._load_page_sidebar_thumbnail(page_index, img);
+                            }
+                        }, 1200);
+                        return; // finally 会清 loading 标志，重试自行重置
+                    }
                 }
                 // 失败时移除加载态，避免无限 shimmer 动画常驻消耗 GPU
                 img.classList.remove('is-loading');
@@ -5886,6 +6003,74 @@ class DocumentReaderManager {
             return;
         }
 
+        // —— 优先：渲染线程路径 ——
+        // 缩略图的 getPage + 栅格化整条管线原本跑在主线程（打开侧边栏时
+        // 每页 24~45ms 的栅格化全落主线程）。渲染线程已持有该文档
+        // （ensure_document 按文档身份记忆，零额外拷贝），缩略图复用之：
+        // is_prerender 档 = 队尾派发、不抢占可见页渲染、队列有上限。
+        // 主线程只剩小画布 drawImage + toBlob（~1ms）。
+        const worker_host = (this._render_host && this._render_host.available)
+            ? this._render_host
+            : await this._ensure_render_host();
+        if (worker_host) {
+            const opened = await worker_host.ensure_document(folder.pdfDoc);
+            if (opened) {
+                try {
+                    const css_w = Math.max(120, Math.round(canvas.clientWidth || canvas.closest('.dr-page-sidebar-item')?.clientWidth || 180));
+                    const res = await worker_host.render(page.page_num, css_w, 1, true);
+                    // 渲染期间缓存已被其他路径填充：直接用缓存，丢弃位图
+                    if (this._sidebar_thumbnail_cache.has(page_index)) {
+                        try { res.bitmap.close(); } catch (_) {}
+                        this._set_sidebar_thumbnail_src(canvas, page_index, this._sidebar_thumbnail_cache.get(page_index));
+                        return;
+                    }
+                    const res_ctrl = window.ResolutionController;
+                    const dpr = res_ctrl && res_ctrl.calc_ui_dpr ? res_ctrl.calc_ui_dpr(1, 2) : 1;
+                    const css_h = Math.round(css_w * 9 / 16);
+                    const canvas_w = Math.ceil(css_w * dpr);
+                    const canvas_h = Math.ceil(css_h * dpr);
+                    canvas.width = canvas_w;
+                    canvas.height = canvas_h;
+                    canvas.style.width = '100%';
+                    canvas.style.height = css_h + 'px';
+                    const ctx = canvas.getContext('2d', { alpha: false });
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(0, 0, canvas_w, canvas_h);
+                    // 位图（页面原始比例）等比装入 16:9 框，居中 letterbox
+                    if (res.width > 0 && res.height > 0) {
+                        const fit = Math.min(canvas_w / res.width, canvas_h / res.height);
+                        const dw = Math.max(1, Math.round(res.width * fit));
+                        const dh = Math.max(1, Math.round(res.height * fit));
+                        ctx.drawImage(res.bitmap,
+                            Math.round((canvas_w - dw) / 2), Math.round((canvas_h - dh) / 2), dw, dh);
+                    }
+                    try { res.bitmap.close(); } catch (_) {}
+                    const blob_url = await new Promise(resolve => {
+                        canvas.toBlob(blob => {
+                            resolve(blob ? URL.createObjectURL(blob) : null);
+                        }, 'image/jpeg', 0.7);
+                    });
+                    if (blob_url) {
+                        this._sidebar_thumbnail_cache.set(page_index, blob_url);
+                        this._sidebar_thumbnail_cache_evict();
+                        this._set_sidebar_thumbnail_src(canvas, page_index, blob_url);
+                    } else {
+                        canvas.dataset.rendered = 'true';
+                        canvas.classList.remove('is-loading');
+                        canvas.closest('.dr-page-sidebar-item')?.classList.remove('loading');
+                    }
+                    return;
+                } catch (err) {
+                    if (err?.name === 'RenderingCancelledException') {
+                        throw err; // 取消属预期路径，交给上层统一吞掉
+                    }
+                    console.warn('[DocumentReader] 缩略图渲染线程失败，回退主线程:', err);
+                }
+            }
+        }
+
+        // —— 回退：主线程 pdf.js 渲染路径（渲染线程不可用/失败时） ——
         let pdf_page = this._pdf_page_cache.get(page_index);
         if (!pdf_page) {
             pdf_page = await folder.pdfDoc.getPage(page.page_num);
