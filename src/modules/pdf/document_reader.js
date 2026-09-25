@@ -3386,6 +3386,111 @@ class DocumentReaderManager {
         requestAnimationFrame(step);
     }
 
+    /** 挂起一个渲染结果提交。同页新结果取代旧结果（旧位图按归属释放） */
+    _dr_defer_commit(job) {
+        const prev = this._deferred_commits.get(job.page_index);
+        if (prev) {
+            this._dr_discard_commit_job(prev);
+        }
+        this._deferred_commits.set(job.page_index, job);
+        // 上限保护：极端情况下（worker 批量完成）最多保留 8 页待回贴，
+        // 溢出的按插入序丢弃（最旧的参数也最可能已过期）
+        while (this._deferred_commits.size > 8) {
+            const oldest = this._deferred_commits.keys().next().value;
+            this._dr_discard_commit_job(this._deferred_commits.get(oldest));
+            this._deferred_commits.delete(oldest);
+        }
+        // 非手势期挂起（=48ms 节流门路径）：必须自动调度回贴。停稳补扫触发的
+        // 升清渲染完成时，resume 的 flush 早已跑过（快照不含这些新 job），flush
+        // 循环的 rAF 续批也只覆盖自己的快照——不自动调度的话位图滞留本表，
+        // 页面停在模糊占位直到下一次手势（实测「快滑后模糊要点一下才刷新」根因）。
+        // 手势期挂起不调度：手势帧内回贴正是手势门要避免的事，且 flush 内提交
+        // 会撞手势门重新挂起白耗帧；交给 _dr_on_render_resume 统一回贴。
+        if (!this._dr_renders_paused()) this._dr_schedule_deferred_flush();
+    }
+
+    /** rAF 幂等调度一次挂起提交回贴。flush 内提交经 bypass 旗标直通节流门，
+     * 不会再走挂起路径，无自递归；若 flush 运行中新手势开始，提交撞手势门
+     * 重新挂起且不重调度（paused 分支），等待 resume 兜底。 */
+    _dr_schedule_deferred_flush() {
+        if (this._dr_flush_scheduled) return;
+        this._dr_flush_scheduled = true;
+        requestAnimationFrame(() => {
+            this._dr_flush_scheduled = false;
+            this._dr_flush_deferred_commits();
+        });
+    }
+
+    /**
+     * 释放一个不再提交的挂起任务持有的位图（仅 cacheable=true 归调用方语义）。
+     * cacheable 的位图（渲染线程产出）收入位图缓存而非丢弃：提交被更新的
+     * 渲染取代或超出挂起上限时，位图内容仍然有效（同一页的合法渲染成果），
+     * 入缓存后滚回/升清判定可直接复用，避免预渲染白做。
+     */
+    _dr_discard_commit_job(job) {
+        job.page_data._dr_commit_pending = false;
+        if (job.cacheable && job.src_w > 0 && job.src_h > 0 &&
+            typeof ImageBitmap !== 'undefined' && job.source instanceof ImageBitmap) {
+            this._bitmap_cache_put(job.page_index, job.source, job.css_w, job.target_dpr,
+                job.src_w, job.src_h);
+        } else {
+            try { job.source.close?.(); } catch (_) {}
+        }
+    }
+
+    /**
+     * 回贴全部挂起提交。逐帧限量（每帧时间预算 6ms）：多页大位图换帧
+     * 堆叠在同一帧正是掉帧来源，静默后的恢复刷新也要保持顺滑。
+     * 另按全局提交间距节流（_dr_commit_throttle_ms）：卡的不是 JS 时间
+     * （commit 本身 1~3ms），是合成器纹理上传——只看 JS 预算会让一帧内
+     * 连贴多条全幅位图重新制造上传洪峰。占位不受限。
+     */
+    static get _DR_COMMIT_THROTTLE_MS() { return 48; }
+
+    _dr_flush_deferred_commits() {
+        if (this._deferred_commits.size === 0) return;
+        const jobs = [...this._deferred_commits.values()];
+        this._deferred_commits.clear();
+        let i = 0;
+        const step = () => {
+            const budget_end = performance.now() + 6;
+            while (i < jobs.length && performance.now() < budget_end) {
+                const job = jobs[i];
+                // 全幅提交间距节流：未到间距就整批让出本帧（下帧继续）。
+                // 占位立即贴：防白屏优先，位图小（0.25 面积）上传可忽略。
+                if (!job.is_placeholder &&
+                    performance.now() - (this._dr_last_full_commit_at || 0)
+                        < DocumentReaderManager._DR_COMMIT_THROTTLE_MS) {
+                    break;
+                }
+                i++;
+                job.page_data._dr_commit_pending = false;
+                if (job.page_data.pdf_render_seq !== job.my_seq) {
+                    // 已被更新的渲染接管：位图按归属释放，不得回贴
+                    this._dr_discard_commit_job(job);
+                    continue;
+                }
+                if (!job.is_placeholder) {
+                    this._dr_last_full_commit_at = performance.now();
+                }
+                // bypass 旗标：flush 内的提交不再进全局门（防自递归挂起）
+                this._dr_flushing_commits = true;
+                let committed;
+                try {
+                    committed = this._pdf_commit_render_result(
+                        job.page_index, job.page_data, job.source, job.src_w, job.src_h,
+                        job.css_w, job.target_dpr, job.my_seq, job.is_prerender, job.cacheable,
+                        job.is_placeholder === true);
+                } finally {
+                    this._dr_flushing_commits = false;
+                }
+                if (!committed) this._dr_discard_commit_job(job);
+            }
+            if (i < jobs.length) requestAnimationFrame(step);
+        };
+        step();
+    }
+
     /** 渲染成功：清除该页重试计数与全局连败计数 */
     _note_render_success() {
         this._render_fail_streak = 0;
