@@ -275,6 +275,13 @@ class DocumentReaderManager {
         this._render_host = null;
         this._render_host_loading = null;
 
+        // 维护线程宿主（懒创建，见 _ensure_maintenance_host）：
+        // 批注缓存的 JSON.stringify/parse 等序列化任务在独立线程完成，
+        // 与渲染线程分离——序列化任务不挤占栅格化线程的并发槽位，
+        // 主线程也不被大 JSON 阻塞。失败语义同渲染线程：纯加速层。
+        this._maint_host = null;
+        this._maint_host_loading = null;
+
         // 文档级 cleanup 去抖定时器
         this._doc_cleanup_timer = null;
 
@@ -1320,16 +1327,23 @@ class DocumentReaderManager {
         if (await_idle && window.requestIdleCallback) {
             await new Promise((resolve) => {
                 window.requestIdleCallback(() => {
-                    do_write(JSON.stringify(cache_data)).then(resolve).catch((err) => {
-                        console.error('[document_reader] 保存批注缓存失败:', err);
-                        resolve();
-                    });
+                    // stringify 在维护线程执行（大笔画文档可达数 MB，主线程
+                    // stringify 会卡结算帧）；维护线程不可用时回退主线程
+                    this._maint_stringify(cache_data)
+                        .then(json_str => do_write(json_str))
+                        .then(resolve)
+                        .catch((err) => {
+                            console.error('[document_reader] 保存批注缓存失败:', err);
+                            resolve();
+                        });
                 }, { timeout: 3000 });
             });
         } else {
-            await do_write(JSON.stringify(cache_data)).catch((err) => {
-                console.error('[document_reader] 保存批注缓存失败:', err);
-            });
+            await this._maint_stringify(cache_data)
+                .then(json_str => do_write(json_str))
+                .catch((err) => {
+                    console.error('[document_reader] 保存批注缓存失败:', err);
+                });
         }
     }
 
@@ -1358,7 +1372,8 @@ class DocumentReaderManager {
                 } catch (_) {}
             }
             if (!json_str) return null;
-            const cache_data = JSON.parse(json_str);
+            // parse 在维护线程执行（大缓存文件 JS 级 parse 会阻塞打开流程的主线程）
+            const cache_data = await this._maint_parse(json_str);
             if (!cache_data || !cache_data.pages) return null;
 
             const pages = this.page_manager.pages_list;
@@ -3652,6 +3667,47 @@ class DocumentReaderManager {
     }
 
     /**
+     * 维护线程宿主（懒创建）：批注缓存序列化/反序列化在独立线程执行。
+     * 与渲染线程刻意分离——序列化任务不得挤占栅格化线程的并发槽位。
+     */
+    async _ensure_maintenance_host() {
+        if (this._maint_host) {
+            return this._maint_host.available ? this._maint_host : null;
+        }
+        if (!this._maint_host_loading) {
+            this._maint_host_loading = import('./maintenance-worker-host.js')
+                .then(m => {
+                    this._maint_host = new m.MaintenanceWorkerHost();
+                    return this._maint_host.available ? this._maint_host : null;
+                })
+                .catch(e => {
+                    console.warn('[DocumentReader] 维护线程不可用，回退主线程序列化:', e);
+                    this._maint_host = null;
+                    return null;
+                })
+                .finally(() => { this._maint_host_loading = null; });
+        }
+        return this._maint_host_loading;
+    }
+
+    /** JSON.stringify：优先维护线程，失败回退主线程（纯加速层语义） */
+    async _maint_stringify(data) {
+        try {
+            const host = await this._ensure_maintenance_host();
+            if (host) return await host.stringify(data);
+        } catch (_) { /* 落回主线程 */ }
+        return JSON.stringify(data);
+    }
+
+    /** JSON.parse：优先维护线程，失败回退主线程 */
+    async _maint_parse(json_str) {
+        try {
+            const host = await this._ensure_maintenance_host();
+            if (host) return await host.parse(json_str);
+        } catch (_) { /* 落回主线程 */ }
+        return JSON.parse(json_str);
+    }
+
     /** 渲染成功：清除该页重试计数与全局连败计数 */
     _note_render_success() {
         this._render_fail_streak = 0;
