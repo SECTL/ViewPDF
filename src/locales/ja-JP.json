@@ -105,7 +105,7 @@
     "dynamicResolution": "動的解像度",
     "dynamicResolutionHint": "ズーム時にキャンバス解像度を自動的に上げて鮮明に表示",
     "momentum": "慣性移動",
-    "momentumHint": "ドラッグ/ズーム解除後もキャンバスがスライド",
+    "momentumHint": "単指ドラッグ解放後にキャンバスが滑走（双指ジェスチャーでは無効）",
     "settingsManagement": "管理",
     "exportSettings": "エクスポート",
     "importSettings": "インポート",

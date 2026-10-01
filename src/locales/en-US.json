@@ -104,7 +104,7 @@
     "dynamicResolution": "Dynamic Resolution",
     "dynamicResolutionHint": "Automatically increase canvas resolution when zooming for clearer display",
     "momentum": "Momentum",
-    "momentumHint": "Canvas continues sliding after drag/zoom release",
+    "momentumHint": "Canvas keeps gliding after a single-finger drag release (not for two-finger gestures)",
     "settingsManagement": "Manage",
     "exportSettings": "Export",
     "importSettings": "Import",

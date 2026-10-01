@@ -104,7 +104,7 @@
     "dynamicResolution": "動態解析度",
     "dynamicResolutionHint": "放大時自動提高畫布解析度以獲得更清晰的顯示效果",
     "momentum": "慣性移動",
-    "momentumHint": "拖拽/縮放釋放後畫布繼續滑行",
+    "momentumHint": "單指拖拽釋放後畫布繼續滑行（雙指手勢不觸發）",
     "settingsManagement": "設定管理",
     "exportSettings": "匯出設定",
     "importSettings": "匯入設定",

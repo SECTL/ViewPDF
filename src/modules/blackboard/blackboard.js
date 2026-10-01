@@ -100,6 +100,7 @@ class BlackboardManager {
         this._last_canvas_y = 0;
         this._last_move_time = null;         // 最后一次拖拽位移的事件时间戳（停顿检测用）
         this._momentum_last_ts = null;       // 上一惯性帧时间戳（帧率无关衰减用）
+        this._multi_touch_active = false;     // 本轮手势是否用过双指（双指不触发惯性）
 
         this.draw_mode = 'comment';
 
@@ -459,6 +460,8 @@ class BlackboardManager {
 
     _start_momentum() {
         if (window.DRAW_CONFIG && !window.DRAW_CONFIG.momentumEnabled) return;
+        // 双指（缩放/平移）手势松手不触发惯性，仅单指拖拽允许惯性滑行
+        if (this._multi_touch_active) return;
         // 手指松开前已停顿（>120ms 无位移）：旧速度不再代表手势意图，不触发惯性
         if (this._last_move_time !== null && performance.now() - this._last_move_time > 120) {
             this._gesture_vx = 0;
@@ -1268,6 +1271,7 @@ class BlackboardManager {
             // 拖拽平移（move 模式）
             if (this.draw_mode === 'move') {
                 this.bb_state.is_dragging = true;
+                this._multi_touch_active = false;  // 全新单指拖拽：允许惯性
                 this.bb_state.start_drag_x = ev.position.x - this.bb_state.canvas_x;
                 this.bb_state.start_drag_y = ev.position.y - this.bb_state.canvas_y;
                 this._last_canvas_x = this.bb_state.canvas_x;
@@ -1376,6 +1380,7 @@ class BlackboardManager {
 
         pinch.onPinchStarted = (ev) => {
             if (!this.is_open) return;
+            this._multi_touch_active = true;  // 双指手势：松手不触发惯性
             this._cancel_momentum();
             // 取消任何 pending 的 transform rAF，避免残留覆盖新位置
             if (this._bb_transform_raf_id !== null) {

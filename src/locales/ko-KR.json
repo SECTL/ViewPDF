@@ -105,7 +105,7 @@
     "dynamicResolution": "동적 해상도",
     "dynamicResolutionHint": "확대 시 캔버스 해상도를 자동으로 높여 선명하게 표시",
     "momentum": "관성 이동",
-    "momentumHint": "드래그/확대 후 캔버스가 계속 슬라이딩",
+    "momentumHint": "한 손가락 드래그 해제 후 캔버스가 계속 슬라이딩 (두 손가락 제스처는 제외)",
     "settingsManagement": "관리",
     "exportSettings": "내보내기",
     "importSettings": "가져오기",

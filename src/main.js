@@ -980,6 +980,10 @@ function main_setup_pdf_file_open() {
             DRAW_CONFIG.gestureFrameDelta = settings.gestureFrameDelta;
         }
 
+        if (settings.momentumEnabled !== undefined) {
+            DRAW_CONFIG.momentumEnabled = settings.momentumEnabled;
+        }
+
         }).catch(err => {
         console.error('settings-changed 事件监听失败:', err);
     });

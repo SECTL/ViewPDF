@@ -105,7 +105,7 @@
     "dynamicResolution": "Resolución dinámica",
     "dynamicResolutionHint": "Aumenta automáticamente la resolución del lienzo al hacer zoom para una visualización más nítida",
     "momentum": "Momentum",
-    "momentumHint": "El lienzo sigue deslizándose tras soltar arrastre/zoom",
+    "momentumHint": "El lienzo sigue deslizándose tras soltar un arrastre de un dedo (no con gesto de dos dedos)",
     "settingsManagement": "Gestionar",
     "exportSettings": "Exportar",
     "importSettings": "Importar",

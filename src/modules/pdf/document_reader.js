@@ -207,6 +207,7 @@ class DocumentReaderManager {
         this._dr_last_canvas_x = 0;
         this._dr_last_canvas_y = 0;
         this._dr_last_move_time = null;     // 最后一次拖拽位移的事件时间戳（停顿检测用）
+        this._dr_multi_touch_active = false;  // 本轮手势是否用过双指（双指缩放/平移不触发惯性）
 
         // 自适应 DPR 已收归 ResolutionController（按角色分级 + 内存压力降级），
         // 本类不再持有开关状态；是否动态由 DRAW_CONFIG.dynamicDprEnabled 决定
@@ -4888,6 +4889,7 @@ class DocumentReaderManager {
             // 拖拽平移（move 模式）
             if (this.draw_mode === 'move') {
                 this.dr_is_dragging = true;
+                this._dr_multi_touch_active = false;  // 全新单指拖拽：允许惯性
                 this._dragFingerId = ev.id;
                 this.dr_start_drag_x = ev.position.x - this.dr_canvas_x;
                 this.dr_start_drag_y = ev.position.y - this.dr_canvas_y;
@@ -5022,6 +5024,7 @@ class DocumentReaderManager {
         pinch.onPinchStarted = () => {
             if (!this.is_open) return;
 
+            this._dr_multi_touch_active = true;  // 双指手势：松手不触发惯性
             this._dr_cancel_momentum();
             this._dr_last_canvas_x = this.dr_canvas_x;
             this._dr_last_canvas_y = this.dr_canvas_y;
@@ -6651,6 +6654,8 @@ class DocumentReaderManager {
 
     _dr_start_momentum() {
         if (window.DRAW_CONFIG && !window.DRAW_CONFIG.momentumEnabled) return;
+        // 双指（缩放/平移）手势松手不触发惯性，仅单指拖拽允许惯性滑行
+        if (this._dr_multi_touch_active) return;
         // 手指松开前已停顿（>120ms 无位移）：旧速度不再代表手势意图，不触发惯性
         if (this._dr_last_move_time !== null && performance.now() - this._dr_last_move_time > 120) {
             this._dr_gesture_vx = 0;

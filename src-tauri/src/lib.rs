@@ -1468,6 +1468,7 @@ fn config_fetch_default() -> serde_json::Value {
         "frameRateMode": "adaptive",
         "dprLimit": 2,
         "dynamicDprEnabled": true,
+        "momentumEnabled": true,
         "dprMin": 1,
         "dprMax": 4,
         "dprStep": 0.5,

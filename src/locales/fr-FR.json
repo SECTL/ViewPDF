@@ -105,7 +105,7 @@
     "dynamicResolution": "Résolution dynamique",
     "dynamicResolutionHint": "Augmente automatiquement la résolution de la toile lors du zoom pour un affichage plus net",
     "momentum": "Momentum",
-    "momentumHint": "Le toile continue de glisser après un drag/zoom",
+    "momentumHint": "La toile continue de glisser après un glissement à un doigt (pas avec un geste à deux doigts)",
     "settingsManagement": "Gérer",
     "exportSettings": "Exporter",
     "importSettings": "Importer",

@@ -216,6 +216,14 @@ async function initSettings() {
                     dprToggle.checked = dynamicDprEnabled;
                 }
 
+                // 惯性移动开关：仅单指拖拽松手后触发惯性滑行（双指手势由 gesture 模块跳过）
+                const momentumEnabled = settings.momentumEnabled !== undefined ? settings.momentumEnabled : true;
+                const momentumToggle = document.getElementById('momentumToggle');
+                if (momentumToggle) {
+                    momentumToggle.checked = momentumEnabled;
+                    if (window.DRAW_CONFIG) window.DRAW_CONFIG.momentumEnabled = momentumEnabled;
+                }
+
                 const dprRangeItem = document.getElementById('dprRangeItem');
                 if (dprRangeItem) {
                     dprRangeItem.style.display = dynamicDprEnabled ? '' : 'none';
@@ -811,6 +819,15 @@ async function initSettings() {
             const dprLimitItem = document.getElementById('dprLimitItem');
             if (dprLimitItem) dprLimitItem.style.display = value ? 'none' : '';
             await settings_save_all_local({ dynamicDprEnabled: value });
+        });
+    }
+
+    const momentumToggle = document.getElementById('momentumToggle');
+    if (momentumToggle) {
+        momentumToggle.addEventListener('change', async () => {
+            const value = momentumToggle.checked;
+            if (window.DRAW_CONFIG) window.DRAW_CONFIG.momentumEnabled = value;
+            await settings_save_all_local({ momentumEnabled: value });
         });
     }
 
