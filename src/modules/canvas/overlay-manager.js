@@ -168,6 +168,9 @@ class OverlayManager {
         this.canvas.height = Math.ceil(h * newDpr);
         this.canvas.style.width = w + 'px';
         this.canvas.style.height = h + 'px';
+        // 几何（含像素尺寸/位置）已变，覆盖层自身视口矩形缓存立即失效，
+        // 下次 sync_transform/clear 重新取数，避免用过期的自身原点折算偏移
+        this._selfRect = null;
 
         if (snapshot) {
             this.ctx.save();
@@ -244,6 +247,21 @@ class OverlayManager {
         return { scale: 1, originX: 0, originY: 0 };
     }
 
+    /**
+     * 读取覆盖层画布自身的视口矩形（带缓存，几何变化时才失效）。
+     * 覆盖层画布的位置很少变动（仅 resize / 几何重建时改变），故缓存可避免
+     * 每帧 getBoundingClientRect 的布局抖动；sync_transform 的缓存命中路径
+     * 也不会触达此处。
+     */
+    _read_self_rect() {
+        if (!this._selfRect) {
+            this._selfRect = this.canvas
+                ? this.canvas.getBoundingClientRect()
+                : { left: 0, top: 0, width: 0, height: 0 };
+        }
+        return this._selfRect;
+    }
+
     sync_transform() {
         if (!this.ctx) return;
         const dpr = this.dpr;
@@ -256,9 +274,18 @@ class OverlayManager {
         this._transformScale = scale;
         this._transformX = originX;
         this._transformY = originY;
+        // 锚点 originX/originY 是「内容原点(0,0)」的视口绝对坐标；但覆盖层画布
+        // 自身未必位于视口 (0,0)（被父级 transform/定位偏移、或面板滑入过渡中）。
+        // 必须把锚点折算到「覆盖层画布自身坐标系」，否则预览会整体偏移一个等于
+        // 覆盖层相对视口原点的偏移量，与已提交笔迹（位于锚点元素内、随其变换）
+        // 错位（历史表现为"绘制中位置错、抬笔后正常"的 ~112px 类偏移）。
+        // 当覆盖层确在视口 (0,0) 时 ox==originX，与旧实现等价，属严格泛化。
+        const self = this._read_self_rect();
+        const ox = originX - self.left;
+        const oy = originY - self.top;
         this.ctx.setTransform(
             scale * dpr, 0, 0, scale * dpr,
-            originX * dpr, originY * dpr
+            ox * dpr, oy * dpr
         );
     }
 
@@ -271,8 +298,11 @@ class OverlayManager {
         if (dirty) {
             const { scale: s, originX, originY } = this._fetch_view_transform();
             const dpr = this.dpr;
-            const ox = originX * dpr;
-            const oy = originY * dpr;
+            // 与 sync_transform 一致：锚点坐标必须折算到覆盖层画布自身坐标系，
+            // 否则覆盖层不在视口 (0,0) 时脏区清错位，残留上一笔预览残影。
+            const self = this._read_self_rect();
+            const ox = (originX - self.left) * dpr;
+            const oy = (originY - self.top) * dpr;
             const x = Math.floor(dirty.x * s * dpr + ox - 1);
             const y = Math.floor(dirty.y * s * dpr + oy - 1);
             const w = Math.ceil((dirty.x2 - dirty.x) * s * dpr + 2);

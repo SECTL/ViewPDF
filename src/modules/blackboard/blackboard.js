@@ -430,7 +430,13 @@ class BlackboardManager {
      */
     _bb_snap_smooth_transform() {
         const w = this.bb_wrapper;
-        if (!w || !w.classList.contains('smooth-transform')) return;
+        if (!w) return;
+        // 无条件快进：任何可能造成「gBCR 中间态 × 终态 scale」错位的过渡都要在此消除，
+        // 不只限于 .smooth-transform 类。此前用 classList 守卫，意味着只要过渡来源
+        // 没挂这个 class（未来新增的过渡路径、或 class 因时序问题尚未挂上）就会漏过，
+        // 起笔坐标按中间态 rect 折算并被烘焙进 stroke.points，提交后永久错位。
+        // 无条件执行是安全的：无过渡时 transform 已是终态、transitionDuration 已是空，
+        // 这些写入都是 no-op，不会扰动视图。
         if (this._animate_timer_id !== null) {
             clearTimeout(this._animate_timer_id);
             this._animate_timer_id = null;
