@@ -1179,6 +1179,7 @@ class DocumentReaderManager {
         }
         this._dr_flip_recent_until = 0;
         this._dr_motion_dpr_until = 0;
+        this._dr_moving_frames = 0;
         this._render_pause_until = 0;
         for (const job of this._deferred_commits.values()) {
             this._dr_discard_commit_job(job);
@@ -2249,7 +2250,23 @@ class DocumentReaderManager {
         // 活动滚动时启动"紧急预渲染泵"：用 rAF（每帧都触发，区别于 requestIdleCallback
         // 在滚动期间会被浏览器节流/饿死）把滚动方向前方窗口内的页按低 DPR 预先栅格化，
         // 确保它们真正进入视口前已就绪，用户完全无白屏感知。静止时由上方 idle 队列兜底。
-        if (moving) {
+        //
+        // 必须要求**连续**两帧都在动（勿简化为 `if (moving)`）：单帧冲量不算。
+        // 程序化翻页（点按钮/按键）在几何上就是「一帧内 dy 巨大」，同样满足
+        // moving，泵随即按 _prerender_urgent_span=8 的窗口连续派发 1x 预渲染
+        // 并持续 200ms——实测一次「下一页」连带 4 页 1x 预渲染（80MB 位图、
+        // 4 次画布重分配），全部挤在同一条 48ms 全局提交节流上，翻页后有
+        // ~26 帧的提交尾巴。翻页是离散的、用户下一步只会去相邻页（那一张由
+        // _prerender_for_navigation 按全量 DPR 覆盖），不需要 8 页深的低清前瞻。
+        // 拖拽/惯性/滚轮/捏合的连续运动每帧都满足两帧判据，覆盖不受影响。
+        this._dr_moving_frames = moving ? ((this._dr_moving_frames || 0) + 1) : 0;
+        // 连点期间同样屏蔽泵：连点在几何上表现为连续运动帧，会满足上面的两帧
+        // 判据。但泵派发的是 _prerender_urgent_span=8 页深的 1x 预渲染
+        // （实测连点 8 次多出 p11~p14 四张 1x 位图 ≈ 80MB），这些页远在 4 次
+        // 点击之外，却要和「用户正要看的那一页」抢渲染线程槽位与 48ms 提交
+        // 节流。连点时真正需要的相邻页已由 _prerender_for_navigation 按全量
+        // DPR 覆盖，泵的深前瞻在这里是纯负收益。
+        if (moving && this._dr_moving_frames >= 2 && !this._dr_flipping_rapidly()) {
             this._dr_start_prerender_pump();
         }
 
@@ -2444,19 +2461,56 @@ class DocumentReaderManager {
         }
     }
 
-    /** 翻页时预渲染目标页及相邻页 */
+    /** 翻页时预渲染目标页及相邻页
+     *
+     * 窗口只取 ±1（勿改回 ±5，2026-10-02 实测）：一次程序化翻页会连带
+     * 派发 6 次整页栅格化、163MB 位图、14 次画布 backing store 重分配——
+     * 目标页 1 次(1.5x/45MB) + 前后各 1 页(1.5x/41MB + 4 页 1x/20MB)。
+     * 每条提交都要挤过 48ms 全局节流（≈3 帧），于是翻页后有 ~26 帧的
+     * 提交尾巴在跑，用户感知就是「翻完还要等一会儿才稳」。
+     *
+     * ±1 是需求驱动的最小充分深度：向前翻的用户下一步只会去 p_{n+1}，
+     * p_{n±2} 至少隔两次点击。滚动方向的深度前瞻另有两条专用通道
+     * （_check_page_visibility 的预渲染窗口 + 紧急预渲染泵，均按屏/按帧
+     * 推进），本方法只服务程序化翻页，收窄不影响滑动流畅度。 */
     _prerender_for_navigation(target_index) {
         if (!this._prerender_enabled) return;
 
         const pages = this.page_manager.pages_list;
         const prerender_indices = [];
 
-        // 预渲染目标页的前后各5页
-        for (let offset = -5; offset <= 5; offset++) {
+        // 预渲染目标页的前后各 1 页
+        for (let offset = -1; offset <= 1; offset++) {
             const idx = target_index + offset;
             if (idx >= 0 && idx < pages.length && idx !== this.active_page_index) {
                 const pd = pages[idx];
                 if (pd && !pd.is_visible && !pd.pdf_render_promise) {
+                    // DOM 预挂载（翻页语义专有，勿删）：
+                    // _schedule_prerender 的过滤条件是 `pd.is_virtualized ||
+                    // !pd.page_element → 丢弃`，理由是「主动重建的页会被随后的
+                    // 虚拟化清理再次卸载，形成 mount/unmount 循环」。该理由只对
+                    // **滚动中**成立——滚动方向的 DOM 预挂载由紧急预渲染泵按
+                    // 1 页/帧推进，而泵仅在 moving 时运转。
+                    // 程序化翻页是单帧冲量：moving 只在那一帧为真，泵来不及
+                    // 把目标邻域挂上，于是 p24~p34 全部因「无 DOM」被过滤掉
+                    // （实测跳转到远页：13 次 _render_pdf_page_direct 里只有
+                    // 2 次真正派发，p31~p35 一个都没预渲染）——跳转之后紧接着
+                    // 的下一页必然重新栅格化，正是「翻页有明显延迟」的来源。
+                    //
+                    // 这里显式挂载是安全的：目标邻域落在 wrapper_keep 窗口内，
+                    // _recycle_execute('unmount') 的卸载判据同为该窗口，
+                    // 挂载后不会被回收；且本次是冲量（无手势暂停），泵不会
+                    // 与本处形成对抗抖动。
+                    //
+                    // 窗口基准必须用 target_index 而非 active_page_index：
+                    // 远跳时 _check_page_visibility 的「远跳两样本确认」会让
+                    // active_page_index 滞后一帧（本函数正是紧跟在其后调用），
+                    // 用旧 active 量距会把目标邻域整片判到窗口外，远跳后预渲染
+                    // 覆盖仍然为零——正是要修的那个症状本身。
+                    if (this._dom_virtualize() && !pd.page_element && this._zoom_wrapper &&
+                        Math.abs(idx - target_index) <= this._wrapper_keep_distance) {
+                        this._ensure_page_element(idx);
+                    }
                     prerender_indices.push(idx);
                 }
             }
@@ -2562,10 +2616,14 @@ class DocumentReaderManager {
             if (!pd) continue;
             if (pd.is_visible || pd.is_virtualized || pd.pdf_render_promise ||
                 pd._dr_commit_pending) continue;
+            // 两种模式通用：未挂载的页 _render_pdf_page_direct 会因 page_element 为
+            // null 直接 return，选它只会每帧空转同一目标（实测跳转到远页时
+            // 一次翻页 13 次调用里有 10 次是这类空转）。DOM 预挂载由本方法
+            // 上方的循环按 1 页/帧推进，挂上后自然进入候选。
+            if (!pd.page_element) continue;
             if (gesture) {
-                // 占位只服务 pdfjs 页（渲染入口对其它模式直接 return，选它会
-                // 每帧空转同一目标），且要求元素已挂载（渲染入口硬性前置条件）
-                if (pd.render_mode !== 'pdfjs' || !pd.page_element) continue;
+                // 占位只服务 pdfjs 页（渲染入口对其它模式直接 return）
+                if (pd.render_mode !== 'pdfjs') continue;
                 // 平移手势中 css_w 恒定：守卫非空 = 已有任何内容（含低清旧占位），
                 // 不重画，继续向前找真正空白的页——泵的意义是前缘覆盖；
                 // 变清晰/换参数由停稳后的恢复补扫统一处理
