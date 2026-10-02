@@ -42,6 +42,109 @@ function _pdf_quantize_render_dpr(d) {
     return d; // 超出阶梯上限（理论不会发生，dprMax 兜底）：原样返回
 }
 
+/**
+ * 向下取阶梯档（硬上限专用）。
+ * _pdf_quantize_render_dpr 向上取整是「清晰度永不低于目标」的保底，
+ * 但位图宽度上限是**显存/纹理上传**的硬约束，向上取整会突破它——
+ * 故上限路径必须用向下取整，语义与取整方向相反，不可混用。
+ */
+function _pdf_quantize_render_dpr_floor(d) {
+    for (let i = PDF_DPR_LADDER.length - 1; i >= 0; i--) {
+        const r = PDF_DPR_LADDER[i];
+        if (r <= d + 1e-6) return r;
+    }
+    return PDF_DPR_LADDER[0];
+}
+
+/**
+ * 单页位图的设备像素宽上限（见 _pdf_cap_render_dpr，勿删）。
+ *
+ * 依据：页面按 fit-width 铺满视口宽度（_get_page_base_width = 容器宽 - 32），
+ * 而 A4 原生仅 595pt 宽——fit-width 下页面本身就放大了 3 倍以上。因此
+ * 「位图宽度 = CSS 宽 × 显示DPR × 缩放比」在 DPR≥1.5 的笔记本上是纯粹的
+ * 面积浪费：CSS transform 放大的是**显示层**，位图密度只需覆盖屏幕上真正
+ * 看得见的那部分设备像素。
+ *
+ * 取 3072 = A4 约 370 DPI / Letter 约 360 DPI，已远超肉眼分辨阈
+ * （正文在 fit-width 下本就以 3x+ 原生尺寸呈现）。
+ */
+/** 单页位图的设备像素宽上限默认值（可运行时改，见 __setRasterCap）。
+ *
+ * 取 2048 = A4 约 248 DPI / Letter 约 240 DPI。这是主流 PDF 阅读器的常规量级
+ * （Chrome 内置阅读器同档），正文清晰度无可见损失；1920 窗口 DPR=2 下
+ * 单页纹理 31.5MB(2560 档) → **20.2MB**，栅格化耗时同比例下降。
+ *
+ * 为何一路下调：3072 时本机单页 45.4MB，四份真机 trace 显示 GPU 进程每秒
+ * 跑 0.9~1.7 秒工作（主线程始终 0 个 ≥50ms 任务，瓶颈铁证在 GPU 侧），
+ * 且渲染线程单页栅格化耗时 570~1240ms。栅格化耗时与 GPU 纹理量
+ * **都随像素数线性增长**，降分辨率是唯一同时压住这两个成本的方向。
+ * T4（2560 档）已把帧间隔 p90 从 205ms 拉回 17.6ms，主体稳在 60fps，
+ * 但仍有 570ms 的单页栅格化毛刺——继续下调是唯一剩下的、无副作用的杠杆。
+ *
+ * 运行时可调而非写死：真机只有用户能定「清晰度 ↔ 流畅度」的平衡点。
+ * Console 里 __rasterCap() 读当前值、__setRasterCap(px) 改（立即生效，
+ * 下一帧起按新参数重渲染）。嫌糊就 __setRasterCap(2560) 现场调回。
+ */
+const PDF_RASTER_MAX_DEV_W_DEFAULT = 2048;
+
+/**
+ * 放大时的清晰度余量（上限 = 基准 × min(1+(scale-1), 余量)）。
+ *
+ * 为什么放大需要额外余量：页面盒的 CSS 宽**不随缩放变**（缩放是 wrapper 上的
+ * CSS transform，位图被整体放大）。所以固定像素上限等于把放大后的清晰度一并
+ * 钉死——1x 渲出的 1888px 位图在 4x 缩放下要铺开 7552 屏幕 CSS px，等于 4 倍
+ * 上采样，看起来就是糊的。位图宽度必须随 scale 增长才可能在放大后仍然清晰。
+ *
+ * 为什么只给有限余量：全页按「放大后仍锐利」所需的密度栅格化，像素量随 scale
+ * **平方**增长。css_w=1888 时 scale=4 想要 1:1 屏幕像素需位图宽 7552
+ * = 322MB 单张纹理——这正是四份真机 trace 之前 552MB 那一档的由来。
+ * 故余量封顶：默认 2 倍基准（2048→4096），即 1x→2x 放大时位图宽度翻倍
+ * （dpr 1→2），有可感知的清晰度提升；再往上放大则封顶不再增长。
+ *
+ * 真正无上限的放大清晰度需要「只栅格化视口内的那一条带」（页级分块渲染），
+ * 那是架构级改动，不在本次范围。
+ */
+const PDF_RASTER_ZOOM_HEADROOM = 2;
+
+/** 计算某一缩放级别下的位图宽上限（纯函数，便于单测） */
+function _pdf_raster_limit(base_dev_w, scale, headroom) {
+    const base = (base_dev_w > 0) ? base_dev_w : PDF_RASTER_MAX_DEV_W_DEFAULT;
+    const s = (scale > 0 && Number.isFinite(scale)) ? scale : 1;
+    const hr = (headroom >= 1 && Number.isFinite(headroom)) ? headroom : PDF_RASTER_ZOOM_HEADROOM;
+    return base * Math.min(1 + Math.max(0, s - 1), hr);
+}
+
+/**
+ * 把控制器给出的 DPR 目标夹到位图宽度上限之内。
+ *
+ * 未设上限时的实测（本机 DPR=2，A4，1920 窗口 fit-width，css_w=1888）：
+ *   scale=1  → dpr 2   → 3776×5340 =  77MB 单张纹理
+ *   scale=2  → dpr 4   → 7552×10680 = 308MB
+ *   2560 窗口 scale=4 → dpr 4 → 10112×14300 = 552MB
+ * 而 _pdf_commit_render_result 的 48ms 全局提交节流是按「单条 commit
+ * 8~20MB 会引起 300~600ms 帧饿」标定的（见该处注释）——HiDPI 下每条都是
+ * 它的 4~7 倍，节流只能限频、限不住单条体积。
+ *
+ * @param {number} max_dev_w - 该缩放级别下的位图宽上限（设备像素），
+ *   由 _pdf_raster_limit 按 scale 算好后传入，以便运行时调参
+ */
+function _pdf_cap_render_dpr(css_w, dpr, max_dev_w) {
+    if (!(css_w > 0)) return dpr;
+    const limit = (max_dev_w > 0) ? max_dev_w : PDF_RASTER_MAX_DEV_W_DEFAULT;
+    const cap = limit / css_w;
+    if (!(dpr > cap)) return dpr;               // 未超上限：控制器目标原样保留
+    let floored = _pdf_quantize_render_dpr_floor(cap);
+    // 不得低于 1:1（每 CSS 像素至少 1 个设备像素）。绝对像素上限与 DPR 无关，
+    // 宽窗上会把 DPR=1 用户一起压下去：css_w=2528 时 2048/2528=0.81 → 0.75x，
+    // 即在非 HiDPI 屏上也主动糊图（229 DPI）。而宽窗本就有自然补偿——页面已被
+    // 拉伸到 2528 css px，dpr 1 下已是 305 DPI，无需再降。上限只该在
+    // 「css_w ≤ 上限」的窗口上起作用，那正是 HiDPI 成本失控的地方。
+    if (floored < 1 && dpr >= 1) floored = 1;
+    // 上限低于阶梯最低档（极窄视口 + 极高 DPR）：取最低档，宽度仍可能超
+    // 上限——但此时位图本身极小，远在安全范围内，不引入无意义的失败分支。
+    return Math.min(floored, dpr);
+}
+
 class DocumentReaderManager {
     constructor() {
         this.is_open = false;
@@ -220,6 +323,72 @@ class DocumentReaderManager {
         // 已初始化 tile 的页面索引集合（_dr_apply_scale 仅遍历此集合，跳过无 tile 页面）
         this._pages_with_tiles = new Set();
 
+        this._dr_flip_recent_until = 0;     // 最近一次程序化翻页的「连点窗口」截止时刻
+        this._dr_flip_rapid_window_ms = 260; // 连点判定窗口：低于它算一次意图
+        // 运动期页面栅格化降密度（滑动/连点时用，停止后自动升回全量）。
+        // 取值 0.75：阶梯档值，1920 窗口 A4 单页 45MB → 11MB（4 倍），
+        // 常驻纹理随 ~17 个包裹从 ~765MB 降到 ~190MB。依据见 _pdf_motion_dpr_active。
+        this._DR_MOTION_DPR_MAX = 0.75;
+        // 运行时开关：__motionDprCap() 读；__setMotionDprCap(v) 写（0 = 关闭）。
+        // 用于 A/B 判定「滑动起手卡一下」是否来自运动期降密度。
+        window.__motionDprCap = () => this._DR_MOTION_DPR_MAX;
+        window.__setMotionDprCap = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n) || n < 0) {
+                console.warn('[motionDprCap] 非法值（需 >=0 的有限数，0=关闭），已忽略:', v);
+                return this._DR_MOTION_DPR_MAX;
+            }
+            const old = this._DR_MOTION_DPR_MAX;
+            this._DR_MOTION_DPR_MAX = (n === 0) ? 0 : n;
+            console.log(`[motionDprCap] ${old} → ${this._DR_MOTION_DPR_MAX}` + (n === 0 ? '（已关闭运动期降密度）' : ''));
+            return this._DR_MOTION_DPR_MAX;
+        };
+        this._DR_MOTION_DPR_HOLD_MS = 420; // 停止后维持低密度的时长（长窗出，防抖动）
+        // 运行时调节页面栅格化分辨率上限（真机定档用，详见 PDF_RASTER_MAX_DEV_W_DEFAULT）。
+        // __rasterCap() 读当前值；__setRasterCap(px) 改并立即对可见页重新生效。
+        // 最小 1024（再低位图已无法承载正文），非有限值或缺参一律拒绝并原样返回。
+        window.__rasterCap = () => this._raster_max_dev_w;
+        window.__setRasterCap = (px) => {
+            const v = Number(px);
+            if (!Number.isFinite(v) || v < 1024) {
+                console.warn('[rasterCap] 非法值（需 >=1024 的有限数），已忽略:', px);
+                return this._raster_max_dev_w;
+            }
+            const old = this._raster_max_dev_w;
+            this._raster_max_dev_w = Math.round(v);
+            console.log(`[rasterCap] ${old} → ${this._raster_max_dev_w}`);
+            // 立即让可见页按新上限收敛：置空位图缓存条目的守卫会让
+            // _render_pdf_page_direct 的参数守卫重新判定为「不达标」而重渲染。
+            this._bitmap_cache_clear();
+            if (this.is_open) {
+                this._dr_motion_dpr_until = 0;   // 勿让运动期降密度掩盖本次调参
+                this._dr_arm_motion_upgrade();
+                this._check_page_visibility();
+            }
+            return this._raster_max_dev_w;
+        };
+        this._dr_motion_dpr_until = 0;
+        this._dr_motion_upgrade_timer = null;  // hold 到期后的升清补扫定时器
+        // 单页位图宽上限（设备像素）。可运行时改（__setRasterCap），定档后
+        // 把选中的值固化回 PDF_RASTER_MAX_DEV_W_DEFAULT。
+        this._raster_max_dev_w = PDF_RASTER_MAX_DEV_W_DEFAULT;
+        // 放大清晰度余量：上限 = 基准 × min(1+(scale-1), 余量)。默认 2。
+        // 运行时可调（__zoomHeadroom / __setZoomHeadroom）——余量越大放大越锐，
+        // 但 2x 以上时单页纹理向 300MB 级别飞涨，GPU 侧扛不住。
+        this._zoom_headroom = PDF_RASTER_ZOOM_HEADROOM;
+        window.__zoomHeadroom = () => this._zoom_headroom;
+        window.__setZoomHeadroom = (n) => {
+            const v = Number(n);
+            if (!Number.isFinite(v) || v < 1) {
+                console.warn('[zoomHeadroom] 非法值（需 >=1 的有限数），已忽略:', n);
+                return this._zoom_headroom;
+            }
+            const old = this._zoom_headroom;
+            this._zoom_headroom = v;
+            console.log(`[zoomHeadroom] ${old} → ${v}`);
+            if (this.is_open) { this._bitmap_cache_clear(); this._check_page_visibility(); }
+            return this._zoom_headroom;
+        };
         // ====== 增量回收（分批执行，防全量清理尖峰） ======
         // 旧实现：每页隐藏定时器触发一次 O(N) 全量扫描+当场回收——快滑 40 页
         // 实测 35 次扫描、单次最大 57.7ms 的主线程尖峰（longtask）。
@@ -997,6 +1166,11 @@ class DocumentReaderManager {
             clearTimeout(this._render_resume_timer);
             this._render_resume_timer = null;
         }
+        if (this._dr_motion_upgrade_timer != null) {
+            clearTimeout(this._dr_motion_upgrade_timer);
+            this._dr_motion_upgrade_timer = null;
+        }
+        this._dr_motion_dpr_until = 0;
         this._render_pause_until = 0;
         for (const job of this._deferred_commits.values()) {
             this._dr_discard_commit_job(job);
@@ -3002,7 +3176,68 @@ class DocumentReaderManager {
         return 1;
     }
 
-    /** 计算某页当前期望的 PDF 渲染参数（渲染起点与完成后收敛检查共用，避免两处漂移） */
+    /**
+     * 运动期是否应降低页面栅格化密度（滑动 / 连续翻页）。
+     *
+     * 依据（真机 trace，2026-10-02）：卡顿**不在主线程**——CrRendererMain 在
+     * 11.3s 跨度内没有任何 >=50ms 的任务（单次最长 49.2ms），29 个卡顿帧
+     * （>50ms）中 29 个主线程都几乎空闲；GPU 进程的 >50ms 任务 100% 落在
+     * 卡顿帧窗口内，单条 GPUTask 最长 314ms。即：瓶颈是 GPU 侧纹理吞吐，
+     * 而主线程编排（栅格化扇出、瓦片错峰、DOM 挂载）全都不是瓶颈。
+     *
+     * 纹理量就是唯一有效的杠杆。1920 窗口 fit-width 的 A4 单页位图：
+     *   1.5x = 2832×4005 = 45MB（静止目标密度）
+     *   0.75x = 1416×2003 = 11MB（运动期上限，降 4 倍）
+     * 而 _wrapper_keep_distance=8 让约 17 个包裹常驻，纹理常驻量随之
+     * 从 ~765MB 降到 ~190MB。
+     *
+     * 进入运动即刻降、停止后延 _DR_MOTION_DPR_HOLD_MS 再升：短窗进长窗出，
+     * 避免滑动中 dy 短暂归零造成「降↔升」反复重栅格化。
+     * 捏合缩放中不降密度——放大时降密度等于主动把画面做糊。
+     */
+    _pdf_motion_dpr_active() {
+        if (this._dr_is_zooming) { this._dr_motion_dpr_until = 0; return false; }
+        const now = performance.now();
+        if (this._dr_renders_paused() || this._dr_flipping_rapidly()) {
+            this._dr_motion_dpr_until = now + this._DR_MOTION_DPR_HOLD_MS;
+            return true;
+        }
+        return now < this._dr_motion_dpr_until;
+    }
+
+    /** 运动期 DPR 上限（阶梯档值，故无需再量化；其余档位一律走向上取整保底）
+     *  返回 0 / Infinity 表示「不设上限」，即完全关闭运动期降密度。 */
+    _pdf_motion_dpr_cap() {
+        if (!this._pdf_motion_dpr_active()) return Infinity;
+        const v = Number(this._DR_MOTION_DPR_MAX);
+        return (Number.isFinite(v) && v > 0) ? v : Infinity;
+    }
+
+    /**
+     * 武装「运动期降密度 → 停止后升清」的补扫（勿删，否则页面永久停在低密度档）。
+     *
+     * 降密度在运动停止后还要维持 _DR_MOTION_DPR_HOLD_MS（长窗出，防抖动），
+     * 而 _dr_on_render_resume 只在 170ms 后触发——**早于** hold 到期。此时补扫
+     * 算出的 want.target_dpr 仍是低密度档，need_sharp=false，什么都不会升清。
+     * 之后若用户不再有任何输入，就没有 transform 变化 → 没人再调
+     * _check_page_visibility → 页面停在 0.75x 直到下次交互。
+     * 故必须在 hold 到期后主动补扫一次。
+     */
+    _dr_arm_motion_upgrade() {
+        if (this._dr_motion_upgrade_timer != null) clearTimeout(this._dr_motion_upgrade_timer);
+        const remain = Math.max(0, this._dr_motion_dpr_until - performance.now());
+        this._dr_motion_upgrade_timer = setTimeout(() => {
+            this._dr_motion_upgrade_timer = null;
+            if (!this.is_open) return;
+            // 又开始动了：交给下一轮手势结束再补扫
+            if (this._pdf_motion_dpr_active()) { this._dr_arm_motion_upgrade(); return; }
+            this._check_page_visibility();
+        }, remain + 20);
+    }
+
+    /** 计算某页当前期望的 PDF 渲染参数（渲染起点与完成后收敛检查共用，避免两处漂移）。
+     *  target_dpr = 阶梯量化 → 位图宽度上限夹取 → 运动期上限夹取。
+     *  三条通道都必须走，缺一条就会出现「收敛检查认为达标但实际超上限」的不一致。 */
     _pdf_desired_render_params(page_index, page_data, is_prerender, is_placeholder = false) {
         const css_w = Math.round(parseFloat(page_data.page_element.style.width)) || page_data.page_element.clientWidth || 800;
         const scale = this.dr_scale || 1;
@@ -3012,6 +3247,47 @@ class DocumentReaderManager {
             // 停稳后由恢复补扫的 need_sharp force 判定接管升清（0.5x < 目标必触发）
             return { css_w, target_dpr: 0.5 };
         }
+        // 运动期上限：滑动/连点期间把「全量」压到 _DR_MOTION_DPR_MAX。
+        // 占位（0.5x）比它低，不受此门影响；升清由恢复补扫的 need_sharp 驱动。
+        const cap = this._pdf_motion_dpr_cap();
+        // 位图宽上限随缩放增长（放大后才有清晰度余量，见 _pdf_raster_limit）。
+        //
+        // ⚠️ 余量只给**活动页**，不给邻页/预渲染页（2026-10-02，硬件前提：
+        // 本机是 Intel UHD 核显 + 共享系统内存，无独立显存——纹理就在系统内存
+        // 里，与渲染线程栅格化抢同一条内存总线）。
+        // 原因：calc_tile_dpr 对邻页返回 role:'neighbor' → min(dpr,2)，放大态下
+        // **窗口内每一页都会取到 dpr 2**。全页全量放大 = 常驻纹理 ×4：
+        //   1920 窗口、±5 窗口约 11 页：1x 态 11×19.2MB=211MB
+        //                                      2x 态 11×77MB =847MB
+        // 共享内存下这是压垮性的。只给活动页则是：滚到哪页哪页才升到放大密度，
+        // 邻页保持 1x，滚过去时再升——观感是渐进变清晰，而不是整屏一起暴涨。
+        const is_active_page = (page_index === this.active_page_index);
+        const raster_limit = _pdf_raster_limit(
+            this._raster_max_dev_w, scale,
+            is_active_page ? this._zoom_headroom : 1);
+        // ⚠️ 运动期上限只作用于「从未渲染过、且不是预渲染」的页（2026-10-02
+        // 用户实测「刚开始滑动时卡一下」，两档分辨率都复现）。另外两类页**必须
+        // 排除**，否则降级省下的纹理远抵不过它带来的重分配：
+        //
+        // ① 已有内容的可见页：降级要一次新栅格化 + 一次画布 backing store
+        //    重分配（1.25x→0.75x 即 31.5MB→11.3MB 的画布尺寸变更），而后者是
+        //    本文件 _pdf_commit_render_result 注释记录的 ~200ms 帧饿头号成因。
+        //    降级滞回守卫拦不住这一档（1.25 > 0.75×1.35=1.01）→ 直接触发。
+        //    等于为省纹理，在滑动起手那一帧付了最大代价。
+        //
+        // ② 预渲染页：成果还没上屏，改小看着没事，但该页一进入视口
+        //    need_sharp 立刻为真 → force 升清回全量。每页两次渲染 + 两次
+        //    画布重分配，比不降级更糟。
+        //
+        // 真正需要「便宜」的场合已经由既有机制覆盖：滑动中新进入视口的页走
+        // 0.5x 占位路径（is_placeholder，早于本函数返回，且提交豁免节流），
+        // 停稳后由恢复补扫统一升清——这正是「运动期低清、停手后恢复」的正解，
+        // 不需要第二套机制。本上限只补它没覆盖的场景：快速翻页时目标页
+        // （无手势暂停，渲染不被拦，此刻从无内容）直接按低清起步。
+        const clamp_motion = (d) => {
+            if (page_data.pdf_render_css_width > 0 || is_prerender) return d;
+            return d > cap ? cap : d;
+        };
         if (is_prerender) {
             // 预渲染分级：与活动页相邻的页（翻页立即看到的页）直接按全量 DPR
             // 栅格化——翻页瞬间无需再等一次高清重渲染；更远的页才降 1x 省资源
@@ -3019,18 +3295,24 @@ class DocumentReaderManager {
             if (dist > 1) return { css_w, target_dpr: 1 };
             return {
                 css_w,
-                target_dpr: _pdf_quantize_render_dpr(this._calculate_adaptive_dpr(scale, false, true))
+                target_dpr: _pdf_cap_render_dpr(
+                    css_w,
+                    _pdf_quantize_render_dpr(this._calculate_adaptive_dpr(scale, false, true)),
+                    raster_limit)
             };
         }
         return {
             css_w,
-            target_dpr: _pdf_quantize_render_dpr(
-                this._calculate_adaptive_dpr(
-                    scale,
-                    page_index === this.active_page_index,
-                    !!page_data.is_visible
-                )
-            )
+            target_dpr: clamp_motion(_pdf_cap_render_dpr(
+                css_w,
+                _pdf_quantize_render_dpr(
+                    this._calculate_adaptive_dpr(
+                        scale,
+                        page_index === this.active_page_index,
+                        !!page_data.is_visible
+                    )
+                ),
+                raster_limit))
         };
     }
 
@@ -3502,6 +3784,10 @@ class DocumentReaderManager {
         this._dr_drain_tile_init_queue();
         // 最后补扫恢复被挂起的渲染启动 + 把新可见页送入瓦片错峰队列
         this._check_page_visibility();
+        // 运动期降密度在 hold 到期后还要升清，而本回调早于它（见
+        // _dr_arm_motion_upgrade）。必须在这里武装，否则静止后无人补扫，
+        // 页面永久停留在低密度档。
+        this._dr_arm_motion_upgrade();
         // 补扫之后再续批回收——用 rIC 让出：恢复帧已有挂起提交回贴+瓦片错峰
         // 两件事，回收批（单页最重 ~12ms）叠上去会突破帧预算。执行时重验
         // is_visible，已回可见页自动跳过。
@@ -4127,10 +4413,17 @@ class DocumentReaderManager {
         // 位图留档：虚拟化卸载前把已渲染内容收进字节预算缓存，
         // 翻回该页时直接回贴（零重栅格化）——卸载不再意味着重渲染。
         // 同参数条目已存在时跳过（复用缓存，不产生第二份位图）
+        //
+        // ⚠️ 运动期一律不留档（2026-10-02 真机 trace）：createImageBitmap(canvas)
+        // 是 GPU→CPU 同步回读，会 flush 管线。快速滑动时每页滑出 keep 窗口
+        // 都会走这里，等于每页一次回读；而滑动中翻回这些页的概率极低，
+        // 留档的命中率与代价严重不成比例。停稳后不再有卸载事件，
+        // 真正"滑远处再回来"的场景由停止后新发生的卸载覆盖。
         const canvas = page_data.pdf_canvas;
         if (canvas && canvas.width > 0 && canvas.height > 0
             && page_data.pdf_render_css_width > 0 && page_data.pdf_render_dpr > 0
-            && !this._bitmap_cache_peek(page_index, page_data.pdf_render_css_width)) {
+            && !this._bitmap_cache_peek(page_index, page_data.pdf_render_css_width)
+            && !this._pdf_motion_dpr_active()) {
             const css_w = page_data.pdf_render_css_width;
             const dpr = page_data.pdf_render_dpr;
             const w = canvas.width, h = canvas.height;
@@ -4614,7 +4907,6 @@ class DocumentReaderManager {
         page_data.is_tiles_initialized = true;
         this._pages_with_tiles.add(page_index);
 
-        // 注入 tile 层诊断钩子（localStorage.drDiag=1 时启用详细日志）
         if (this._diag_verbose === undefined) {
             try { this._diag_verbose = localStorage.getItem('drDiag') === '1'; } catch (_) { this._diag_verbose = false; }
         }
@@ -5567,6 +5859,9 @@ class DocumentReaderManager {
         this._update_button_status();
     }
 
+    _dr_flipping_rapidly() {
+        return performance.now() < this._dr_flip_recent_until;
+    }
     // ====== 页面导航 ======
 
     async handle_page_nav_prev() {
