@@ -66,14 +66,21 @@ No test framework / bundler / `package.json`. Verification is:
 
 ### Render perf tiers (`settings.renderPerfTier`)
 
-Three extra scripts, all `node <file>`, all exit non-zero on failure:
+Seven extra scripts, all `node <file>`, all exit non-zero on failure:
 
 | Script | What it proves |
 |---|---|
 | `verify/perf-tier-apply.mjs` | Executes the real `apply_perf_tier` against a mock reader: all 13 params land on the right instance fields, invalid tiers fall back to `balanced`, canvas pool is trimmed, render-host throttle is released, no visibility rescan while closed |
 | `verify/perf-tier-scoring.mjs` | OOBE `_autoPerfTier()` against fixed hardware profiles — incl. the 5th-gen i5 target and "WMI returned nothing" (must stay `balanced`, never silently `low`) |
 | `verify/reader-momentum.mjs` | Inertial fling: per-frame cost is bounded, bounds are **not** recomputed mid-fling (DOM reads = 0), prerender pump is stopped on fling start, visibility is refreshed but rate-limited to ~33 ms, the closing pass doesn't scan twice |
-| `verify/perf-tier-mutation.mjs` | Mutates each invariant and asserts the suite goes red (34 mutations). **Run it after editing any of the three above or the tier table** — a guard that can't fail is worthless |
+| `verify/reader-rotation.mjs` | Page rotation: all three render paths (worker / main-thread / thumbnail) pass the same `rotation`, rotation invalidates the render guards, annotations + undo stack + coord base are cleared, rotation rides along with the tab view and persists |
+| `verify/reader-confirm.mjs` | The reader's confirm dialog **executed** against a mock DOM: all exits settle, `done` is idempotent, re-opening settles the previous promise, no `keydown` leak |
+| `verify/oobe-skip-check.mjs` | All 9 locales carry `oobe.updateSkipCheck`, and it stays **distinct** from `updateLater` — the two mean different things ("abandon the check" vs "skip this update"), so reusing one key silently merges them and no error surfaces |
+| `verify/perf-tier-mutation.mjs` | Mutates each invariant and asserts the suite goes red (68 mutations). **Run it after editing any of the above or the tier table** — a guard that can't fail is worthless |
+
+Static regex guards cannot see control-flow bugs. A real shipped regression — `const overlay` reassigned, throwing `TypeError` on every dialog open — passed **every** regex guard in `reader-rotation.mjs`. When you touch a code path that only manifests at runtime, add a test that *runs* it (`perf-tier-apply.mjs` and `reader-confirm.mjs` are the two examples).
+
+Never `await` a promise in a test without a timeout race: a promise that never settles leaves an empty event loop, and Node exits **0** — the assertion is silently skipped and the test passes. `reader-confirm.mjs` has a `settle()` helper for exactly this.
 
 Invariants they collectively defend (edit the table, not the field list):
 
@@ -82,6 +89,7 @@ Invariants they collectively defend (edit the table, not the field list):
 - Only `init.js` (startup replay) and `main.js` (`settings-changed`) may call `apply_perf_tier`. Calling it in the settings panel too would run the clear-cache + rescan pass twice per change.
 - The per-tier hint text has exactly one writer (JS). Don't put `data-i18n` on `#renderPerfTierHint` — `render_page_texts()` would overwrite the tier-specific copy and language switching wouldn't refresh it.
 - `_dr_update_move_bound()` reads DOM and is driven by **pinch/wheel (60–120 Hz)** plus `_dr_apply_scale`, *not* by the momentum tick (`_dr_update_canvas_position` only clamps). Its cache is invalidated by `_dr_mb_dom_dirty`, set from `_invalidate_page_positions()` and `_on_reader_geometry_changed()`. A `16ms TTL` "read once per frame" throttle can never hit at ~16.7 ms frames — that was the bug.
+- Sidebar geometry is anchored to two single sources of truth: `--app-titlebar-h` (top) and `--dr-toolbar-band` (bottom, measured at runtime because the toolbar is ~63 px with labels and ~54 px without). Both are body-level overlays sharing the bottom-right corner.
 
 Also note: grep the whole repo **must** be scoped to `src/` — `src-tauri/` has ~25k files
 and will time out.
