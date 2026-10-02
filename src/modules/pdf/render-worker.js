@@ -132,13 +132,18 @@ self.onmessage = async (e) => {
             }
 
             case 'render': {
-                const { req, pageNum, cssW, dpr } = msg;
+                const { req, pageNum, cssW, dpr, rotation } = msg;
                 try {
                     if (!pdf_doc) throw new Error('render worker: document not open');
                     const page = await _get_page(pageNum);
-                    const base = page.getViewport({ scale: 1 });
+                    // rotation 必须进 getViewport：90/270 会让 base 宽高互换，
+                    // css_scale 由 base.width 推出，cssW 因此是「旋转后的页宽」，
+                    // 与主线程路径同口径。缺了 rotation 会与主线程渲染出不同朝向，
+                    // 且 pageW/pageH 回传未旋转尺寸，页盒比例会算错。
+                    const rot = ((rotation | 0) % 360 + 360) % 360;
+                    const base = page.getViewport({ scale: 1, rotation: rot });
                     const css_scale = cssW / base.width;
-                    const viewport = page.getViewport({ scale: css_scale * dpr });
+                    const viewport = page.getViewport({ scale: css_scale * dpr, rotation: rot });
                     const w = Math.max(1, Math.ceil(viewport.width));
                     const h = Math.max(1, Math.ceil(viewport.height));
 

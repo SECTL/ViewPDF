@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "렌더링 오류 감지, 복구 중…",
     "recovered": "복구됨",
-    "recoverFailed": "페이지 렌더링 오류입니다. 문서를 다시 열어 주세요"
+    "recoverFailed": "페이지 렌더링 오류입니다. 문서를 다시 열어 주세요",
+    "rotateTitle": "페이지 회전",
+    "rotateClearWarn": "회전하면 이 문서의 모든 注석이 삭제됩니다(注석 좌표는 페이지 방향에 묶여 있어 회전 시 유지되지 않습니다). 계속하시겠습니까?"
   },
   "settings": {
     "title": "설정",

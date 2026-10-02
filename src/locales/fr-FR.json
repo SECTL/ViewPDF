@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "Problème de rendu détecté, récupération…",
     "recovered": "Récupéré",
-    "recoverFailed": "Erreur de rendu. Fermez puis rouvrez le document"
+    "recoverFailed": "Erreur de rendu. Fermez puis rouvrez le document",
+    "rotateTitle": "Faire pivoter les pages",
+    "rotateClearWarn": "La rotation efface toutes les annotations de ce document (leurs coordonnées sont liées à l'orientation de la page et ne peuvent pas être conservées). Continuer ?"
   },
   "settings": {
     "title": "Paramètres",

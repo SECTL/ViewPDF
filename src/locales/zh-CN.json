@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "检测到渲染异常，正在自动恢复…",
     "recovered": "已恢复",
-    "recoverFailed": "页面渲染异常，请关闭后重新打开该文档"
+    "recoverFailed": "页面渲染异常，请关闭后重新打开该文档",
+    "rotateTitle": "旋转页面",
+    "rotateClearWarn": "旋转会清空当前文档的全部批注（批注坐标与页面朝向绑定，无法随旋转保留）。确定继续？"
   },
   "settings": {
     "title": "设置",

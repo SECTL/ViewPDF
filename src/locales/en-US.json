@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "Rendering issue detected, recovering…",
     "recovered": "Recovered",
-    "recoverFailed": "Page rendering error. Please close and reopen this document."
+    "recoverFailed": "Page rendering error. Please close and reopen this document.",
+    "rotateTitle": "Rotate Pages",
+    "rotateClearWarn": "Rotating clears all annotations in this document (annotation coordinates are bound to page orientation and cannot be carried over). Continue?"
   },
   "settings": {
     "title": "Settings",

@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "Problema de renderizado detectado, recuperando…",
     "recovered": "Recuperado",
-    "recoverFailed": "Error de renderizado. Cierre y vuelva a abrir el documento"
+    "recoverFailed": "Error de renderizado. Cierre y vuelva a abrir el documento",
+    "rotateTitle": "Rotar páginas",
+    "rotateClearWarn": "Al rotar se borran todas las anotaciones de este documento (las coordenadas de anotación están ligadas a la orientación de la página y no se pueden conservar). ¿Continuar?"
   },
   "settings": {
     "title": "Ajustes",

@@ -32,6 +32,11 @@
     --spacing-lg: 24px;
     --spacing-xl: 32px;
     --spacing-xxl: 48px;
+    /* 标题栏高度——全站唯一真值。凡是要「避开标题栏」的定位都必须引用它：
+       .document-reader-panel（阅读器面板 top）、.dr-page-sidebar（页面侧边栏）。
+       之前这三处各写各的（40px / 10px / calc(100vh - 80px)），侧边栏挂在 body 上
+       按视口定位，于是从 10px 处起画 —— 直接压在标题栏上。 */
+    --app-titlebar-h: 40px;
     
     --font-display: 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-body: 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -119,7 +124,7 @@ body {
 
 /* ===== Titlebar ===== */
 .titlebar {
-    height: 40px;
+    height: var(--app-titlebar-h);
     display: flex;
     align-items: center;
     border-bottom: 1px solid var(--color-hairline);
@@ -935,6 +940,81 @@ body {
 .dr-reader-toast.show {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+}
+
+/* ===== 阅读器内确认弹窗（旋转清空批注等不可撤销操作）=====
+ * z-index 高于侧边栏(100)与工具栏，但低于 toast(9000)：toast 是事后告知，
+ * 不该被确认框压住。遮罩用 rgba 而非纯黑，保留页面轮廓的上下文感。
+ */
+.dr-reader-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.dr-reader-confirm {
+    width: min(400px, calc(100vw - 48px));
+    padding: var(--spacing-lg);
+    border-radius: var(--rounded-lg);
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-hairline);
+    box-shadow: var(--shadow-lg);
+}
+
+.dr-reader-confirm-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--color-ink);
+    margin-bottom: var(--spacing-xs);
+}
+
+.dr-reader-confirm-message {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--color-muted);
+    margin-bottom: var(--spacing-lg);
+    /* 提示语可能较长（清空批注的说明），限高并允许滚动，
+       免得在低分辨率下把按钮顶出视口 */
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.dr-reader-confirm-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-xs);
+}
+
+.dr-reader-confirm-btn {
+    padding: 7px 18px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--rounded-pill);
+    background: transparent;
+    color: var(--color-ink);
+    font-size: 13px;
+    font-family: var(--font-body);
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.dr-reader-confirm-btn:hover {
+    background: var(--color-surface-card);
+}
+
+/* 危险操作（清空批注）用主色实心，与普通确认一眼区分 */
+.dr-reader-confirm-btn-danger {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: var(--color-on-primary);
+}
+
+.dr-reader-confirm-btn-danger:hover {
+    opacity: 0.88;
+    background: var(--color-primary-active);
 }
 
 .titlebar-btn {
@@ -2113,7 +2193,7 @@ body {
 /* ===== 文档阅读器面板 ===== */
 .document-reader-panel {
     position: fixed;
-    top: 40px;
+    top: var(--app-titlebar-h);
     right: 0;
     bottom: 0;
     left: 0;
@@ -2306,20 +2386,37 @@ body {
     box-shadow: 0 0 0 1px var(--color-accent, #4a9eff);
 }
 
-/* 文档阅读器页面侧边栏 */
+/* 文档阅读器页面侧边栏
+ *
+ * 高度用 top + bottom 锚定，不再写 calc(100vh - N)：
+ * 本元素挂在 body 上（与工具栏同级），此前 top:10px + height:calc(100vh - 80px)
+ * 是按「侧边栏从视口顶部开始画」算的，于是上沿压进标题栏（0~40px），
+ * 下沿又多算了一截把 80px 当成上下留白之和 —— 两个数各自都对，加起来是错的。
+ *
+ * 改为从标题栏下沿锚到「工具栏上沿」，上下各留 10px，与 .document-reader-panel
+ * （top: var(--app-titlebar-h)）共用同一真值；标题栏高度变化时两者一起跟随。
+ * position 用 fixed 而非 absolute：面板本身是 fixed 覆盖层，用 absolute 会
+ * 让侧边栏的定位基准变成文档而非视口，与面板脱钩。
+ *
+ * ⚠️ bottom 不能写死。工具栏与侧边栏同在右下角（都是 right:10px，工具栏还
+ * bottom:10px），侧边栏一旦也锚到视口底部就会整块压住工具栏。而工具栏高度
+ * 不是常量：按钮 min-height:40px + padding:8px，含文字标签时约 63px，
+ * 隐藏文字（.hide-text）时约 54px —— 两个模式差 9px，写死必然有一个错。
+ * 故 --dr-toolbar-band 由 JS 实测工具栏上沿后写入（见 _sync_sidebar_toolbar_band），
+ * 这里只声明兜底值，工具栏未测量/已隐藏时生效。
+ */
 .dr-page-sidebar {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
     gap: var(--spacing-sm);
-    position: absolute;
+    position: fixed;
     right: 10px;
-    top: 10px;
+    top: calc(var(--app-titlebar-h) + 10px);
+    bottom: calc(var(--dr-toolbar-band, 64px) + 10px);
     z-index: 100;
     width: 220px;
-    height: calc(100vh - 80px);
-    max-height: calc(100vh - 80px);
     background: var(--color-surface-elevated);
     border: 1px solid var(--color-hairline);
     border-radius: var(--rounded-lg);
@@ -2340,14 +2437,105 @@ body {
     }
 }
 
+/* 头部改为两栏：左标题、右旋转按钮。用 flex 而非绝对定位，标题过长时
+   由标题自身省略，不至于把按钮挤出可视区。 */
 .dr-page-sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
     font-size: 14px;
     font-weight: 600;
     color: var(--color-ink);
     padding: var(--spacing-xs) var(--spacing-sm);
     border-bottom: 1px solid var(--color-hairline);
     width: 100%;
+    position: relative;   /* 旋转菜单的定位基准 */
+}
+
+.dr-page-sidebar-title {
+    flex: 1;
+    min-width: 0;
     text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 旋转按钮：透明底、无边框，与工具栏按钮同一视觉语言 */
+.dr-sidebar-rotate-btn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: var(--rounded-sm);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.dr-sidebar-rotate-btn:hover {
+    background: var(--color-surface-card);
+}
+
+.dr-sidebar-rotate-btn[aria-expanded="true"] {
+    background: var(--color-surface-card);
+    color: var(--color-primary);
+}
+
+/* 旋转选项弹层：绝对定位于头部下方。侧边栏 overflow:hidden 会裁掉超出
+   侧边栏的部分，故 top 取头部高度即可，宽度收窄以贴合 220px 侧边栏。 */
+.dr-sidebar-rotate-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: var(--spacing-sm);
+    min-width: 108px;
+    padding: 4px;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--rounded-md);
+    box-shadow: var(--shadow-lg);
+    z-index: 2;
+}
+
+.dr-sidebar-rotate-menu[hidden] {
+    display: none;
+}
+
+.dr-sidebar-rotate-opt {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    border: none;
+    border-radius: var(--rounded-sm);
+    background: transparent;
+    color: var(--color-ink);
+    font-size: 12px;
+    font-family: var(--font-body);
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.dr-sidebar-rotate-opt:hover {
+    background: var(--color-surface-card);
+}
+
+.dr-sidebar-rotate-opt.active {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+}
+
+/* 复位项与角度项之间加一条分隔，避免被误认为第四个角度 */
+.dr-sidebar-rotate-reset {
+    margin-top: 4px;
+    border-top: 1px solid var(--color-hairline);
+    padding-top: 8px;
+    color: var(--color-muted);
 }
 
 .dr-page-sidebar-content {
@@ -2462,5 +2650,4 @@ body {
     border-radius: var(--rounded-xs);
     white-space: nowrap;
 }
-
 

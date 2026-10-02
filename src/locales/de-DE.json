@@ -69,7 +69,9 @@
   "reader": {
     "recovering": "Renderproblem erkannt, Wiederherstellung läuft…",
     "recovered": "Wiederhergestellt",
-    "recoverFailed": "Seitenrender-Fehler. Bitte Dokument schließen und neu öffnen"
+    "recoverFailed": "Seitenrender-Fehler. Bitte Dokument schließen und neu öffnen",
+    "rotateTitle": "Seiten drehen",
+    "rotateClearWarn": "Beim Drehen werden alle Anmerkungen dieses Dokuments gelöscht (Anmerkungskoordinaten sind an die Seitenausrichtung gebunden und lassen sich nicht übernehmen). Fortfahren?"
   },
   "settings": {
     "title": "Einstellungen",

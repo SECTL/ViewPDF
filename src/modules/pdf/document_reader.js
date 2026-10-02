@@ -324,6 +324,9 @@ class DocumentReaderManager {
         this._open_watchdog_timer = null;    // 开页自愈看门狗定时器
         this._last_resize_base_w = -1;       // 上次重布局的基准页宽（未变化则跳过重量通道）
         this._last_resize_container_h = -1;  // 上次重布局的容器高（高度变化仅需轻量校正）
+        this._toolbar_band_observer = null;  // 工具栏尺寸观测（驱动侧边栏让位高度）
+        this._page_rotation = 0;    // 页面旋转（0/90/180/270），随文档持久化
+        this._reader_confirm_settle = null;  // 在飞的确认弹窗结算函数（防 Promise 悬挂）
 
         // 缩放状态（Blackboard 风格：CSS transform translate3d + scale）
         this.dr_scale = 1;
@@ -571,6 +574,9 @@ class DocumentReaderManager {
             span.style.display = show ? '' : 'none';
         });
         toolbar.classList.toggle('hide-text', !show);
+        // 文字显隐直接改变工具栏高度（按钮 min-height 之下还有图标+文字的排版高），
+        // 侧边栏的让位高度必须跟着变，否则切换后侧边栏会重新压住工具栏。
+        this._sync_sidebar_toolbar_band();
     }
 
     _create_toolbar() {
@@ -623,6 +629,29 @@ class DocumentReaderManager {
         document.body.appendChild(toolbar);
         this._dr_tool_group = toolbar.querySelector('.toolbar-dr-group');
         this._apply_text_visibility();
+    }
+
+    /**
+     * 观测工具栏尺寸，把「视口底部 → 工具栏上沿」的距离写进 --dr-toolbar-band，
+     * 供 .dr-page-sidebar 的 bottom 让位。
+     *
+     * 为什么必须跟观测而不是只在建侧边栏时量一次：工具栏高度会随后续操作变化
+     * ——「显示工具栏文字」开关切换（.hide-text，约 63px ↔ 54px）、窗口缩放、
+     * 模式切换导致按钮数量变化。只量一次的话，侧边栏会在这些操作后重新压住工具栏，
+     * 而这类问题只在真机上复现、代码里看不出来。
+     */
+    _observe_toolbar_band() {
+        if (this._toolbar_band_observer) {
+            try { this._toolbar_band_observer.disconnect(); } catch (_) {}
+            this._toolbar_band_observer = null;
+        }
+        if (typeof ResizeObserver === 'undefined' || !this._dr_tool_group) return;
+        this._toolbar_band_observer = new ResizeObserver(() => {
+            if (!this.is_open) return;
+            // 侧边栏没开时不必写：写变量本身无害，但避免无谓的样式失效
+            if (document.getElementById('drPageSidebar')) this._sync_sidebar_toolbar_band();
+        });
+        this._toolbar_band_observer.observe(this._dr_tool_group);
     }
 
     // ====== 面板管理 ======
@@ -729,6 +758,12 @@ class DocumentReaderManager {
         // 批注已恢复：此后"空页面"延迟判定才是可靠的
         this._cache_ready = true;
 
+        // 页面旋转必须在任何首屏渲染之前落位：它是 getViewport 的入参，
+        // 晚一步就会先按 0° 栅格化一批页面，再全部作废重来。
+        // 这里直接赋值而不走 set_page_rotation：那条路径会清空批注，而批注
+        // 刚从缓存恢复（缓存里本就是「旋转后已清空」的状态，无需再清一次）。
+        this._page_rotation = (((saved_state?.page_rotation | 0) % 360) + 360) % 360;
+
         // 开页自愈看门狗：批注已恢复，立即开始校验渲染结果
         this._start_open_watchdog();
 
@@ -739,6 +774,10 @@ class DocumentReaderManager {
         this._last_resize_base_w = -1;
         this._last_resize_container_h = -1;
         this._setup_container_resize_observer();
+        // 每次 open 重挂工具栏尺寸观测：close() 断开了它，而工具栏节点常驻
+        // DOM（_create_toolbar 会因已存在而早退），不重挂就会在第一次关闭后
+        // 永久失效，工具栏高度变化不再同步给侧边栏。
+        this._observe_toolbar_band();
 
         // 恢复上次的缩放/位置/页码，或使用传入的 page_index。
         // 缓存保存后的窗口尺寸若已变化，绝对偏移失效（_adopt_saved_zoom 内处理）
@@ -949,6 +988,7 @@ class DocumentReaderManager {
             historyUndo: history_state.undo_list,
             historyRedo: history_state.redo_list,
             drawMode: this.draw_mode,
+            pageRotation: this._page_rotation,
             annSaveTimer: this._ann_save_timer
         });
     }
@@ -1002,6 +1042,10 @@ class DocumentReaderManager {
         this._page_positions = view.pagePositions;
         this.saved_history_state = view.savedHistoryState;
         this.draw_mode = view.drawMode;
+        // 旋转是**每文档**状态：留在单个实例字段上会在多标签切换时串味
+        // （A 文档转 90° → 切到 B 文档也变 90°）。必须随 tab view 存取。
+        // ?? 0 兼容捕获旋转功能之前就已存在的旧 view 快照。
+        this._page_rotation = view.pageRotation ?? 0;
         this._ann_save_timer = view.annSaveTimer;
         this.is_open = true;
         this._save_ready = true;
@@ -1216,6 +1260,11 @@ class DocumentReaderManager {
 
         // 清理窗口/容器尺寸响应管线（观测器 + 双通道定时器/raf）
         this._teardown_container_resize_observer();
+        // 工具栏尺寸观测随阅读器一起结束（它服务于阅读器内的侧边栏让位高度）
+        if (this._toolbar_band_observer) {
+            try { this._toolbar_band_observer.disconnect(); } catch (_) {}
+            this._toolbar_band_observer = null;
+        }
         // 强制完成打开后的渲染等待（快速关开时旧回调不得触发；
         // 必须主动 finish，否则无过渡环境下 Promise 悬挂会卡死 open 队列）
         if (this._panel_settle_timer !== null) {
@@ -1587,6 +1636,10 @@ class DocumentReaderManager {
             // 视图偏移的坐标基准（_get_page_base_width）：恢复时据此判断窗口尺寸
             // 是否变化，变化则丢弃绝对偏移、由 _scroll_to_page 重新锚定
             view_base_w: this._get_page_base_width(),
+            // 页面旋转（0/90/180/270）。旋转会清空批注，故它必须与笔迹一起落盘：
+            // 只存角度不存笔迹 → 下次打开角度回来了、笔迹也回来了（矛盾）；
+            // 只清笔迹不存角度 → 下次打开以 0° 渲染，用户以为旋转没生效。
+            page_rotation: include_viewport ? this._page_rotation : 0,
             last_open_date: today,
             pages: pages.map(p => ({
                 stroke_history: include_strokes ? p.stroke_history : [],
@@ -1713,7 +1766,10 @@ class DocumentReaderManager {
                     dr_scale: cache_data.dr_scale ?? 1,
                     dr_canvas_x: cache_data.dr_canvas_x ?? 0,
                     dr_canvas_y: cache_data.dr_canvas_y ?? 0,
-                    view_base_w: cache_data.view_base_w ?? null
+                    view_base_w: cache_data.view_base_w ?? null,
+                    // 页面旋转随文档持久化：旋转会清空批注，若不记角度，
+                    // 下次打开会以 0° 渲染一份「看起来没转过」的文档。
+                    page_rotation: cache_data.page_rotation ?? 0
                 };
             }
             return null;
@@ -3647,7 +3703,8 @@ class DocumentReaderManager {
                             const res = await worker_host.render(
                                 // 占位按可见页优先级派发（unshift 队首 + 不可被预渲染抢占）：
                                 // 它服务的是用户正看着的页面，不能排在预渲染后面
-                                page_data.page_num, css_w, target_dpr, is_prerender && !is_placeholder);
+                                page_data.page_num, css_w, target_dpr, is_prerender && !is_placeholder,
+                                this._page_rotation);
                             page_data._dr_render_worker_active = false;
                             // 渲染期间又被更新的渲染接管 → 丢弃结果（含位图）
                             if (page_data.pdf_render_seq !== my_seq) {
@@ -3694,14 +3751,17 @@ class DocumentReaderManager {
                 this._pdf_page_cache.set(page_index, pdf_page);
             }
             try {
-                const base_viewport = pdf_page.getViewport({ scale: 1 });
+                // rotation 必须与渲染线程路径同口径，否则主线程与 worker 会渲染出
+                // 不同朝向；base 的宽高也随之互换，页盒比例（aspect_ratio）跟着翻转。
+                const rot = this._page_rotation;
+                const base_viewport = pdf_page.getViewport({ scale: 1, rotation: rot });
                 const css_scale = css_w / base_viewport.width;
-                const css_viewport = pdf_page.getViewport({ scale: css_scale });
+                const css_viewport = pdf_page.getViewport({ scale: css_scale, rotation: rot });
 
                 // 渲染 DPR 已由 _pdf_desired_render_params 分级决定
                 // （活动页/相邻预渲染页全量、远页 1x），此处不再按 is_prerender 一刀切
                 const render_dpr = target_dpr;
-                const render_viewport = pdf_page.getViewport({ scale: css_scale * render_dpr });
+                const render_viewport = pdf_page.getViewport({ scale: css_scale * render_dpr, rotation: rot });
 
                 page_data.page_width = base_viewport.width;
                 page_data.page_height = base_viewport.height;
@@ -4790,6 +4850,10 @@ class DocumentReaderManager {
             clearTimeout(this._resize_retry_timer);
             this._resize_retry_timer = null;
         }
+        // 注意：工具栏观测器**不在这里**断开。
+        // _setup_container_resize_observer() 每次 open 都会先调本方法做清理，
+        // 而 _create_toolbar() 在 open 之前就建好了工具栏并挂了观测 ——
+        // 放在这里会把刚挂上的观测掐掉。它随 close() 一起断开。
     }
 
     _on_reader_geometry_changed() {
@@ -6489,12 +6553,252 @@ class DocumentReaderManager {
 
     // ====== 页面侧边栏 ======
 
+    /**
+     * 实测工具栏上沿，写入 --dr-toolbar-band，供 .dr-page-sidebar 的 bottom 使用。
+     *
+     * 为什么必须实测而不能写死：工具栏与页面侧边栏同在右下角，侧边栏必须停在
+     * 工具栏上沿之上，否则整块压住工具栏。工具栏高度不是常量 ——
+     * 按钮 min-height:40px + padding:8px + 图标与文字，含标签约 63px，
+     * 隐藏文字（.hide-text）时约 54px。两个模式差 9px，写死必有一个错。
+     *
+     * band 定义为「视口底部到工具栏上沿的距离 + 10px 间距」，侧边栏再叠自己的
+     * 10px 下留白。工具栏未挂载 / 已隐藏时退回兜底值（此时侧边栏本就不该显示）。
+     */
+    _sync_sidebar_toolbar_band() {
+        const GAP = 10;
+        const FALLBACK = 64;
+        let band = FALLBACK;
+        const toolbar = document.getElementById('drToolbar');
+        if (toolbar && toolbar.isConnected) {
+            const cs = getComputedStyle(toolbar);
+            const hidden = cs.display === 'none' || cs.visibility === 'hidden';
+            if (!hidden) {
+                const rect = toolbar.getBoundingClientRect();
+                // rect.height > 0 是必要的：display 之外的隐藏方式（父级 display:none、
+                // 面板 transform 移出视口）会让 getBoundingClientRect 返回全 0，
+                // 那样算出的 band 会退化成「贴到视口底部」，正好复现要修的遮挡。
+                if (rect.height > 0 && rect.top < window.innerHeight) {
+                    band = Math.max(GAP, Math.round(window.innerHeight - rect.top + GAP));
+                }
+            }
+        }
+        document.documentElement.style.setProperty('--dr-toolbar-band', band + 'px');
+        return band;
+    }
+
+    // ====== 页面旋转 ======
+
+    /**
+     * 阅读器内确认弹窗（确定 / 取消），返回 Promise<boolean>。
+     *
+     * 为什么不用 settings_show_confirm：它被模块作用域关在 settings.js 里，
+     * 而设置面板是懒加载的 —— 阅读器不能依赖一个「可能还没被注入」的模块。
+     *
+     * @param {string} title
+     * @param {string} message
+     * @returns {Promise<boolean>}
+     */
+    _show_reader_confirm(title, message) {
+        return new Promise((resolve) => {
+            // 已有弹窗在飞：先把它按「取消」结算掉。
+            // 只 remove 元素而不结算，会让上一个 Promise 永远 pending ——
+            // 而旋转入口在菜单里连点两下就会走到这里，调用方会一直 await 悬着。
+            if (this._reader_confirm_settle) {
+                this._reader_confirm_settle(false);
+            }
+            const overlay = document.createElement('div');
+            const t = (k, fb) => window.i18n?.format_translate(k) || fb;
+            overlay.id = 'drReaderConfirm';
+            overlay.className = 'dr-reader-confirm-overlay';
+            // title/message 走 textContent 逐个赋值，不拼 innerHTML：
+            // 文案含文档名/页数等动态内容，拼字符串等于给 XSS 开口子。
+            const box = document.createElement('div');
+            box.className = 'dr-reader-confirm';
+            const h = document.createElement('div');
+            h.className = 'dr-reader-confirm-title';
+            h.textContent = title;
+            const m = document.createElement('div');
+            m.className = 'dr-reader-confirm-message';
+            m.textContent = message;
+            const row = document.createElement('div');
+            row.className = 'dr-reader-confirm-buttons';
+            const cancel = document.createElement('button');
+            cancel.className = 'dr-reader-confirm-btn';
+            cancel.type = 'button';
+            cancel.textContent = t('common.cancel', '取消');
+            const ok = document.createElement('button');
+            ok.className = 'dr-reader-confirm-btn dr-reader-confirm-btn-danger';
+            ok.type = 'button';
+            ok.textContent = t('common.confirm', '确定');
+            row.appendChild(cancel);
+            row.appendChild(ok);
+            box.appendChild(h);
+            box.appendChild(m);
+            box.appendChild(row);
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+
+            let done = false;
+            const finish = (v) => {
+                if (done) return;      // 三个出口（取消/确定/点遮罩）只能结算一次
+                done = true;
+                this._reader_confirm_settle = null;
+                overlay.remove();
+                document.removeEventListener('keydown', on_key);
+                resolve(v);
+            };
+            this._reader_confirm_settle = finish;
+            cancel.addEventListener('click', () => finish(false));
+            ok.addEventListener('click', () => finish(true));
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) finish(false);   // 点遮罩 = 取消
+            });
+            const on_key = (e) => {
+                if (e.key === 'Escape') { finish(false); return; }
+                if (e.key === 'Enter') { finish(true); }
+            };
+            document.addEventListener('keydown', on_key);
+            // 兜底：弹窗期间若元素被外部移除（阅读器关闭等），Promise 不能悬挂
+            const iv = setInterval(() => {
+                if (!overlay.isConnected) {
+                    clearInterval(iv);
+                    finish(false);
+                }
+            }, 400);
+        });
+    }
+
+    /** 画布（全部页面）上是否还有笔迹 —— 旋转清空前据此决定要不要提示 */
+    _has_any_strokes() {
+        const pages = this.page_manager.pages_list;
+        for (let i = 0; i < pages.length; i++) {
+            if (pages[i]?.stroke_history?.length) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 设置页面旋转（0 / 90 / 180 / 270）。画布上还有笔迹时先确认 —— 清空不可撤销。
+     *
+     * ⚠️ 旋转会清空全部批注（当前设计，已与用户确认）。原因不是偷懒：
+     * 笔迹存在**未旋转的页坐标系**里（coord_width/coord_height 为基准，
+     * tile 按「当前页盒 / 坐标基准」的比例补偿绘制，见 _resize_page_layout）。
+     * 90/270 会让页盒宽高互换，即坐标系轴向改变 —— 要保住笔迹就必须把每个点
+     * (x,y) 按 (h-y, x) 变换并重算 bounds，还要处理瓦片重建与撤销栈里
+     * 已持有的 stroke 引用。旋转是低频操作而笔迹可能上千条，迁移的风险
+     * （坐标错位且难以回滚）远大于「旋转即清空」。
+     *
+     * @param {number} deg - 0/90/180/270，其它值按 mod 360 归一
+     * @param {boolean} skip_confirm - 已在上层确认过时置 true，避免二次弹窗
+     * @returns {Promise<number>} 实际生效的角度；被取消则返回原角度
+     */
+    async set_page_rotation(deg, skip_confirm = false) {
+        const n = ((Number(deg) | 0) % 360 + 360) % 360;
+        const next = (n === 90 || n === 180 || n === 270) ? n : 0;
+        if (next === this._page_rotation) return this._page_rotation;
+
+        const prev = this._page_rotation;
+
+        // 只在「真的有笔迹要丢」时才打断：空白文档旋转是高频顺手操作，
+        // 每弹一次确认框会把它变得很烦。反之只要有一页一笔就必须确认 ——
+        // 清空不可撤销，而笔迹可能是用户几十分钟的输入。
+        if (!skip_confirm && prev !== next && this._has_any_strokes()) {
+            const t = (k, fb) => window.i18n?.format_translate(k) || fb;
+            const ok = await this._show_reader_confirm(
+                t('reader.rotateTitle', '旋转页面'),
+                t('reader.rotateClearWarn', '旋转会清空当前文档的全部批注（因批注坐标与页面朝向绑定，无法随旋转保留）。确定继续？'));
+            if (!ok) return prev;     // 取消：角度、批注、画面全部原样
+        }
+
+        this._page_rotation = next;
+        // 90/270 让宽高互换，180 只是原地转 —— 比例是否要取倒数由这个奇偶决定。
+        // 先就地翻 aspect 让页盒立刻重排（否则要等逐页渲染完成才纠正，
+        // 期间用户看到的是「框还是旧比例、内容已转」的不一致状态）。
+        const swaps = (prev % 180 !== 0) !== (next % 180 !== 0);
+
+        for (let i = 0; i < this.page_manager.pages_list.length; i++) {
+            const pd = this.page_manager.pages_list[i];
+            if (!pd) continue;
+            pd.stroke_history = [];
+            // 坐标基准作废：批注已清空，但留着旧基准会让下一份批注按错误的
+            // 补偿比例落笔（比例 = 当前页盒 / coord 基准）。
+            pd.coord_width = 0;
+            pd.coord_height = 0;
+            pd._render_retry_count = 0;
+            // 渲染守卫作废：css_w 与 target_dpr 在旋转后可能完全不变（fit-width
+            // 下页宽恒为容器宽），守卫会判定「已达标」而拒绝重渲染 → 页面停在旧朝向。
+            pd.pdf_render_css_width = null;
+            pd.pdf_render_dpr = null;
+            if (swaps && pd.aspect_ratio > 0) pd.aspect_ratio = 1 / pd.aspect_ratio;
+        }
+
+        this._destroy_all_tiles();
+        // 位图缓存里全是旧朝向的位图；留着会按 cache key 直接回贴。
+        this._bitmap_cache_clear();
+        // 撤销/重做栈里持有的是已清空的 stroke 引用，不重置的话一次 undo
+        // 就会把已被丢弃的对象塞回 stroke_history。
+        history_init_manager({
+            on_state_change: () => {
+                this._update_button_status();
+                this._schedule_annotation_save();
+            }
+        });
+        this.batch_draw?.batch_draw_delete_all?.();
+
+        // 坐标缓存作废 → 全量按新比例重排页盒
+        this._invalidate_page_positions();
+        this._cached_container_rect = null;
+        this._dr_transform_changed = true;
+        const base_w = this._get_page_base_width();
+        for (let i = 0; i < this.page_manager.pages_list.length; i++) {
+            this._resize_page_layout(i, base_w, true);
+        }
+        this._dr_apply_scale(true);
+        this._check_page_visibility();
+        this._update_button_status();
+
+        console.log(`[DocumentReader] 页面旋转 ${prev}° → ${next}°（批注已清空）`);
+        // 立即落盘：否则「清空」只存在于内存，下次打开文档会把旧笔迹读回来，
+        // 用户会以为旋转把批注弄丢了却又出现了。
+        this._save_annotations_to_cache({ awaitIdle: false });
+        this._update_sidebar_rotation_ui();
+        return this._page_rotation;
+    }
+
+    /** 同步侧边栏旋转按钮的当前角度与菜单选中态（set_page_rotation 后调用） */
+    _update_sidebar_rotation_ui() {
+        const menu = document.querySelector('#drPageSidebar .dr-sidebar-rotate-menu');
+        if (!menu) return;
+        menu.querySelectorAll('.dr-sidebar-rotate-opt').forEach((opt) => {
+            const on = Number(opt.dataset.deg) === this._page_rotation;
+            opt.classList.toggle('active', on);
+            opt.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+        const btn = document.querySelector('#drPageSidebar .dr-sidebar-rotate-btn');
+        if (btn) {
+            // 角度直接写进 title：无需打开菜单就能看出当前朝向，也给读屏一个名字
+            btn.title = `旋转页面（当前 ${this._page_rotation}°）`;
+            btn.setAttribute('aria-label', btn.title);
+            btn.dataset.deg = String(this._page_rotation);
+        }
+    }
+
     _toggle_page_sidebar() {
         const existing_sidebar = document.getElementById('drPageSidebar');
         if (existing_sidebar) {
             existing_sidebar.remove();
+            // 菜单的 document 级收口监听是为这个侧边栏装的，侧边栏没了就必须摘掉，
+            // 否则每次开关都往 document 上叠一个捕获监听（长会话下无界增长）。
+            if (this._rotate_menu_close) {
+                document.removeEventListener('click', this._rotate_menu_close, true);
+                this._rotate_menu_close = null;
+            }
             return;
         }
+
+        // 侧边栏建出来前先定好工具栏让位高度：它一插入就会按 bottom 布局，
+        // 晚一步会让它在首帧压住工具栏，出现一帧跳动。
+        this._sync_sidebar_toolbar_band();
 
         const sidebar = document.createElement('div');
         sidebar.id = 'drPageSidebar';
@@ -6506,8 +6810,71 @@ class DocumentReaderManager {
         // 创建头部
         const header = document.createElement('div');
         header.className = 'dr-page-sidebar-header';
-        header.textContent = `页面 (${current_index + 1}/${pages.length})`;
+        // 头部改为「左：标题 + 右：旋转按钮」两栏。标题文本仍由 textContent 写入，
+        // 但不能写在 header 自身上 —— 那会把按钮一起抹掉。
+        const rot_btn = document.createElement('button');
+        rot_btn.className = 'dr-sidebar-rotate-btn';
+        rot_btn.type = 'button';
+        rot_btn.title = '旋转页面';
+        rot_btn.setAttribute('aria-haspopup', 'true');
+        rot_btn.setAttribute('aria-expanded', 'false');
+        rot_btn.innerHTML = '<img data-icon="arrow-clockwise" width="16" height="16" alt="">';
+        const header_title = document.createElement('span');
+        header_title.className = 'dr-page-sidebar-title';
+        header_title.textContent = `页面 (${current_index + 1}/${pages.length})`;
+        header.appendChild(header_title);
+        header.appendChild(rot_btn);
         sidebar.appendChild(header);
+
+        // 旋转选项弹层挂在 header 内：随侧边栏一起被 overflow:hidden 裁剪，
+        // 不会溢出到页面外，也不需要额外的全局关闭逻辑。
+        const rot_menu = document.createElement('div');
+        rot_menu.className = 'dr-sidebar-rotate-menu';
+        rot_menu.hidden = true;
+        rot_menu.setAttribute('role', 'menu');
+        for (const deg of [90, 180, 270]) {
+            const opt = document.createElement('button');
+            opt.className = 'dr-sidebar-rotate-opt';
+            opt.type = 'button';
+            opt.dataset.deg = String(deg);
+            opt.setAttribute('role', 'menuitemradio');
+            opt.textContent = `${deg}°`;
+            rot_menu.appendChild(opt);
+        }
+        const rot_reset = document.createElement('button');
+        rot_reset.className = 'dr-sidebar-rotate-opt dr-sidebar-rotate-reset';
+        rot_reset.type = 'button';
+        rot_reset.dataset.deg = '0';
+        rot_reset.setAttribute('role', 'menuitemradio');
+        rot_reset.textContent = '复位 0°';
+        rot_menu.appendChild(rot_reset);
+        header.appendChild(rot_menu);
+
+        const close_rotate_menu = () => {
+            rot_menu.hidden = true;
+            rot_btn.setAttribute('aria-expanded', 'false');
+        };
+        rot_btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const will_open = rot_menu.hidden;
+            rot_menu.hidden = !will_open;
+            rot_btn.setAttribute('aria-expanded', will_open ? 'true' : 'false');
+        });
+        rot_menu.addEventListener('click', (e) => {
+            const opt = e.target.closest('.dr-sidebar-rotate-opt');
+            if (!opt) return;
+            e.stopPropagation();
+            close_rotate_menu();
+            this.set_page_rotation(Number(opt.dataset.deg))
+                .catch((err) => console.warn('[DocumentReader] 旋转失败:', err));
+        });
+        // 菜单在 document 上收口：点到页面别处时关闭。用 capture 且不阻止传播，
+        // 避免与页面自身的点击处理打架（这里只处理 rot_menu 之外的点击）。
+        this._rotate_menu_close = (e) => {
+            if (rot_menu.hidden) return;
+            if (!header.contains(e.target)) close_rotate_menu();
+        };
+        document.addEventListener('click', this._rotate_menu_close, true);
 
         // 创建内容区域
         const content = document.createElement('div');
@@ -6524,6 +6891,11 @@ class DocumentReaderManager {
 
         sidebar.appendChild(content);
         document.body.appendChild(sidebar);
+        // 主题图标是启动时扫全文档 [data-icon] 一次性加载的，而侧边栏是动态插入的
+        // —— 不补这一次，旋转按钮的 <img data-icon> 会停在无 src 的空白。
+        window.ThemeManager?.theme_load_icons?.();
+        // 侧边栏建好后立刻同步一次按钮态：菜单可能在 open 之前就被旋转过
+        this._update_sidebar_rotation_ui();
         if (use_virtual_sidebar) {
             this._setup_virtual_page_sidebar(content, pages, current_index);
         } else {
@@ -6794,7 +7166,7 @@ class DocumentReaderManager {
             if (opened) {
                 try {
                     const css_w = Math.max(120, Math.round(canvas.clientWidth || canvas.closest('.dr-page-sidebar-item')?.clientWidth || 180));
-                    const res = await worker_host.render(page.page_num, css_w, 1, true);
+                    const res = await worker_host.render(page.page_num, css_w, 1, true, this._page_rotation);
                     // 渲染期间缓存已被其他路径填充：直接用缓存，丢弃位图
                     if (this._sidebar_thumbnail_cache.has(page_index)) {
                         try { res.bitmap.close(); } catch (_) {}
@@ -6855,7 +7227,9 @@ class DocumentReaderManager {
             this._pdf_page_cache_evict();
         }
         try {
-            const base_viewport = pdf_page.getViewport({ scale: 1 });
+            // 与渲染线程缩略图同口径：旋转后 base 宽高互换，缩略图朝向才一致
+            const rot = this._page_rotation;
+            const base_viewport = pdf_page.getViewport({ scale: 1, rotation: rot });
             // 使用更小的渲染尺寸以提高性能
             const css_w = Math.max(120, Math.round(canvas.clientWidth || canvas.closest('.dr-page-sidebar-item')?.clientWidth || 180));
             const css_h = Math.round(css_w * 9 / 16);
@@ -6866,7 +7240,7 @@ class DocumentReaderManager {
             const canvas_w = Math.ceil(css_w * dpr);
             const canvas_h = Math.ceil(css_h * dpr);
             const page_scale = Math.min(canvas_w / base_viewport.width, canvas_h / base_viewport.height);
-            const viewport = pdf_page.getViewport({ scale: page_scale });
+            const viewport = pdf_page.getViewport({ scale: page_scale, rotation: rot });
             const offset_x = Math.round((canvas_w - viewport.width) / 2);
             const offset_y = Math.round((canvas_h - viewport.height) / 2);
 

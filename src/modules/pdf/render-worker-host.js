@@ -168,13 +168,13 @@ export class PdfRenderWorkerHost {
      * @returns {Promise<{bitmap: ImageBitmap, width: number, height: number, pageW: number, pageH: number}>}
      *   取消时 reject（name=RenderingCancelledException）；其他错误 reject 普通异常。
      */
-    render(pageNum, cssW, dpr, is_prerender = false) {
+    render(pageNum, cssW, dpr, is_prerender = false, rotation = 0) {
         if (!this.available) {
             return Promise.reject(new Error('render worker unavailable'));
         }
         return new Promise((resolve, reject) => {
             const reqId = ++this._req_id;
-            const item = { reqId, pageNum, cssW, dpr, is_prerender };
+            const item = { reqId, pageNum, cssW, dpr, is_prerender, rotation };
 
             // 按页合流：同页旧请求立即作废（队列中直接出队；在途中向 worker 发 cancel）。
             // 调用方（document_reader）的 seq 守卫本就会丢弃过期结果，提前取消把
@@ -255,7 +255,8 @@ export class PdfRenderWorkerHost {
                     req: item.reqId,
                     pageNum: item.pageNum,
                     cssW: item.cssW,
-                    dpr: item.dpr
+                    dpr: item.dpr,
+                    rotation: item.rotation
                 });
             } catch (e) {
                 this._inflight.delete(item.reqId);
