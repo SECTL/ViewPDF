@@ -688,7 +688,7 @@ class DocumentReaderManager {
             this.dr_cached_inv_scale = 1 / this.dr_scale;
             this._dr_update_move_bound();
             this._dr_update_canvas_position();
-            this._dr_sync_transform();
+            this._dr_sync_transform(true);
         }
 
         // 打开完成自愈校验：可见/近活动页若有批注但从未真正建 tile
@@ -775,7 +775,8 @@ class DocumentReaderManager {
             this.dr_canvas_y = saved_state.dr_canvas_y;
             this.dr_cached_inv_scale = 1 / this.dr_scale;
         }
-        this._dr_apply_scale();
+        // impulse：打开时恢复保存的视图状态是冲量，不是手势
+        this._dr_apply_scale(true);
 
         await this._wait_panel_settled(panel);
         if (!this.is_open) return;
@@ -918,7 +919,7 @@ class DocumentReaderManager {
 
         this._dr_update_move_bound();
         this._dr_update_canvas_position();
-        this._dr_sync_transform();
+        this._dr_sync_transform(true);
         this._check_page_visibility();
         this._update_page_indicator();
         this._update_button_status();
@@ -1776,7 +1777,7 @@ class DocumentReaderManager {
             this.dr_cached_inv_scale = 1 / this.dr_scale;
             this._dr_update_move_bound();
             this._dr_update_canvas_position();
-            this._dr_sync_transform();
+            this._dr_sync_transform(true);
             // 恢复缩放后同步瓦片 DPR，否则已初始化的瓦片仍使用缩放=1 时的 DPR
             for (const i of this._pages_with_tiles) {
                 const pd = this.page_manager.pages_list[i];
@@ -1855,7 +1856,7 @@ class DocumentReaderManager {
         this.dr_canvas_x = 0;
         this.dr_canvas_y = 0;
         this.dr_cached_inv_scale = 1;
-        this._dr_sync_transform();
+        this._dr_sync_transform(true);
     }
 
     /**
@@ -4702,7 +4703,9 @@ class DocumentReaderManager {
                 if (!this.is_open) return;
                 this._cached_container_rect = null;
                 if (this._page_positions) this._page_positions.stale = true;
-                this._dr_apply_scale();
+                // impulse：resize 拖拽中的逐帧校正是冲量，不是手势
+                // （详见 _dr_sync_transform）
+                this._dr_apply_scale(true);
             });
         }
         // 重量通道：防抖到尺寸稳定后全量重布局
@@ -4746,7 +4749,7 @@ class DocumentReaderManager {
         // 宽高均未变化时无需任何重布局（open 后的强制对齐/动画校正常为此情形）
         if (new_w === this._last_resize_base_w && new_h === this._last_resize_container_h) {
             this._cached_container_rect = null;
-            this._dr_apply_scale();
+            this._dr_apply_scale(true);
             return;
         }
 
@@ -4754,7 +4757,7 @@ class DocumentReaderManager {
         if (new_w === this._last_resize_base_w) {
             this._last_resize_container_h = new_h;
             this._cached_container_rect = null;
-            this._dr_apply_scale();
+            this._dr_apply_scale(true);
             return;
         }
         this._last_resize_base_w = new_w;
@@ -4799,7 +4802,8 @@ class DocumentReaderManager {
         // 容器 rect 缓存失效，下次 _check_page_visibility 重新获取
         this._cached_container_rect = null;
 
-        this._dr_apply_scale();
+        // impulse：窗口 resize 是冲量校正而非手势（详见 _dr_sync_transform）
+        this._dr_apply_scale(true);
     }
 
     /**
@@ -5632,10 +5636,16 @@ class DocumentReaderManager {
         if ((e.ctrlKey || e.metaKey) && e.key === '0') {
             e.preventDefault();
             if (this.dr_scale !== 1 || this.dr_canvas_x !== 0 || this.dr_canvas_y !== 0) {
+                this._dr_cancel_zoom_debounce();
                 this.dr_scale = 1;
                 this.dr_canvas_x = 0;
                 this.dr_canvas_y = 0;
-                this._dr_apply_scale();
+                // impulse：重置缩放是冲量操作。此时 dr_scale 必从 !=1 变为 1，
+                // 走的是 mark_interaction 分支本就不会续期暂停窗口；但若本来
+                // 就在 scale=1（只重置位移），缩放未变 → 旧判据会误当平移手势帧。
+                // 先 _dr_cancel_zoom_debounce 清掉遗留暂停窗口，保证重置后立即
+                // 按目标清晰度渲染，而不是停 120ms 模糊占位。
+                this._dr_apply_scale(true);
             }
             return;
         }
@@ -6030,7 +6040,13 @@ class DocumentReaderManager {
         // 设置 canvas_y 使页面中心居中视口（无需动画，_dr_apply_scale 会 clamp 边界）
         this.dr_canvas_x = 0;
         this.dr_canvas_y = viewport_center_y - page_center_y * s;
-        this._dr_apply_scale();
+        // impulse：程序化翻页不是手势。传 true 后本次 transform 写入不再续期
+        // 120ms 渲染暂停、不限流渲染线程、不武装 170ms 恢复定时器——目标页
+        // 在下方 _check_page_visibility 中立即按目标清晰度启动渲染。
+        // 旧行为（误判为平移手势帧）下，点「下一页」后目标页至少 290ms 内
+        // 不启动任何全清渲染，只出 0.5x 模糊占位；连按几下则暂停窗口持续
+        // 续期，页面一直停在模糊态。
+        this._dr_apply_scale(true);
 
         // 翻页后预渲染相邻页面
         this._dr_note_flip();
@@ -6864,15 +6880,23 @@ class DocumentReaderManager {
         this.dr_canvas_y = Math.max(mb.min_y - eps, Math.min(mb.max_y + eps, this.dr_canvas_y));
     }
 
-    /** 仅同步 transform（无 LOD 更新，用于高频拖拽） */
-    _dr_sync_transform() {
+    /** 仅同步 transform（无 LOD 更新，用于高频拖拽）
+     *  @param {boolean} impulse - 冲量位移（程序化翻页 / 窗口 resize / Ctrl+0 重置）。
+     *   这些路径会连续调用本方法，但它们**不是手势**：既无手指输入也无惯性。
+     *   若按「缩放未变 = 平移手势帧」的旧判据一律续期渲染暂停窗口，程序化翻页
+     *   会给自己设 120ms 渲染暂停 + 把渲染线程限流到 1 并发 + 武装 170ms 恢复
+     *   定时器——点「下一页」后目标页至少 290ms 内不启动任何全清渲染（只剩 0.5x
+*   模糊占位），连按几下则暂停窗口持续续期、一直停在模糊态。冲量路径传
+ *   true 后这些操作恢复为「立即按目标清晰度渲染」。
+ *   仅缩放的分支另有 ResolutionController.mark_interaction() 冻结，本参数不影响。 */
+    _dr_sync_transform(impulse = false) {
         if (!this._zoom_wrapper) return;
         // 仅缩放标记交互：冻结的目的是"缩放中目标 DPR 每帧都在变"；
         // 纯平移不冻结，平移中新进入视野的瓦片按可见块立即补齐分辨率
         if (this._dr_last_transform.scale !== this.dr_scale) {
             window.ResolutionController?.mark_interaction();
-        } else {
-            // 纯平移帧（含惯性滚动）：续期渲染暂停窗口，渲染让路给合成
+        } else if (!impulse) {
+            // 纯平移手势帧（含惯性滚动）：续期渲染暂停窗口，渲染让路给合成
             this._dr_mark_render_gesture();
         }
         this._zoom_wrapper.style.transform = 'translate3d(' + this.dr_canvas_x + 'px, ' + this.dr_canvas_y + 'px, 0) scale(' + this.dr_scale + ')';
@@ -6922,8 +6946,10 @@ class DocumentReaderManager {
         }
     }
 
-    /** 应用当前缩放比到 wrapper transform + TileRenderer LOD */
-    _dr_apply_scale() {
+    /** 应用当前缩放比到 wrapper transform + TileRenderer LOD
+     *  @param {boolean} impulse - 冲量位移，透传给 _dr_sync_transform（见其注释）。
+     *   拖拽/惯性/滚轮/捏合等真实手势路径保持默认 false。 */
+    _dr_apply_scale(impulse = false) {
         const s = this.dr_scale;
         this.dr_cached_inv_scale = 1 / s;
 
@@ -6934,7 +6960,7 @@ class DocumentReaderManager {
 
         this._dr_update_move_bound();
         this._dr_update_canvas_position();
-        this._dr_sync_transform();
+        this._dr_sync_transform(impulse);
 
         // 缩放进行中跳过 tile DPR 更新和可见页重绘，由缩放结束后批量刷新
         if (this._dr_is_zooming) return;
