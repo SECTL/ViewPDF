@@ -298,6 +298,7 @@
     "installing": "Installation...",
     "updateLater": "Plus tard",
     "updateCheckFailed": "Échec vérification mise à jour",
+    "updateSkipCheck": "Ignorer la vérification",
     "saving": "Sauvegarde..."
   },
   "about": {

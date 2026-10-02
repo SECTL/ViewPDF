@@ -299,6 +299,7 @@
     "installing": "Installing...",
     "updateLater": "Later",
     "updateCheckFailed": "Update check failed",
+    "updateSkipCheck": "Skip Check",
     "saving": "Saving settings..."
   },
   "about": {

@@ -21,6 +21,7 @@ const state = {
   importedSettings: null,
   updateChecked: false,
   updateResult: null,
+  updateSkipRequested: false,
 }
 
 let _updateTimeout = null;
@@ -499,6 +500,9 @@ const STEP_TPL = [
       <div class="spinner"></div>
       <div class="update-text">${_t('oobe.checkingUpdate')}</div>
     </div>
+    <div class="update-skip-row">
+      <button class="btn btn-ghost" id="btnUpdateSkipCheck">${_t('oobe.updateSkipCheck')}</button>
+    </div>
   `,
   // 7 — Complete
   () => html`
@@ -706,6 +710,14 @@ async function setupInstalling() {
 async function setupCheckUpdate() {
   const statusEl = document.getElementById('updateStatus');
 
+  // 「跳过检查」与 btnUpdateSkip（稍后再说）是两件事：后者只在**发现新版本**后出现，
+  // 而无网/接口挂掉时走的是失败分支，那时页面上一个按钮都没有 —— OOBE 第 6/7/8 步
+  // 又都隐藏了导航栏（renderNav），用户只能干等 2s 自动前进或等网络恢复。
+  // 所以这里给它一个常驻的独立出口。
+  document.getElementById('btnUpdateSkipCheck')
+    ?.addEventListener('click', skipUpdateCheck);
+
+  if (state.updateSkipRequested) return;   // 已跳过，别再把界面拉回检查态
   if (state.updateChecked) {
     showUpdateResult(state.updateResult);
   } else {
@@ -714,11 +726,36 @@ async function setupCheckUpdate() {
   }
 }
 
+/**
+ * 跳过更新检查，直落完成页。
+ *
+ * 检查是 fire-and-forget（Tauri invoke 没有 abort），所以不能靠取消请求来「停止检查」——
+ * 只能记一个标记，让它在途结果回来时闭嘴；否则用户已经翻到完成页了，
+ * 一个迟到的 banner 又会被画回第 6 步的面板上。
+ */
+function skipUpdateCheck() {
+  if (state.updateSkipRequested) return;
+  state.updateSkipRequested = true;
+  // 两个分支各自挂了一个自动前进定时器（失败 2s / 已最新 1.2s），都要作废，
+  // 否则用户点了跳过后还会被它再推一次（幂等但会闪一下）。
+  if (_updateTimeout) {
+    clearTimeout(_updateTimeout);
+    _updateTimeout = null;
+  }
+  const btn = document.getElementById('btnUpdateSkipCheck');
+  if (btn) btn.disabled = true;
+  doTransition(7, 'forward');
+}
+
 async function showUpdateResult(result) {
+  if (state.updateSkipRequested) return;   // 用户已跳过，别把结果画回上一个面板
   const statusEl = document.getElementById('updateStatus');
   const bannerEl = document.getElementById('updateBanner');
   const downloadBtn = document.getElementById('btnUpdateDownload');
   const skipBtn = document.getElementById('btnUpdateSkip');
+  // 有新版本时「跳过检查」撤掉：此刻 btnUpdateSkip（稍后再说）承担的是同一个出口，
+  // 两个都留着只是给同一个决定两个按钮。
+  const skipCheckBtn = document.getElementById('btnUpdateSkipCheck');
   if (!bannerEl || !statusEl) return;
 
   if (!result) {
@@ -746,6 +783,7 @@ async function showUpdateResult(result) {
     }
     if (downloadBtn) downloadBtn.style.display = '';
     if (skipBtn) skipBtn.style.display = '';
+    if (skipCheckBtn) skipCheckBtn.style.display = 'none';
 
     document.getElementById('btnUpdateSkip')?.addEventListener('click', () => doTransition(7, 'forward'));
     document.getElementById('btnUpdateDownload')?.addEventListener('click', async () => {
@@ -797,6 +835,8 @@ async function showUpdateResult(result) {
     const notesEl = document.getElementById('updateNotes');
     if (notesEl) notesEl.style.display = 'none';
     await new Promise(r => setTimeout(r, 1200));
+    // 这 1.2s 不可取消，期间可能已被 skipUpdateCheck 推进去了。
+    if (state.updateSkipRequested) return;
     doTransition(7, 'forward');
   }
 }
@@ -808,11 +848,14 @@ async function _checkForUpdate() {
 
   try {
     const { result } = await checkForUpdate();
+    // 用户可能在检查返回前就点了「跳过检查」——结果作废，不再回填。
+    if (state.updateSkipRequested) return;
     state.updateChecked = true;
     state.updateResult = result;
     showUpdateResult(result);
   } catch (err) {
     console.warn('Update check failed:', err);
+    if (state.updateSkipRequested) return;
     state.updateChecked = true;
     state.updateResult = null;
     if (statusEl) statusEl.innerHTML = '';

@@ -298,6 +298,7 @@
     "installing": "Installieren...",
     "updateLater": "Später",
     "updateCheckFailed": "Update fehlgeschlagen",
+    "updateSkipCheck": "Prüfung überspringen",
     "saving": "Einstellungen speichern..."
   },
   "about": {

@@ -298,6 +298,7 @@
     "installing": "インストール中...",
     "updateLater": "後で",
     "updateCheckFailed": "アップデートの確認に失敗しました",
+    "updateSkipCheck": "確認をスキップ",
     "saving": "設定を保存中..."
   },
   "about": {

@@ -443,6 +443,16 @@ body {
   max-width: 520px;
 }
 
+/* 「跳过检查」独立一行放在更新区下方。不能塞进 .update-actions：
+   那里的两个按钮（立即更新 / 稍后再说）都带 style="display:none"，
+   由同一套 showUpdateResult 逻辑控制，而它们恰恰只在「发现新版本」时才亮。
+   跳过检查要覆盖的是**此刻一个按钮都没有**的两种状态：检查进行中、检查失败。 */
+.update-skip-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
 .update-progress {
   width: 100%;
   max-width: 520px;

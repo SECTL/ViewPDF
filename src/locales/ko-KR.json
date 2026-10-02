@@ -298,6 +298,7 @@
     "installing": "설치 중...",
     "updateLater": "나중에",
     "updateCheckFailed": "업데이트 확인 실패",
+    "updateSkipCheck": "확인 건너뛰기",
     "saving": "설정 저장 중..."
   },
   "about": {
