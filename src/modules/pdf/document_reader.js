@@ -378,8 +378,14 @@ class DocumentReaderManager {
         // 惯性（动量）系统
         this._dr_momentum_raf = null;
         this._dr_momentum_last_ts = null;   // 上一惯性帧时间戳（帧率无关衰减用）
+        this._dr_momentum_vis_t = 0;        // 上次惯性期刷新可见性的时刻
         this._dr_gesture_vx = 0;
         this._dr_gesture_vy = 0;
+
+        // 移动边界几何的缓存失效标记。取值（容器宽高 / 页基准宽 / 内容总高）只会在
+        // 「容器尺寸变化」或「页面布局重算」时改变，与逐帧位移无关 → 失效由这两处
+        // 显式驱动，而不是靠时间。见 _dr_update_move_bound。
+        this._dr_mb_dom_dirty = true;
         this._dr_last_canvas_x = 0;
         this._dr_last_canvas_y = 0;
         this._dr_last_move_time = null;     // 最后一次拖拽位移的事件时间戳（停顿检测用）
@@ -851,6 +857,7 @@ class DocumentReaderManager {
         // 几何缓存全部失效，按当前布局重算
         this._cached_container_rect = null;
         this._dr_transform_changed = true;
+        this._dr_mb_dom_dirty = true;
         if (this._page_positions) this._page_positions.stale = true;
         this._dr_cancel_zoom_debounce();
 
@@ -874,6 +881,7 @@ class DocumentReaderManager {
         // 确定后的几何再触发一次幂等渲染，纠正滑入动画期间的任何偏差
         this._cached_container_rect = null;
         this._dr_transform_changed = true;
+        this._dr_mb_dom_dirty = true;
         if (this._page_positions) this._page_positions.stale = true;
         this._dr_cancel_zoom_debounce();
         this._sync_reader_overlay_size();
@@ -2068,6 +2076,8 @@ class DocumentReaderManager {
     /** 标记页面位置缓存为脏（页面尺寸变更后调用） */
     _invalidate_page_positions() {
         this._page_positions.stale = true;
+        // 内容总高是移动边界几何的输入之一，布局重算后必须同步失效（见 _dr_update_move_bound）
+        this._dr_mb_dom_dirty = true;
     }
 
     /**
@@ -4790,6 +4800,9 @@ class DocumentReaderManager {
                 if (!this.is_open) return;
                 this._cached_container_rect = null;
                 if (this._page_positions) this._page_positions.stale = true;
+                // 容器尺寸变了 → 移动边界几何（cw/vw/vh）随之失效。
+                // 此处是直接写 stale 而非走 _invalidate_page_positions，故单独置脏。
+                this._dr_mb_dom_dirty = true;
                 // impulse：resize 拖拽中的逐帧校正是冲量，不是手势
                 // （详见 _dr_sync_transform）
                 this._dr_apply_scale(true);
@@ -6957,9 +6970,25 @@ class DocumentReaderManager {
         const mb = this.dr_move_bound;
         const s = this.dr_scale;
 
-        // 每帧最多读一次 DOM 布局属性（避免 momentum/pinch 期间 layout thrashing）
+// 读 DOM 布局属性（container.clientWidth/clientHeight 等）。
+        //
+        // 调用方是「捏合缩放逐次 delta」与 `_dr_apply_scale`（滚轮缩放、惯性收尾、
+        // resize），**不是**惯性滑行逐帧 —— 惯性 tick 只调 _dr_update_canvas_position，
+        // 用的是上一次算好的边界。所以这里的节流目标是 60~120Hz 的捏合/滚轮路径。
+        //
+        // 旧实现用 `now - _dr_mb_dom_time > 16` 做节流，注释写着「每帧最多读一次」，
+        // 但这些路径的回调间隔本身就是 ~16.7ms，永远 > 16 → **该缓存从不命中**，
+        // 每次都固定 3 次强制布局读（clientWidth ×2 + clientHeight）。意图对，实现错。
+        //
+        // 改为按「几何是否真的变了」失效：这几个取值只随容器尺寸 / 页面布局变化，
+        // 与逐帧位移无关，两条变化源都有明确的代码入口（_invalidate_page_positions
+        // 与 reader resize 轻量通道），由它们置脏即可。500ms 只是给未登记路径的
+        // 兜底重读上限（2 次/秒），远低于原来的每次一读；真出现陈旧也会在半秒内
+        // 自愈，且只影响贴边钳制，不改变运动轨迹。
         const now = performance.now();
-        if (!this._dr_mb_dom_cache || now - this._dr_mb_dom_time > 16) {
+        if (!this._dr_mb_dom_cache || this._dr_mb_dom_dirty ||
+            now - this._dr_mb_dom_time > 500) {
+            this._dr_mb_dom_dirty = false;
             // 内容高度/宽度用权威布局值，不依赖 wrapper.scrollHeight：
             // flex 容器 + 绝对定位子项下 scrollHeight 可能不撑满显式 height（浏览器实现相关），
             // 会让移动边界被错误 clamp 到初始懒建窗口（≈±K 页），表现为"只能在前几页滑动、
@@ -7240,7 +7269,14 @@ class DocumentReaderManager {
         }
         this._dr_cancel_momentum();
         if (this._dr_momentum_raf !== null) return;
+        // 预渲染泵必须停：它的停机条件是「距上次滚动 > 200ms」，而 _dr_last_scroll_t
+        // 只由 _check_page_visibility() 推进——惯性期不再调用它（见 _dr_momentum_tick），
+        // 于是时间戳立刻陈旧，泵却仍会再跑最多 200ms。这段时间里它按**早已失效**的
+        // active_page_index / _dr_scroll_dir 派发预渲染：既抢走了渲染线程带宽
+        // （正是滑行最需要带宽的时候），又大概率渲染了用户正在滑离的页。
+        this._dr_stop_prerender_pump();
         this._dr_momentum_last_ts = null;   // 首帧用参考帧长
+        this._dr_momentum_vis_t = 0;
         this._dr_momentum_raf = requestAnimationFrame(() => this._dr_momentum_tick());
     }
 
@@ -7279,6 +7315,23 @@ class DocumentReaderManager {
 
         if (Math.abs(vx) > 0.5 || Math.abs(vy) > 0.5) {
             this._dr_sync_transform();
+            // 惯性期也要刷新可见性，且必须限频。
+            //
+            // 旧实现整段惯性只写 transform：滑入视口的页一个都不挂载 → 滑行中
+            // 是一段空白（用户读作「卡」），等 doFinal 里 _dr_apply_scale() 才
+            // 一次性补挂全部新可见页 —— 那一下才是真正的顿挫所在；而且
+            // _dr_last_scroll_t / _dr_scroll_dir 全程不推进，停手瞬间会被
+            // 判定成「刚发生过大幅滚动」，让补扫按移动中的宽窗口再跑一遍。
+            //
+            // 限频到 ~33ms（滑动比拖拽快，每帧都扫会平白多花扫描），
+            // 且落在手势期：_render_pdf_page_direct 在 _dr_renders_paused() 下
+            // 对非占位渲染直接 return，重的栅格化仍被推迟到停手后统一补扫，
+            // 这里只付几何扫描 + 骨架挂载 + 0.5x 占位（占位按设计豁免手势门控，
+            // 正是它让滑行中的前缘页立刻有内容）。
+            if (now - this._dr_momentum_vis_t >= 33) {
+                this._dr_momentum_vis_t = now;
+                this._check_page_visibility();
+            }
             this._dr_momentum_raf = requestAnimationFrame(() => this._dr_momentum_tick());
         } else {
             this._dr_momentum_raf = null;
@@ -7286,7 +7339,9 @@ class DocumentReaderManager {
             const doFinal = () => {
                 this._dr_apply_scale();
                 this._dr_schedule_disable_smooth_transform();
-                this._check_page_visibility();
+                // _dr_apply_scale 内部已按新几何重算边界并刷可见性；只有仍在
+                // 缩放态时它会提前 return，才需要这里补一次（否则是重复全量扫描）
+                if (this._dr_is_zooming) this._check_page_visibility();
             };
             if (window.requestIdleCallback) {
                 window.requestIdleCallback(doFinal, { timeout: 500 });
