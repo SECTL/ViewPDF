@@ -670,6 +670,15 @@ class DocumentReaderManager {
         this.active_page_index = target_page;
         this.page_manager.current_index = target_page;
 
+        // GPU renderer 探测：打开文档时无条件跑一次。
+        // 起因（2026-10-02）：该诊断原先只在「出现 >=300ms 的 LoAF 长帧」时才
+        // 触发，于是没有超长帧、或 LoAF 在此 WebView 不可用时，window.__gpu_info
+        // 永远不存在——而「是否软件光栅化」直接决定栅格化分辨率的取舍（软件
+        // 光栅下像素成本远高于 GPU，动态分辨率的力度要更大）。必答项不能挂在
+        // 条件触发上。成本：一个小 WebGL 上下文，探测后立即 loseContext 释放。
+        try { window.__probeGpu && window.__probeGpu(); } catch (_) {}
+
+
         // 打开期预渲染锁：面板尚未激活（下方 458 行才 add('active')），
         // 此间容器几何为 0，_on_page_visible 若栅格化会得到错位瓦片、并在
         // 面板稳定后被 491 行的 _dr_apply_scale 二次重建——纯属浪费。

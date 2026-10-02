@@ -135,6 +135,10 @@
                         }
                     }
                 } catch (_) {}
+                // 长帧是唯一需要判别「帧饿是否真实」的时刻 → 开窗采样 rAF 间隔。
+                // （采样器不常驻，见 __raf_probe_start 处注释：常驻 rAF 循环会让
+                //   应用永远无法空闲，实测把 GpuVSyncThread 顶到 99.8% 占用。）
+                try { window.__raf_probe_start && window.__raf_probe_start(); } catch (_) {}
                 console.warn(
                     '[LoAF] 长帧 ' + rec.dur + 'ms' +
                     ' (script=' + rec.script +
@@ -149,6 +153,9 @@
             }
         });
         obs.observe({ entryTypes: ['long-animation-frame'], buffered: true });
+        // LoAF 是否真的可用（外层 catch 会静默吞掉不支持的情况，
+        // 那时下面所有 __loaf_* / __longtasks / __gpu_info 都不可信）
+        try { window.__loaf_active = true; } catch (_) {}
 
         // 判别器：longtask 并行观察。若 LoAF 报长帧期间 longtask 一条不发，
         // 说明主线程没有长任务在跑 → 瓶颈铁证在合成器/GPU（非 JS）。
@@ -161,6 +168,8 @@
                     lt.push({ at: _ms(es[k].startTime), dur: _ms(es[k].duration) });
                 }
                 if (lt.length > MAX_KEEP) lt.splice(0, lt.length - MAX_KEEP);
+                // longtask 是长帧的并行判别器；同样开窗采样帧间隔
+                try { window.__raf_probe_start && window.__raf_probe_start(); } catch (_) {}
             });
             obs2.observe({ entryTypes: ['longtask'], buffered: true });
         } catch (_) { /* longtask 不可用：静默 */ }
@@ -169,45 +178,91 @@
         // 16ms 正常跑 → WebView2 的 LoAF duration 不可信（测量伪影，白追）；
         // 若 rAF 同步出现 >200ms 空洞 → 帧饿是真实现象（合成器/GPU 侧）。
         // 结果存 window.__frame_gaps（最近 8 条 {at, gap}），__raf_gap_count 累计。
-        try {
-            var gaps = (window.__frame_gaps = []);
-            window.__raf_gap_count = 0;
-            var last_raf = performance.now();
-            function _raf_tick(t) {
-                var now = performance.now();
-                var gap = now - last_raf;
-                last_raf = now;
-                if (gap > 200) {
-                    window.__raf_gap_count++;
-                    gaps.push({ at: _ms(now), gap: Math.round(gap) });
-                    if (gaps.length > MAX_KEEP) gaps.shift();
-                    // 立即上控制台：帧饿自报（无需手动取 JSON）
-                    try {
-                        console.warn('[LoAF] 帧饿 ' + Math.round(gap) + 'ms (T' + _ms(now - gap) + ')');
-                    } catch (_) {}
-                }
-                requestAnimationFrame(_raf_tick);
-            }
-            requestAnimationFrame(_raf_tick);
-        } catch (_) { /* 静默 */ }
-    } catch (_) { /* LoAF 不可用（旧 WebView）：静默降级为无观测 */ }
+        //
+        // ⚠️ 绝不常驻（2026-10-02 真机 trace 实证，勿改回常驻循环）：
+        // 常驻 rAF 循环会让应用**永远无法空闲**。Chromium 每个 vsync 都会执行
+        // 排队的 rAF 回调并产出一帧，于是即便文档完全静止、用户毫无操作，
+        // Commit / Layerize / Paint 仍以 ~45 次/秒持续发生，GPU 进程也随之
+        // 持续合成。两份真机 trace 的实测：
+        //   GpuVSyncThread 占用率 99.7%（旧）/ 99.8%（新）——整个录制期间满载一个核
+        //   CrGpuMain       连续 16.5s（旧）/ 8.0s（新）
+        // 这不只是白烧一个核：它把 GPU 侧的全部余量吃光，任何真实纹理工作
+        // （翻页换帧、位图上传）都只能排在一条永不停的帧流后面 —— 即把
+        // 本来 100ms 的卡顿放大成 500ms。改为**按需突发采样**：只有 LoAF 或
+        // longtask 报了长帧（也就是唯一需要判别"帧饿是否真实"的时刻）才开窗，
+        // 采样 ~1.2s 后自行停机。诊断能力不变，空闲时零开销。
+        var gaps = (window.__frame_gaps = []);
+        window.__raf_gap_count = 0;
+        var _raf_id = 0, _raf_until = 0, _raf_last = 0;
 
-    /** GPU renderer 一次性探测（懒触发：首条长帧时才建 WebGL 上下文） */
+        function _raf_tick() {
+            var now = performance.now();
+            var gap = now - _raf_last;
+            _raf_last = now;
+            if (gap > 200) {
+                window.__raf_gap_count++;
+                gaps.push({ at: _ms(now), gap: Math.round(gap) });
+                if (gaps.length > MAX_KEEP) gaps.shift();
+                // 立即上控制台：帧饿自报（无需手动取 JSON）
+                try {
+                    console.warn('[LoAF] 帧饿 ' + Math.round(gap) + 'ms (T' + _ms(now - gap) + ')');
+                } catch (_) {}
+            }
+            if (now < _raf_until) {
+                _raf_id = requestAnimationFrame(_raf_tick);
+            } else {
+                _raf_id = 0;
+            }
+        }
+
+        /** 开窗采样（幂等；已在采样中则续窗）。手动排查时也可用它。 */
+        window.__raf_probe_start = function (ms) {
+            var dur = ms || 1200;
+            _raf_until = performance.now() + dur;
+            if (_raf_id) { _raf_until = Math.max(_raf_until, performance.now() + dur); return; }
+            _raf_last = performance.now();
+            _raf_id = requestAnimationFrame(_raf_tick);
+        };
+        try {
+            window.__raf_probe_stop = function () {
+                _raf_until = 0;
+                if (_raf_id) { cancelAnimationFrame(_raf_id); _raf_id = 0; }
+            };
+        } catch (_) {}
+    } catch (_) {
+        // LoAF 不可用（旧 WebView）：静默降级为无观测。
+        // 但必须留痕——否则「__loaf_reports / __longtasks / __gpu_info 全都没有」
+        // 与「应用没卡」无法区分，排查时会把仪器故障误判成没有问题。
+        try { window.__loaf_active = false; } catch (_) {}
+    }
+
+    /** GPU renderer 一次性探测（懒触发：首条长帧时才建 WebGL 上下文）
+     *  ⚠️ 绝不只依赖懒触发（2026-10-02 修）：原先只在「观察到 >=300ms 的 LoAF
+     *  长帧」时才调用，于是「没出现那么长的帧」或「LoAF 不可用被外层 catch
+     *  吞掉」两种情况下 window.__gpu_info 永远不存在——一个必答的诊断项挂在
+     *  条件触发上，等于没有。现改为：随时可手动调用（__probeGpu），且阅读器
+     *  打开文档时自动调一次（见 document_reader）。
+     */
     function _probe_gpu() {
         try {
-            if (window.__gpu_info) return;
+            if (window.__gpu_info) return window.__gpu_info;
             var cv = document.createElement('canvas');
             var gl = cv.getContext('webgl') || cv.getContext('experimental-webgl');
-            if (!gl) { window.__gpu_info = '(WebGL 不可用)'; return; }
+            if (!gl) { window.__gpu_info = '(WebGL 不可用)'; return window.__gpu_info; }
             var dbg = gl.getExtension('WEBGL_debug_renderer_info');
             window.__gpu_info = String(dbg
                 ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)
                 : gl.getParameter(gl.RENDERER));
+            // 释放上下文，避免为一个诊断项长期持有 GPU 资源
+            try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch (_) {}
             console.log('[LoAF] GPU renderer: ' + window.__gpu_info +
                 (/(swiftshader|llvmpipe|software|basic)/i.test(window.__gpu_info)
                     ? '  ⚠ 疑似软件光栅！' : ''));
-        } catch (_) { window.__gpu_info = '(探测失败)'; }
+            return window.__gpu_info;
+        } catch (e) { window.__gpu_info = '(探测失败)'; return window.__gpu_info; }
     }
+    // 手动入口：诊断项不再依赖「是否出现过超长帧」
+    try { window.__probeGpu = _probe_gpu; } catch (_) {}
 
     /**
      * JS 堆采样（Chromium 非 console.globals 的 performance.memory）。
