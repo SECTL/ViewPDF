@@ -12,6 +12,13 @@ const TILE_REBUILD_BATCH = 3;
 const TILE_REBUILD_FRAME_BUDGET_MS = 6;
 
 class TileRenderer {
+    /**
+     * 诊断总闸（默认关）。控制 diag_content_ratio 是否真的执行
+     * ——该方法每块 tile 做一次 getImageData 同步 GPU 回读，页面网格通常
+     * 十几到几十块，绝不能留在翻页/落笔等生产路径上（详见该方法注释）。
+     * 宿主按 localStorage.drDiag=1 打开。
+     */
+    static diag_enabled = false;
     constructor(options) {
         this.dirty = new Set();
         this.tileInfos = [];
@@ -61,6 +68,11 @@ class TileRenderer {
         this._canvasW = options?.canvasW || null;
         this._canvasH = options?.canvasH || null;
         this._skipBaseCache = options?.skipBaseCache || false;
+        // 宿主可按 localStorage.drDiag=1 打开诊断总闸（影响 diag_content_ratio 的
+        // GPU 回读）；默认关，保证生产路径不做回读。
+        if (options && options.diagEnabled !== undefined) {
+            TileRenderer.diag_enabled = !!options.diagEnabled;
+        }
 
         // 动态网格：init_tiles/resize_grid 按 TILE_SIZE × 画布尺寸生成，
         // 已有瓦片矩形恒定，画布尺寸变化只增删边缘块
@@ -309,9 +321,25 @@ class TileRenderer {
     /**
      * 诊断探针：统计含非空像素（笔迹）的 tile 数量。
      * 阅读器 tiles 为透明底（skipBaseCache），alpha>0 即有笔迹。
-     * 通过 48×48 缩略采样读取，开销可忽略。
+     *
+     * ⚠️ 成本真相（2026-10-02 修正，勿再当"开销可忽略"）：实现是
+     * 「每块 tile 一次 drawImage 降采样 + 一次 getImageData」。getImageData
+     * 是**同步 GPU→CPU 回读**，会 flush 管线并等驱动把纹理搬回内存。
+     * 本页网格 = ceil(css宽/512) × ceil(css高/512)，1920 窗口 fit-width 的
+     * A4 是 4×6 = **24 块** ⇒ 每次调用 24 次回读。真机上这正是
+     * 「翻页明显卡一下」的元凶：调用点在 _check_page_visibility 的
+     * active_page_index 变更分支里，**每次翻页一次**；另两处在
+     * _render_page_strokes 与 _submit_stroke，**每次落笔一次**。
+     * 它只把 {tilesWithContent, tilesAlive} 塞进 _dr_diag 环形缓冲，
+     * 非调试时无人读取——生产路径不做 GPU 回读。
+     *
+     * @param {boolean} force - 无视开关强制执行。仅供**功能性**调用方
+     *   （开页看门狗 _start_open_watchdog 用它判定"瓦片全空"并触发重绘自愈）
+     *   使用；纯诊断调用方不要传。开关由宿主按 localStorage.drDiag=1 注入。
+     * @returns {{tilesWithContent?: number, tilesAlive?: number}}
      */
-    diag_content_ratio() {
+    diag_content_ratio(force = false) {
+        if (!force && !TileRenderer.diag_enabled) return {};
         if (!this._diag_probe) {
             this._diag_probe = document.createElement('canvas');
             this._diag_probe.width = 48;

@@ -325,6 +325,7 @@ class DocumentReaderManager {
 
         this._dr_flip_recent_until = 0;     // 最近一次程序化翻页的「连点窗口」截止时刻
         this._dr_flip_rapid_window_ms = 260; // 连点判定窗口：低于它算一次意图
+        this._dr_flip_drain_timer = null;   // 连点停止后错峰排空批注瓦片的兜底定时器
         // 运动期页面栅格化降密度（滑动/连点时用，停止后自动升回全量）。
         // 取值 0.75：阶梯档值，1920 窗口 A4 单页 45MB → 11MB（4 倍），
         // 常驻纹理随 ~17 个包裹从 ~765MB 降到 ~190MB。依据见 _pdf_motion_dpr_active。
@@ -1014,7 +1015,7 @@ class DocumentReaderManager {
                     repaired = true;
                 } else {
                     // 瓦片存在但探针显示全空 → 被清空后未回填，强制重绘
-                    const probe = pd.tile_renderer.diag_content_ratio();
+                    const probe = pd.tile_renderer.diag_content_ratio(true);
                     if (probe.tilesAlive > 0 && probe.tilesWithContent === 0) {
                         this._dr_diag('wdg-repaint', { page: i + 1, hist: pd.stroke_history.length });
                         this._render_page_strokes(i);
@@ -1166,10 +1167,17 @@ class DocumentReaderManager {
             clearTimeout(this._render_resume_timer);
             this._render_resume_timer = null;
         }
+        // 连点窗口与错峰排空兜底定时器：关闭时必须清，否则定时器在关闭后
+        // 回调 _dr_drain_tile_init_queue，对已销毁的 pages_list 建瓦片
+        if (this._dr_flip_drain_timer != null) {
+            clearTimeout(this._dr_flip_drain_timer);
+            this._dr_flip_drain_timer = null;
+        }
         if (this._dr_motion_upgrade_timer != null) {
             clearTimeout(this._dr_motion_upgrade_timer);
             this._dr_motion_upgrade_timer = null;
         }
+        this._dr_flip_recent_until = 0;
         this._dr_motion_dpr_until = 0;
         this._render_pause_until = 0;
         for (const job of this._deferred_commits.values()) {
@@ -2640,12 +2648,24 @@ class DocumentReaderManager {
                 // 就是可感卡顿（快速滑动的最大单点开销）。PDF 背景（0.5x 占位）
                 // 不依赖瓦片层可先行上屏；停稳后恢复补扫重入本分支，经错峰队列补建
                 // （首屏豁免：打开后立即拖动不推迟首屏批注）。
-                if ((this._dr_renders_paused() || this._dr_tile_init_draining) &&
+                //
+                // _dr_flipping_rapidly 与手势同权，但**只用于批注层**：程序化翻页
+                // 刻意不续期渲染暂停窗口（否则目标页要等 290ms，见 _dr_sync_transform），
+                // 那条门控一撤，快速连点就变成「每点一次在输入事件里同步栅格化
+                // 该页全部笔迹」——实测每页 120 笔时是 2×120 笔的 rebuild_all，
+                // 直接落在按键到下一帧之间（用户感知：快速翻页明显卡一下）。
+                if ((this._dr_renders_paused() || this._dr_flipping_rapidly() || this._dr_tile_init_draining) &&
                     !(this._pending_first_render && page_index === this.active_page_index)) {
                     this._dr_defer_tile_init(page_index);
                 } else {
                     this._resize_page_layout(page_index, this._get_page_base_width());
-                    this._init_page_tiles(page_index);
+                    // 不得无条件再初始化一次：_resize_page_layout 在盒尺寸/批注
+                    // 基准需要对齐时会自行 _init_page_tiles（内部还会先 destroy），
+                    // 此处再无条件补一次 = 同一页同一帧被完整重建两遍。
+                    // 仅当它走了 box_ok && coords_ok 的幂等提前返回、确实没建时才补。
+                    if (!page_data.is_tiles_initialized) {
+                        this._init_page_tiles(page_index);
+                    }
                     this._update_overlay_size(page_index);
                 }
             }
@@ -4894,12 +4914,20 @@ class DocumentReaderManager {
         page_data.coord_width = tile_w;
         page_data.coord_height = tile_h;
 
+        // 诊断总闸：drDiag=1 时同时打开 tile 层详细日志与 diag_content_ratio 的
+        // GPU 回读。读取一次即缓存（见下方 _diag_verbose 的惰性求值）。
+        if (this._diag_verbose === undefined) {
+            try { this._diag_verbose = localStorage.getItem('drDiag') === '1'; } catch (_) { this._diag_verbose = false; }
+        }
         const tile_renderer = new TileRenderer({
             canvasW: tile_w,
             canvasH: tile_h,
             strokeHistoryRef: page_data.stroke_history,
             getVisibleRect: () => this._get_page_visible_rect(page_index),
-            skipBaseCache: true
+            skipBaseCache: true,
+            // 关键：关掉 diag_content_ratio 的 GPU 回读（默认已是关，这里显式
+            // 传入以表明意图）。不传则由 TileRenderer.diag_enabled 决定。
+            diagEnabled: this._diag_verbose
         });
 
         tile_renderer.init_tiles(tiles_container, this.dr_scale || 1);
@@ -4910,6 +4938,7 @@ class DocumentReaderManager {
         if (this._diag_verbose === undefined) {
             try { this._diag_verbose = localStorage.getItem('drDiag') === '1'; } catch (_) { this._diag_verbose = false; }
         }
+        // 注入 tile 层诊断钩子（localStorage.drDiag=1 时启用详细日志）
         if (this._diag_verbose) {
             tile_renderer.diag_hook = (e, d) => this._dr_diag('tr-' + e, d);
         }
@@ -5859,9 +5888,35 @@ class DocumentReaderManager {
         this._update_button_status();
     }
 
+    // ====== 连续程序化翻页（只管批注层，不管渲染启动） ======
+    // 背景：程序化翻页刻意不续期渲染暂停窗口（见 _dr_sync_transform 的 impulse
+    // 说明），因为那条门控会让目标页等 290ms 才起步。但批注瓦片初始化是另一回事
+    // ——它是 TileRenderer 创建 + 该页全部笔迹 rebuild_all 的同步栅格化，
+    // 落在输入事件里就是按键到下一帧之间的硬阻塞。
+    // 单次翻页只有一页要建，可以同步做（更快看到批注）；连续翻页则每点一次
+    // 建一页，必须错峰。窗口取 260ms：低于它算「一次意图」，高于它算「在连点」。
+    // 注意这与 _dr_renders_paused 是两套信号：渲染启动要立刻，批注层可以延后。
     _dr_flipping_rapidly() {
         return performance.now() < this._dr_flip_recent_until;
     }
+
+    /** 标记一次程序化翻页，并保证错峰队列最终会被排空 */
+    _dr_note_flip() {
+        this._dr_flip_recent_until = performance.now() + this._dr_flip_rapid_window_ms;
+        // 排空泵的触发点原本挂在 _dr_on_render_resume 上（由手势续期武装）。
+        // 翻页不再续期手势窗口 ⇒ 队列可能入队后无人排空，批注要等下一次
+        // 拖拽才出现（慢速单次翻页不会命中，但连点停下后的尾页会）。
+        // 这里按窗口到期单独武装一次：_dr_drain_tile_init_queue 内部会自行
+        // 逐帧续批直到队列空，无需重复武装。
+        if (this._dr_flip_drain_timer != null) clearTimeout(this._dr_flip_drain_timer);
+        this._dr_flip_drain_timer = setTimeout(() => {
+            this._dr_flip_drain_timer = null;
+            this._dr_drain_tile_init_queue();
+        }, this._dr_flip_rapid_window_ms + 20);
+        // 连点同样会触发运动期降密度，故也要武装 hold 到期后的升清补扫
+        this._dr_arm_motion_upgrade();
+    }
+
     // ====== 页面导航 ======
 
     async handle_page_nav_prev() {
@@ -5920,6 +5975,7 @@ class DocumentReaderManager {
         this._dr_apply_scale();
 
         // 翻页后预渲染相邻页面
+        this._dr_note_flip();
         this._prerender_for_navigation(page_index);
     }
 
