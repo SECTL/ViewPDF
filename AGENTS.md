@@ -49,7 +49,7 @@ Locale files in `src/locales/{zh-CN,zh-TW,en-US}.json`. Setting stored in `confi
 
 ## Tests
 
-No test framework / bundler / `package.json`. Verification is two-part:
+No test framework / bundler / `package.json`. Verification is:
 
 1. **Syntax**: `for f in $(git diff --name-only -- '*.js'); do node --check "$f"; done`
 2. **Logic + architecture invariants**: `.workbuddy/verify/dpr-harness.mjs`
@@ -63,6 +63,25 @@ No test framework / bundler / `package.json`. Verification is two-part:
    `_transform* =` only in `overlay-manager.js`, no retired overlay APIs left behind.
    **When you change rendering/DPR/overlay code, extend this file rather than re-deriving
    the audit by hand.**
+
+### Render perf tiers (`settings.renderPerfTier`)
+
+Three extra scripts, all `node <file>`, all exit non-zero on failure:
+
+| Script | What it proves |
+|---|---|
+| `verify/perf-tier-apply.mjs` | Executes the real `apply_perf_tier` against a mock reader: all 13 params land on the right instance fields, invalid tiers fall back to `balanced`, canvas pool is trimmed, render-host throttle is released, no visibility rescan while closed |
+| `verify/perf-tier-scoring.mjs` | OOBE `_autoPerfTier()` against fixed hardware profiles — incl. the 5th-gen i5 target and "WMI returned nothing" (must stay `balanced`, never silently `low`) |
+| `verify/reader-momentum.mjs` | Inertial fling: per-frame cost is bounded, bounds are **not** recomputed mid-fling (DOM reads = 0), prerender pump is stopped on fling start, visibility is refreshed but rate-limited to ~33 ms, the closing pass doesn't scan twice |
+| `verify/perf-tier-mutation.mjs` | Mutates each invariant and asserts the suite goes red (34 mutations). **Run it after editing any of the three above or the tier table** — a guard that can't fail is worthless |
+
+Invariants they collectively defend (edit the table, not the field list):
+
+- `RENDER_PERF_TIERS` in `document_reader.js` is the **only** param source; `apply_perf_tier` is its **only** runtime sink. Adding a param without consuming it is a silent no-op.
+- Cost params must stay `low ≤ balanced ≤ high`. A typo that makes `low` costlier than `balanced` defeats the whole feature.
+- Only `init.js` (startup replay) and `main.js` (`settings-changed`) may call `apply_perf_tier`. Calling it in the settings panel too would run the clear-cache + rescan pass twice per change.
+- The per-tier hint text has exactly one writer (JS). Don't put `data-i18n` on `#renderPerfTierHint` — `render_page_texts()` would overwrite the tier-specific copy and language switching wouldn't refresh it.
+- `_dr_update_move_bound()` reads DOM and is driven by **pinch/wheel (60–120 Hz)** plus `_dr_apply_scale`, *not* by the momentum tick (`_dr_update_canvas_position` only clamps). Its cache is invalidated by `_dr_mb_dom_dirty`, set from `_invalidate_page_positions()` and `_on_reader_geometry_changed()`. A `16ms TTL` "read once per frame" throttle can never hit at ~16.7 ms frames — that was the bug.
 
 Also note: grep the whole repo **must** be scoped to `src/` — `src-tauri/` has ~25k files
 and will time out.
