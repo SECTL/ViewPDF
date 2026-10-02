@@ -984,6 +984,14 @@ function main_setup_pdf_file_open() {
             DRAW_CONFIG.momentumEnabled = settings.momentumEnabled;
         }
 
+        // 渲染性能档位：阅读器是唯一消费者（其余字段全在 DocumentReaderManager 内）。
+        // apply_perf_tier 内部自带「清位图缓存 + 按新 keep 窗口回收 + 可见页重渲染」，
+        // 所以这里不需要额外提示重启——降档立即生效（这正是低配机用户需要的：
+        // 卡的时候希望马上缓解，而不是重启一次）。
+        if (settings.renderPerfTier !== undefined) {
+            window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
+        }
+
         }).catch(err => {
         console.error('settings-changed 事件监听失败:', err);
     });

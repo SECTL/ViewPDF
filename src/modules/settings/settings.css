@@ -1738,6 +1738,15 @@
     transform: translateX(200%);
 }
 
+/* 渲染档位组：三档。取值用 low/balanced/high（不复用 frameRateMode 的
+   low/adaptive/high 命名，避免两组滑块的 data-active 取值空间混在一起，
+   语义上也更好——中间档叫「均衡」而不是「自适应」，它并不做自适应）。
+   通用规则的 [data-active="low"] / [data-active="high"] 已能命中首尾两档，
+   只有中间的 balanced 需要这里补一条（通用规则写的是 adaptive）。 */
+.sp-option-group#renderPerfTierGroup[data-active="balanced"]::before {
+    transform: translateX(100%);
+}
+
 #docReaderZoomGroup {
     grid-template-columns: repeat(2, 1fr);
 }

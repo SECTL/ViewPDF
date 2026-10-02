@@ -375,6 +375,26 @@ async function initSettings() {
                     });
                 }
 
+                // 渲染性能档位。回显的是**运行时实际生效**的值而非仅 config：
+                // 非法/缺失的存档值会被 apply_perf_tier 兜到 balanced，UI 若显示
+                // 存档原值会与真实行为不符（正是 frameRateMode 那类问题的翻版）。
+                const perfTierGroup = document.getElementById('renderPerfTierGroup');
+                if (perfTierGroup) {
+                    const live = window.documentReaderManager?.render_perf_tier
+                        || settings.renderPerfTier
+                        || 'balanced';
+                    perfTierGroup.dataset.active = live;
+                    perfTierGroup.querySelectorAll('.sp-option-btn').forEach(btn => {
+                        btn.classList.toggle('sp-active', btn.dataset.value === live);
+                    });
+                    const hint = document.getElementById('renderPerfTierHint');
+                    if (hint) {
+                        const k = { low: 'renderPerfTierHintLow', balanced: 'renderPerfTierHintBalanced', high: 'renderPerfTierHintHigh' }[live];
+                        const txt = k ? window.i18n?.format_translate('settings.' + k) : '';
+                        if (txt) hint.textContent = txt;
+                    }
+                }
+
                 // 主题设置 — 卡片模式
                 const savedTheme = settings.theme || 'com.viewstage.theme.simplify';
                 settings_load_user_themes(savedTheme);
@@ -721,6 +741,10 @@ async function initSettings() {
                     if (window.i18n) {
                         await window.i18n.load_messages(value);
                         window.i18n.render_page_texts();
+                        // render_page_texts 只能填 data-i18n 静态文案；渲染档位的
+                        // 说明是「随档位变」的动态文案（无 data-i18n），切语言后必须
+                        // 重刷，否则停留在旧语言。
+                        window.settings_refresh_perf_tier_hint?.();
                     }
                     const restartModal = document.getElementById('restartModal');
                     if (restartModal) restartModal.classList.add('sp-active');
@@ -1292,6 +1316,37 @@ async function initSettings() {
                 docReaderZoomGroup.dataset.active = zoom;
                 buttons.forEach(b => b.classList.toggle('sp-active', b === btn));
                 await settings_save_all_local({ docReaderDefaultZoom: zoom });
+            });
+        });
+    }
+
+    // 渲染性能档位。保存走 settings_save_all_local → 它会 emit('settings-changed')
+    // → main.js 的监听转调 documentReaderManager.apply_perf_tier()，
+    // **不要在这里再直接调 apply_perf_tier**：会与监听器重复执行一次
+    // （每次都要清位图缓存 + 按新窗口回收 + 可见页重渲染，重复执行是白烧）。
+    // 这里只负责 UI 回显 + 落盘。
+    const perfTierGroup = document.getElementById('renderPerfTierGroup');
+    if (perfTierGroup) {
+        const buttons = perfTierGroup.querySelectorAll('.sp-option-btn');
+        const hint = document.getElementById('renderPerfTierHint');
+        const setHint = (tier) => {
+            if (!hint) return;
+            const k = { low: 'renderPerfTierHintLow', balanced: 'renderPerfTierHintBalanced', high: 'renderPerfTierHintHigh' }[tier];
+            const txt = k ? window.i18n?.format_translate('settings.' + k) : '';
+            if (txt) hint.textContent = txt;
+        };
+        // 说明文案是「随档位变」的，不能靠 data-i18n：那会被 render_page_texts
+        // 用一档静态文案盖掉，且切语言后也不跟着刷新。改为单一写者 = 本函数，
+        // 并挂到 window 供切语言路径调用。
+        window.settings_refresh_perf_tier_hint = () => setHint(perfTierGroup.dataset.active || 'balanced');
+        window.settings_refresh_perf_tier_hint();
+        buttons.forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const tier = btn.dataset.value;
+                perfTierGroup.dataset.active = tier;
+                buttons.forEach(b => b.classList.toggle('sp-active', b === btn));
+                setHint(tier);
+                await settings_save_all_local({ renderPerfTier: tier });
             });
         });
     }

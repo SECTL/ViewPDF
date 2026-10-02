@@ -116,7 +116,23 @@ async function settings_load_config() {
             // 跟随显示器 DPR 变化（跨屏拖动 / 系统缩放调整）
             window.ResolutionController?.watch_display_dpr();
 
-            console.log('[init] 配置加载完成');
+            // 渲染性能档位：必须在阅读器打开任何页面**之前**回放。
+            // 档位决定位图宽上限、位图缓存预算与虚拟化窗口——首屏渲染一旦开始
+            // 再改，就会先按默认档分配一轮纹理再全部丢弃（正是本项目反复出现
+            // 的「首屏分配 → 重分配 → 帧饿」形态）。
+            //
+            // frameRateMode 之前没在这里回放，是个现成的反面教材：
+            // document_reader.js 与 blackboard 都读 window.DRAW_CONFIG.frameRateMode，
+            // 而 DRAW_CONFIG 从未定义该键 → 实际永远收不到。档位不能重蹈覆辙，
+            // 所以直接把值下发到唯一消费者 documentReaderManager，不经 DRAW_CONFIG
+            // 这类中间层（多一份可变镜像就多一处可能不同步的地方）。
+            // 用 window. 前缀而非裸标识符：可选链挡不住「标识符未声明」的 ReferenceError。
+            if (['low', 'balanced', 'high'].includes(settings.renderPerfTier)) {
+                window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
+            }
+
+            console.log('[init] 配置加载完成 (档位=' +
+                (settings.renderPerfTier || 'balanced(默认，未落盘)') + ')');
             return settings;
         } catch (error) {
             console.error('加载配置失败:', error);

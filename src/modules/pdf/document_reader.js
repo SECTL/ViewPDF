@@ -106,6 +106,79 @@ const PDF_RASTER_MAX_DEV_W_DEFAULT = 2048;
  */
 const PDF_RASTER_ZOOM_HEADROOM = 2;
 
+/**
+ * ===== 渲染性能档位（settings.renderPerfTier）=====
+ *
+ * 为什么要档位：四份真机 trace（2026-10-02）证明瓶颈**不在主线程**——
+ * CrRendererMain 全程 0 个 ≥50ms 任务，33/33 卡顿帧主线程都空闲，而 GPU 进程
+ * 每秒跑 0.9~1.7 秒工作。瓶颈是纹理吞吐，而纹理吞吐完全由「位图多大、常驻多少页、
+ * 位图缓存留多少」决定 —— 这三项在不同机器上最优值差一个数量级：
+ *
+ *   核显 + 共享系统内存（本机 Intel UHD，1920 窗 DPR2）
+ *       单页 19.2MB × ±5 窗口 11 页 = 212MB 常驻 + 128MB 位图缓存
+ *   同机若不设限（DPR2 未收敛时）  单页 77MB  → 常驻 847MB
+ *   5 代 i5 / 1366×768 / DPR1        单页 9.6MB × 11 = 106MB + 96MB
+ *
+ * 差别大到不能只给一个默认值，于是按档位下发：
+ *   low      8GB 内存 / 核显 / 1366×768 一类：纹理与常驻都压到最低
+ *   balanced 默认，OOBE 按硬件选出来的多数落在这一档
+ *   high     独显或高分屏：放开到 2560 + 放大余量 2（2x 放大 1:1 锐利）
+ *
+ * ⚠️ 静止态的位图宽由 1:1 下限与 css_w 共同决定：`_pdf_cap_render_dpr` 的
+ * 「不低于 1:1」守卫意味着 **DPR=1 的机器上 raster_max_dev_w 在 1x 时是空操作**
+ * （控制器本来就要 1.0）。所以对非 HiDPI 屏，档位真正起作用的是位图缓存预算、
+ * 虚拟化窗口、RENDER_MAX、canvas 池这几项，而不是位图宽。别把低配档做成
+ * 「只降分辨率」——那样在 5 代机上等于什么都没做。
+ */
+const RENDER_PERF_TIERS = {
+    low: {
+        raster_max_dev_w: 1024,     // 仅影响放大上限；1x 由 1:1 下限兜住
+        zoom_headroom: 1,           // 不给放大余量
+        motion_dpr_max: 0.5,        // 运动期直接用占位密度
+        bitmap_cache_bytes: 32 * 1024 * 1024,
+        bitmap_cache_entries: 4,
+        wrapper_keep_distance: 3,
+        image_keep_distance: 3,
+        blob_keep_distance: 4,
+        prerender_distance: 2,
+        prerender_urgent_span: 4,
+        render_max: 1,              // 渲染线程并发：1
+        canvas_pool_max: 1,
+        sidebar_thumbnail_cache_max: 12,
+    },
+    balanced: {
+        raster_max_dev_w: 2048,
+        zoom_headroom: 1.5,
+        motion_dpr_max: 0.75,
+        bitmap_cache_bytes: 96 * 1024 * 1024,
+        bitmap_cache_entries: 8,
+        wrapper_keep_distance: 6,
+        image_keep_distance: 4,
+        blob_keep_distance: 6,
+        prerender_distance: 4,
+        prerender_urgent_span: 6,
+        render_max: 2,
+        canvas_pool_max: 2,
+        sidebar_thumbnail_cache_max: 24,
+    },
+    high: {
+        raster_max_dev_w: 2560,
+        zoom_headroom: 2,            // 2x 放大达屏幕 1:1
+        motion_dpr_max: 0.75,
+        bitmap_cache_bytes: 128 * 1024 * 1024,
+        bitmap_cache_entries: 10,
+        wrapper_keep_distance: 8,
+        image_keep_distance: 5,
+        blob_keep_distance: 6,
+        prerender_distance: 5,
+        prerender_urgent_span: 8,
+        render_max: 2,
+        canvas_pool_max: 3,
+        sidebar_thumbnail_cache_max: 30,
+    },
+};
+const RENDER_PERF_TIER_NAMES = ['low', 'balanced', 'high'];
+
 /** 计算某一缩放级别下的位图宽上限（纯函数，便于单测） */
 function _pdf_raster_limit(base_dev_w, scale, headroom) {
     const base = (base_dev_w > 0) ? base_dev_w : PDF_RASTER_MAX_DEV_W_DEFAULT;
@@ -390,6 +463,11 @@ class DocumentReaderManager {
             if (this.is_open) { this._bitmap_cache_clear(); this._check_page_visibility(); }
             return this._zoom_headroom;
         };
+        // 渲染性能档位：OOBE 按硬件自动预选，用户可在设置里改。
+        // 唯一真值在 settings.renderPerfTier（config.json），本字段只是运行时镜像。
+        this.render_perf_tier = 'balanced';
+        window.__perfTier = () => this.render_perf_tier;
+
         // ====== 增量回收（分批执行，防全量清理尖峰） ======
         // 旧实现：每页隐藏定时器触发一次 O(N) 全量扫描+当场回收——快滑 40 页
         // 实测 35 次扫描、单次最大 57.7ms 的主线程尖峰（longtask）。
@@ -5995,6 +6073,58 @@ class DocumentReaderManager {
     }
 
     // ====== 页面导航 ======
+
+    /**
+     * 应用渲染性能档位（settings.renderPerfTier 的**唯一**运行时落点）。
+     *
+     * 为什么必须收敛到一个入口：本类有 13 个与成本直接相关的实例字段，散落在
+     * 构造函数的各处。逐处监听设置变更必然漏项——`frameRateMode` 就是现成的
+     * 反面教材（`DRAW_CONFIG.frameRateMode` 被两处读取却从未定义，实际永远收不到）。
+     * 所以：档位表在文件顶层，apply_perf_tier 逐字段写入，改档位只改这一处。
+     *
+     * @param {string} tier - 'low' | 'balanced' | 'high'；非法值回退 balanced
+     * @returns {string} 实际生效的档位
+     */
+    apply_perf_tier(tier) {
+        const name = RENDER_PERF_TIER_NAMES.includes(tier) ? tier : 'balanced';
+        const p = RENDER_PERF_TIERS[name];
+        this.render_perf_tier = name;
+
+        this._raster_max_dev_w = p.raster_max_dev_w;
+        this._zoom_headroom = p.zoom_headroom;
+        this._DR_MOTION_DPR_MAX = p.motion_dpr_max;
+        this._bitmap_cache_max_bytes = p.bitmap_cache_bytes;
+        this._bitmap_cache_max_entries = p.bitmap_cache_entries;
+        this._wrapper_keep_distance = p.wrapper_keep_distance;
+        this._image_keep_distance = p.image_keep_distance;
+        this._blob_keep_distance = p.blob_keep_distance;
+        this._prerender_distance = p.prerender_distance;
+        this._prerender_urgent_span = p.prerender_urgent_span;
+        this._RENDER_MAX = p.render_max;
+        this._canvas_pool_max = p.canvas_pool_max;
+        this._sidebar_thumbnail_cache_max = p.sidebar_thumbnail_cache_max;
+        // 渲染线程并发与手势期限流同口径（set_throttled 的 on 分支写 1）
+        if (this._render_host) this._render_host.set_throttled?.(false);
+
+        // 预算/窗口变了，旧的缓存条目与已挂载页不再合规：清缓存 + 立刻驱逐超窗页，
+        // 否则降档后常驻纹理仍按旧窗口留着，降档等于没生效。
+        this._bitmap_cache_clear();
+        if (this._canvas_pool.length > p.canvas_pool_max) {
+            this._canvas_pool.length = p.canvas_pool_max;
+        }
+        if (this.is_open) {
+            this._cleanup_hidden_page_gpu();      // 按新 keep 窗口立即回收
+            this._invalidate_page_positions();    // 窗口变了，页盒坐标缓存作废
+            this._dr_motion_dpr_until = 0;
+            this._dr_arm_motion_upgrade();
+            this._check_page_visibility();        // 可见页按新档位重渲染
+        }
+        console.log('[DocumentReader] 渲染档位 → ' + name +
+            ' (位图上限 ' + p.raster_max_dev_w + 'px, 缓存 ' +
+            Math.round(p.bitmap_cache_bytes / 1048576) + 'MB)');
+        return name;
+    }
+
 
     async handle_page_nav_prev() {
         if (this.is_drawing) return;

@@ -15,6 +15,7 @@ const state = {
   penEffectMode: 'full',
   dynamicDprEnabled: true,
   frameRateMode: 'high',
+  renderPerfTier: 'balanced',   // 由 _autoPerfTier() 按硬件预选；用户可改
   blackboardEnabled: true,
   restoreLastDoc: true,
   importedSettings: null,
@@ -24,6 +25,87 @@ const state = {
 
 let _updateTimeout = null;
 let _downloadFilePath = null;
+
+// ==================== 硬件探测 → 渲染档位 ====================
+// 档位存在的理由：2026-10-02 的四份真机 trace 证明瓶颈不在主线程
+// （CrRendererMain 全程 0 个 ≥50ms 任务，33/33 卡顿帧主线程都空闲），而在
+// GPU 纹理吞吐。而纹理量 = 单页位图大小 × 常驻页数 + 位图缓存，各项在不同
+// 机器上的最优值差一个数量级（5 代 i5 1366×768 是 9.6MB/页 106MB 常驻；
+// 核显 1920 窗 DPR2 不设限时是 77MB/页 847MB 常驻）。所以不能只给一个默认值。
+let _deviceInfo = null;      // device_detect_all 的结果（WMI，可能耗时数秒）
+let _deviceProbeDone = false;
+let _tierPickedByUser = false;   // 用户在 OOBE 里点过档位 → 不得被探测结果覆盖
+
+async function _probeDevice() {
+  if (_deviceInfo || _deviceProbeDone) return _deviceInfo;
+  _deviceProbeDone = true;
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) return null;
+    // performFinalSave 里原本也调它但丢弃返回值；这里提前调一次用于预选档位。
+    // 幂等：它只是读硬件 + 写一份 device.json，重复调用无害。
+    _deviceInfo = await invoke('device_detect_all');
+  } catch (e) {
+    _deviceInfo = null;
+  }
+  return _deviceInfo;
+}
+
+/**
+ * 硬件 → 档位。
+ *
+ * 打分制而非 if-else 链：任一维度都能单独影响档位，后续加维度不用重写判定顺序。
+ * 但**分值以「中档」为 0**：只把「明确的短板」记负分、把「明确的优势」记正分。
+ * 早先一版把集成显卡直接记 -1，结果 6 核/16GB 的 UHD 630 也被判成 low ——
+ * 而实测这类机器跑本应用主体是稳的，卡顿只在快速翻页时出现，判 low 属于过度反应。
+ *
+ * 权重依据（都是实测过的成本项，不是拍脑袋）：
+ * - 内存：图形侧要同时装「常驻页纹理 + 位图缓存」，8GB 机器上这部分就是几百 MB，
+ *   和系统本身已经很紧；故 <6GB 直接一票否决判 low。
+ * - 核数：应用同时跑主线程 + 渲染线程(pdf.js 栅格化) + 维护线程(批注 JSON)，
+ *   ≤4 核会过度订阅（实测渲染线程单页栅格化耗时 129ms~1.2s，核少的按比例更慢）。
+ * - 独显：唯一能把「清晰度」和「流畅度」同时放开的硬件前提。没有独显就封顶在
+ *   balanced —— 核显纹理走**共享系统内存**，与栅格化抢同一条内存总线，这正是
+ *   本项目 GPU 侧卡顿的最主要成因，不该因为「大内存 + 多核」就发 high 许可证。
+ * - 独显显存 gpu_dedicated_memory_mb 来自 WMI AdapterRAM，32 位上溢后常见为 0 或
+ *   偏小，故只作为「确认有独显」的辅助证据（≥1GB 视为可信），不作为主判据。
+ * - HDD：批注走文件缓存，机械盘会明显拖慢落盘与清缓存，顺手扣一分。
+ * @returns {'low'|'balanced'|'high'}
+ */
+function _autoPerfTier(dev) {
+  if (!dev) return 'balanced';   // 探测失败 → 中档，不擅自判 low
+  const ramMb = Number(dev.total_ram_mb) || 0;
+  const cores = Number(dev.cpu_cores) || 0;
+  const gpu = String(dev.gpu_name || '').toLowerCase();
+  const dedicatedMb = Number(dev.gpu_dedicated_memory_mb) || 0;
+
+  // 内存一票否决：探测得到且确实很低
+  if (ramMb > 0 && ramMb < 6144) return 'low';
+
+  let score = 0;
+  // 每个维度都先确认「探测到了」再计分。WMI 偶尔会缺字段，此时 Number(...)||0
+  // 得到 0，若不判空，0 会被当成「内存极小 / 核心极少」直接把机器打成 low ——
+  // 比不判更糟的方向（无谓地牺牲清晰度换流畅度，用户并不会觉得更好）。
+  if (ramMb > 0) {
+    if (ramMb >= 24576) score += 2;
+    else if (ramMb >= 12288) score += 1;
+    else if (ramMb < 6144) score -= 4;
+  }
+  if (cores > 0) {
+    if (cores >= 12) score += 1;
+    else if (cores <= 2) score -= 2;
+    else if (cores <= 4) score -= 1;
+  }
+
+  const hasDedicated = dedicatedMb >= 1024 || /rtx|gtx|radeon\s*rx|arc\s*a/.test(gpu);
+  if (hasDedicated) score += 1;
+
+  if (String(dev.disk_type || '').toUpperCase() === 'HDD') score -= 1;
+
+  if (score <= -1) return 'low';                             // 明确的短板叠加
+  if (score >= 2 && hasDedicated) return 'high';             // 且必须有独显兜底带宽
+  return 'balanced';
+}
 
 // ==================== Icons ====================
 const ICONS = {
@@ -312,6 +394,17 @@ const STEP_TPL = [
         `).join('')}
       </div>
     </div>
+    <div class="setting-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+      <div class="setting-row-label">${_t('settings.renderPerfTier')}</div>
+      <div class="option-group" id="renderPerfTierGroupOobe" data-active="${state.renderPerfTier}">
+        ${['low', 'balanced', 'high'].map(v => html`
+          <button class="option-btn${state.renderPerfTier === v ? ' active' : ''}" data-value="${v}">
+            ${_t('settings.renderPerfTier' + v.charAt(0).toUpperCase() + v.slice(1))}
+          </button>
+        `).join('')}
+      </div>
+      <div class="toggle-desc" id="renderPerfTierDescOobe">${_t('oobe.perfTierDetecting')}</div>
+    </div>
   `,
   // 4 — Drawing
   () => html`
@@ -484,6 +577,40 @@ function setupPerformance() {
       frGroup.dataset.active = mode;
       frGroup.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+    });
+  }
+
+  // 渲染档位：自动预选 + 可手改
+  const tierGroup = document.getElementById('renderPerfTierGroupOobe');
+  const tierDesc = document.getElementById('renderPerfTierDescOobe');
+  if (tierGroup) {
+    const setTier = (tier) => {
+      state.renderPerfTier = tier;
+      tierGroup.dataset.active = tier;
+      tierGroup.querySelectorAll('.option-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.value === tier);
+      });
+      if (tierDesc) {
+        tierDesc.textContent = _t('oobe.perfTierReason_' + tier);
+      }
+    };
+    tierGroup.addEventListener('click', (e) => {
+      const btn = e.target.closest('.option-btn');
+      if (!btn) return;
+      _tierPickedByUser = true;
+      setTier(btn.dataset.value);
+    });
+
+    // 先渲染 UI（默认 balanced），探测回来后若用户还没动过就换成自动结果
+    setTier(state.renderPerfTier);
+    _probeDevice().then((dev) => {
+      if (_tierPickedByUser) return;    // 用户已选 → 不覆盖
+      if (!dev) {
+        if (tierDesc) tierDesc.textContent = _t('oobe.perfTierReasonFallback');
+        return;
+      }
+      setTier(_autoPerfTier(dev));
+      console.log('[OOBE] 硬件探测 → 渲染档位', dev, '→', state.renderPerfTier);
     });
   }
 }
@@ -834,6 +961,12 @@ async function importConfig() {
     }
 
     state.importedSettings = settings;
+    // 导入的旧配置若带渲染档位，沿用它（那是用户在此前的安装里手选/自动落盘的结果），
+    // 并锁掉自动探测 —— 重新导入意味着用户想回到那个状态，不该被硬件判定改写。
+    if (['low', 'balanced', 'high'].includes(settings.renderPerfTier)) {
+      state.renderPerfTier = settings.renderPerfTier;
+      _tierPickedByUser = true;
+    }
     showImportStatus('success', _t('oobe.importSuccess'));
     setTimeout(() => doTransition(6), 800);
   } catch (err) {
@@ -866,6 +999,8 @@ function mergeSettings() {
     frameRateMode: state.frameRateMode,
     blackboardEnabled: state.blackboardEnabled,
     restoreLastDoc: state.restoreLastDoc,
+    renderPerfTier: ['low', 'balanced', 'high'].includes(state.renderPerfTier)
+      ? state.renderPerfTier : 'balanced',
     penColors: PEN_COLORS,
     oobeCompleted: true,
   };

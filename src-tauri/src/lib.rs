@@ -1502,7 +1502,12 @@ fn config_fetch_default() -> serde_json::Value {
         "developerMode": false,
         "penMinWidthRatio": 0.2,
         "lastOpenDoc": null,
-        "restoreLastDoc": true
+        "restoreLastDoc": true,
+        // 渲染性能档位（low / balanced / high）。首次运行的 OOBE 会调
+        // device_detect_all 按硬件自动预选，用户可在「文档阅读器」设置页改。
+        // 放进 defaults 才能吃到 config_validate_and_merge 的类型校验
+        // （未知键会被原样保留、不校验），档位值拼错时才能被挡下。
+        "renderPerfTier": "balanced"
     })
 }
 
