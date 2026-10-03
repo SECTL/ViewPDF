@@ -306,7 +306,9 @@
     "updateLater": "稍後再說",
     "updateCheckFailed": "檢查更新失敗",
     "updateSkipCheck": "跳過檢查",
-    "saving": "正在儲存設定..."
+    "saving": "正在儲存設定...",
+    "titleBar": "視窗標題列",
+    "titleBarDesc": "選擇視窗右上角按鈕的樣式"
   },
   "about": {
     "description": "ViewPDF 是一款用於影片演示和文件批註的應用程式。",

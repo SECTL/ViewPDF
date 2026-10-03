@@ -308,7 +308,9 @@
     "updateLater": "Später",
     "updateCheckFailed": "Update fehlgeschlagen",
     "updateSkipCheck": "Prüfung überspringen",
-    "saving": "Einstellungen speichern..."
+    "saving": "Einstellungen speichern...",
+    "titleBar": "Fensterleiste",
+    "titleBarDesc": "Stil der Fensterschaltflächen wählen"
   },
   "about": {
     "description": "ViewPDF ist eine Anwendung für Videopräsentation und Dokumentannotation.",

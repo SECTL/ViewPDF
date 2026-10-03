@@ -122,17 +122,32 @@ const ICONS = {
   dismiss: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4.39705 4.55379L4.46967 4.46967C4.73594 4.2034 5.1526 4.1792 5.44621 4.39705L5.53033 4.46967L12 10.939L18.4697 4.46967C18.7626 4.17678 19.2374 4.17678 19.5303 4.46967C19.8232 4.76256 19.8232 5.23744 19.5303 5.53033L13.061 12L19.5303 18.4697C19.7966 18.7359 19.8208 19.1526 19.6029 19.4462L19.5303 19.5303C19.2641 19.7966 18.8474 19.8208 18.5538 19.6029L18.4697 19.5303L12 13.061L5.53033 19.5303C5.23744 19.8232 4.76256 19.8232 4.46967 19.5303C4.17678 19.2374 4.17678 18.7626 4.46967 18.4697L10.939 12L4.46967 5.53033C4.2034 5.26406 4.1792 4.8474 4.39705 4.55379L4.46967 4.46967L4.39705 4.55379Z" fill="currentColor"/></svg>',
 };
 
-const STEPS = [
-  { id: 'language' },
-  { id: 'theme' },
-  { id: 'importConfig' },
-  { id: 'performance' },
-  { id: 'drawing' },
-  { id: 'defaultApps' },
-  { id: 'checkUpdate' },
-  { id: 'complete' },
-  { id: 'installing' },
-]
+/**
+ * 步骤下标 —— 全文件唯一允许写步骤编号的地方。
+ *
+ * 别在别处写裸数字。插入/调整步骤时，散落的 `doTransition(7)` 会**静默改变含义**：
+ * 本次在「检查更新」后插入「标题栏」步时，就有一批 `doTransition(7)` 从
+ * 「去完成页」变成「去标题栏页」—— 数字一模一样，含义变了，肉眼几乎不可能发现。
+ *
+ * STEPS 由本表派生，两者不可能对不上。
+ */
+const STEP = {
+  language: 0,
+  theme: 1,
+  importConfig: 2,
+  performance: 3,
+  drawing: 4,
+  defaultApps: 5,
+  checkUpdate: 6,
+  titleBar: 7,
+  complete: 8,
+  installing: 9,
+};
+
+/** 这些步骤不显示导航栏：检查更新会自动前进，完成页与安装页是终点 */
+const STEPS_WITHOUT_NAV = new Set([STEP.checkUpdate, STEP.complete, STEP.installing]);
+
+const STEPS = Object.keys(STEP).map((id) => ({ id }));
 const PEN_COLORS = [
   { r: 239, g: 68, b: 68 },
   { r: 249, g: 115, b: 22 },
@@ -213,15 +228,16 @@ function renderStepContent(stepIndex, direction) {
   if (!panel) return;
   const tpl = STEP_TPL[stepIndex];
   panel.innerHTML = tpl ? tpl() : '';
-  if (stepIndex === 0) setupLanguage();
-  else if (stepIndex === 1) setupTheme();
-  else if (stepIndex === 2) setupImportConfig();
-  else if (stepIndex === 3) setupPerformance();
-  else if (stepIndex === 4) setupDrawing();
-  else if (stepIndex === 5) setupDefaultApps();
-  else if (stepIndex === 6) setupCheckUpdate();
-  else if (stepIndex === 7) setupComplete();
-  else if (stepIndex === 8) setupInstalling();
+  if (stepIndex === STEP.language) setupLanguage();
+  else if (stepIndex === STEP.theme) setupTheme();
+  else if (stepIndex === STEP.importConfig) setupImportConfig();
+  else if (stepIndex === STEP.performance) setupPerformance();
+  else if (stepIndex === STEP.drawing) setupDrawing();
+  else if (stepIndex === STEP.defaultApps) setupDefaultApps();
+  else if (stepIndex === STEP.checkUpdate) setupCheckUpdate();
+  else if (stepIndex === STEP.titleBar) setupTitleBar();
+  else if (stepIndex === STEP.complete) setupComplete();
+  else if (stepIndex === STEP.installing) setupInstalling();
 }
 
 function updateUI() {
@@ -244,13 +260,13 @@ function updateUI() {
 function renderNav() {
   const nav = document.getElementById('navBar');
   if (!nav) return;
-  if (state.step === 6 || state.step === 7 || state.step === 8) {
+  if (STEPS_WITHOUT_NAV.has(state.step)) {
     nav.style.display = 'none';
     return;
   }
   nav.style.display = '';
-  const isFirst = state.step === 0;
-  const isImport = state.step === 2;
+  const isFirst = state.step === STEP.language;
+  const isImport = state.step === STEP.importConfig;
 
   nav.innerHTML = html`
     <div class="nav-left">
@@ -293,7 +309,7 @@ function doTransition(target) {
 }
 
 function validateStep(step) {
-  if (step === 0) {
+  if (step === STEP.language) {
     const sel = $('#languageSelect .lang-item.selected');
     if (!sel) return false;
   }
@@ -301,25 +317,27 @@ function validateStep(step) {
 }
 
 function gatherStepData(step) {
-  if (step === 0) {
+  if (step === STEP.language) {
     const sel = $('#languageSelect .lang-item.selected');
     if (sel) state.language = sel.dataset.value;
   }
-  if (step === 1) {
-    const panel = document.querySelector('[data-step="1"]');
+  if (step === STEP.theme) {
+    const panel = document.querySelector(`[data-step="${STEP.theme}"]`);
     const sel = panel?.querySelector('.card.selected[data-theme]');
     if (sel) state.theme = sel.dataset.theme;
+  }
+  if (step === STEP.titleBar) {
     const tbToggle = document.getElementById('macosTitleBarToggle');
     // 兜底 true：与 Rust 默认值一致。元素不存在时若回落 false，会把没碰过这个
     // 开关的用户静默改成 Windows 经典样式。
     state.macosTitleBar = tbToggle ? tbToggle.checked : true;
   }
-  if (step === 3) {
+  if (step === STEP.performance) {
     const frGroup = document.getElementById('frameRateModeGroup');
     const frActive = frGroup?.querySelector('.option-btn.active');
     if (frActive) state.frameRateMode = frActive.dataset.value;
   }
-  if (step === 4) {
+  if (step === STEP.drawing) {
     const dprToggle = document.getElementById('dynamicDprToggle');
     state.dynamicDprEnabled = dprToggle ? dprToggle.checked : true;
     const bbToggle = document.getElementById('blackboardEnabledToggle');
@@ -328,7 +346,7 @@ function gatherStepData(step) {
     const active = group?.querySelector('.option-btn.active');
     if (active) state.penEffectMode = active.dataset.value;
   }
-  if (step === 5) {
+  if (step === STEP.defaultApps) {
     const restoreToggle = document.getElementById('restoreLastDocToggle');
     state.restoreLastDoc = restoreToggle ? restoreToggle.checked : true;
   }
@@ -375,17 +393,6 @@ const STEP_TPL = [
           <div class="card-title">${o.label}</div>
         </div>
       `).join('')}
-    </div>
-    <div class="divider"></div>
-    <div class="toggle-row">
-      <div>
-        <div class="toggle-label">${_t('settings.macosTitleBar')}</div>
-        <div class="toggle-desc">${_t('settings.macosTitleBarHint')}</div>
-      </div>
-      <label class="toggle-switch">
-        <input type="checkbox" id="macosTitleBarToggle" ${state.macosTitleBar ? 'checked' : ''}>
-        <span class="toggle-slider"></span>
-      </label>
     </div>
   `,
   // 2 — Import Config
@@ -522,7 +529,23 @@ const STEP_TPL = [
       <button class="btn btn-ghost" id="btnUpdateSkipCheck">${_t('oobe.updateSkipCheck')}</button>
     </div>
   `,
-  // 7 — Complete
+  // 7 — Title Bar
+  () => html`
+    <div class="step-icon"></div>
+    <div class="step-title">${_t('oobe.titleBar')}</div>
+    <div class="step-subtitle">${_t('oobe.titleBarDesc')}</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">${_t('settings.macosTitleBar')}</div>
+        <div class="toggle-desc">${_t('settings.macosTitleBarHint')}</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="macosTitleBarToggle" ${state.macosTitleBar ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  `,
+  // 8 — Complete
   () => html`
     <div class="checkmark"></div>
     <div class="step-title">${_t('oobe.setupComplete')}</div>
@@ -531,7 +554,7 @@ const STEP_TPL = [
       <button class="btn btn-success" id="btnFinishStep">${_t('oobe.restartApp')}</button>
     </div>
   `,
-  // 8 — Installing
+  // 9 — Installing
   () => html`
     <div class="installing-view">
       <div class="spinner"></div>
@@ -578,9 +601,11 @@ function setupTheme() {
       await window.ThemeManager.theme_update_active(themeId);
     }
   });
+}
 
-  // 标题栏样式开关。放在外观这步（与主题同属「长相」），且不做即时预览 ——
-  // OOBE 窗口本身无边框（960x540 no decorations），没有标题栏可供预览。
+function setupTitleBar() {
+  // 标题栏样式开关独占一步。不做即时预览 —— OOBE 窗口本身无边框
+  // （960x540 no decorations），没有标题栏可供预览。
   document.getElementById('macosTitleBarToggle')?.addEventListener('change', (e) => {
     state.macosTitleBar = e.target.checked;
   });
@@ -704,7 +729,7 @@ async function checkAssociation(ext, statusElId) {
 }
 
 function setupComplete() {
-  document.getElementById('btnFinishStep')?.addEventListener('click', () => doTransition(8));
+  document.getElementById('btnFinishStep')?.addEventListener('click', () => doTransition(STEP.installing));
 }
 
 async function setupInstalling() {
@@ -721,9 +746,9 @@ async function setupInstalling() {
   } catch (err) {
     console.error('Setup failed:', err);
     if (_downloadFilePath) {
-      doTransition(6);
+      doTransition(STEP.checkUpdate);
     } else {
-      doTransition(7);
+      doTransition(STEP.complete);
     }
   }
 }
@@ -765,7 +790,7 @@ function skipUpdateCheck() {
   }
   const btn = document.getElementById('btnUpdateSkipCheck');
   if (btn) btn.disabled = true;
-  doTransition(7, 'forward');
+  doTransition(STEP.titleBar, 'forward');
 }
 
 async function showUpdateResult(result) {
@@ -786,7 +811,7 @@ async function showUpdateResult(result) {
     statusEl.innerHTML = '';
     const notesEl = document.getElementById('updateNotes');
     if (notesEl) notesEl.style.display = 'none';
-    _updateTimeout = setTimeout(() => doTransition(7, 'forward'), 2000);
+    _updateTimeout = setTimeout(() => doTransition(STEP.titleBar, 'forward'), 2000);
     return;
   }
 
@@ -799,7 +824,7 @@ async function showUpdateResult(result) {
     if (notesEl0) notesEl0.style.display = 'none';
     await new Promise(r => setTimeout(r, 1200));
     if (state.updateSkipRequested) return;
-    doTransition(7, 'forward');
+    doTransition(STEP.titleBar, 'forward');
     return;
   }
 
@@ -819,12 +844,12 @@ async function showUpdateResult(result) {
     if (skipBtn) skipBtn.style.display = '';
     if (skipCheckBtn) skipCheckBtn.style.display = 'none';
 
-    document.getElementById('btnUpdateSkip')?.addEventListener('click', () => doTransition(7, 'forward'));
+    document.getElementById('btnUpdateSkip')?.addEventListener('click', () => doTransition(STEP.titleBar, 'forward'));
     document.getElementById('btnUpdateDownload')?.addEventListener('click', async () => {
       if (!invoke || !result.package) return;
 
       if (_downloadFilePath) {
-        doTransition(8);
+        doTransition(STEP.installing);
         return;
       }
 
@@ -869,7 +894,7 @@ async function showUpdateResult(result) {
     await new Promise(r => setTimeout(r, 1200));
     // 这 1.2s 不可取消，期间可能已被 skipUpdateCheck 推进去了。
     if (state.updateSkipRequested) return;
-    doTransition(7, 'forward');
+    doTransition(STEP.titleBar, 'forward');
   }
 }
 
@@ -899,7 +924,7 @@ async function _checkForUpdate() {
       bannerEl.textContent = _t('oobe.updateCheckFailed');
       bannerEl.style.display = '';
     }
-    _updateTimeout = setTimeout(() => doTransition(7, 'forward'), 2000);
+    _updateTimeout = setTimeout(() => doTransition(STEP.titleBar, 'forward'), 2000);
   }
 }
 
@@ -1052,7 +1077,7 @@ async function importConfig() {
       state.macosTitleBar = settings.macosTitleBar;
     }
     showImportStatus('success', _t('oobe.importSuccess'));
-    setTimeout(() => doTransition(6), 800);
+    setTimeout(() => doTransition(STEP.checkUpdate), 800);
   } catch (err) {
     console.error('Import failed:', err);
     showImportStatus('error', _t('oobe.importFailed'));

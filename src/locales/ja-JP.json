@@ -308,7 +308,9 @@
     "updateLater": "後で",
     "updateCheckFailed": "アップデートの確認に失敗しました",
     "updateSkipCheck": "確認をスキップ",
-    "saving": "設定を保存中..."
+    "saving": "設定を保存中...",
+    "titleBar": "ウィンドウタイトルバー",
+    "titleBarDesc": "ウィンドウボタンのスタイルを選択します"
   },
   "about": {
     "description": "ViewPDF はビデオプレゼンテーションと文書注釈のためのアプリケーションです。",

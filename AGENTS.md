@@ -81,8 +81,8 @@ Seven extra scripts, all `node <file>`, all exit non-zero on failure:
 | `verify/telemetry-mutation.mjs` | Mutates each heartbeat/telemetry invariant and asserts `telemetry-heartbeat.mjs` (or `dpr-harness.mjs` for the single-send-choke-point guard) goes red (20 mutations). **Run it after editing the scheduler, the API layer, or either harness** |
 | `verify/update-resolve.mjs` | Update resolution, **executed** against the real `update-resolve.js`: semver precedence incl. prerelease, "beta build must not be nagged to install itself", Windows `.exe` beats `.msi` regardless of array order, generic (`os=通用`) packages must not outrank platform-specific ones, `$id`→`package_id` normalization, candidate chain order (mirror → gh-proxy → GitHub), 404-is-not-an-error, "up to date shows the *current* version's notes" |
 | `verify/update-mutation.mjs` | Mutates each update invariant and asserts `update-resolve.mjs` goes red (21 mutations). **Run it after touching `update-resolve.js`** |
-| `verify/oobe-titlebar.mjs` | OOBE's macOS title-bar toggle, **executed**: `gatherStepData` / `mergeSettings` / `setupTheme` are extracted from the real `oobe.js` and run against a stub DOM. Guards the three silent-failure modes — key missing from `mergeSettings`, `checked` falling back to `false` when the element is absent (would silently flip untouched users to Windows style), and an imported `macosTitleBar: false` being overwritten by the default. Also pins the JS default against `lib.rs` `settings_defaults` |
-| `verify/oobe-titlebar-mutation.mjs` | Mutates each wiring and asserts `oobe-titlebar.mjs` goes red (9 mutations). **Run it after touching OOBE's settings wiring** |
+| `verify/oobe-titlebar.mjs` | OOBE's title-bar step, **executed**: `gatherStepData` / `mergeSettings` / `setupTitleBar` are extracted from the real `oobe.js` and run against a stub DOM. Guards the silent-failure modes — key missing from `mergeSettings`, `checked` falling back to `false` when the element is absent (would silently flip untouched users to Windows style), an imported `macosTitleBar: false` being overwritten by the default. Also pins the JS default against `lib.rs` `settings_defaults`, and checks `STEP` / `STEPS` / `STEP_TPL` / the `renderStepContent` dispatch stay consistent (a missing entry = a blank page; a stale index = a silently wrong page) |
+| `verify/oobe-titlebar-mutation.mjs` | Mutates each wiring and asserts `oobe-titlebar.mjs` goes red (17 mutations). **Run it after touching OOBE's step table or settings wiring** |
 | `verify/add-update-channel-i18n.mjs` | One-shot writer + checker for locale keys across all 9 locales. **Refuses to silently overwrite an existing key with a different value** — that collision is invisible in the diff (it looks like "a value changed"), and the symptom only surfaces much later as a UI string that makes no sense. Register an intentional override in `OVERRIDE` |
 | `verify/_strip-mutation-check.mjs` | Self-check for the harness itself: reverts `stripSrc` to the broken version and asserts the URL guards go red. Run it after editing the comment stripper |
 
@@ -126,6 +126,24 @@ Data source is the SECTL distribution API, **not** GitHub. See `https://sectl.cn
 - Prerelease builds share the **Cargo version** with the stable release (`v0.3.0-Bata2` and `v0.3.0` are both `0.3.0`), so `app_fetch_version` cannot identify the channel. `build.rs` injects `VIEWPDF_BUILD_TAG` from `git describe --exact-match`; use `app_fetch_build_info`, never the bare version, for update decisions.
 - The download artifact is **executed** by `update_install_release`, so `url_validate_update_source` is a trust boundary. It checks the initial URL *and* the post-redirect URL — validating only the initial one turns any 302 into a whitelist bypass.
 - Semver caveat pinned by a test: alphanumeric prerelease identifiers compare as **strings**, so `-Bata10` sorts *below* `-Bata2`. Use `-beta.N` if the 10th prerelease ever ships.
+
+## OOBE
+
+- **Step indices live in one table: `STEP` in `oobe.js`.** Never write a bare step number
+  elsewhere. Inserting a step silently re-points every `doTransition(7)` that meant "go to
+  Complete" — the number is unchanged, the meaning is not, and nothing throws. `STEPS` is
+  derived from `STEP`, so the two cannot drift; `renderStepContent` must dispatch every
+  entry, `STEP_TPL` must have exactly one template per entry, and `STEPS_WITHOUT_NAV`
+  must **not** contain any step the user has to click through. `oobe-titlebar.mjs` checks all of it.
+- The title-bar style step sits **after** Check Update. Completing the update check must
+  therefore land on `STEP.titleBar`, never on `STEP.complete` — `STEP.complete` is
+  reachable only from the install-failure retry. Skipping it looks like "the new step
+  never appeared".
+- `gatherStepData` falls back to `true` for the title-bar toggle when the element is absent.
+  Falling back to `false` would silently switch untouched users to the Windows style.
+- `importConfig` adopts an imported `macosTitleBar`: `mergeSettings` lets OOBE-managed keys
+  override the imported config, so without this an imported `false` is quietly rewritten
+  to the default with nothing visible happening (same reason `renderPerfTier` adopts it).
 
 Also note: grep the whole repo **must** be scoped to `src/` — `src-tauri/` has ~25k files
 and will time out.

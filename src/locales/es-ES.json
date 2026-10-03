@@ -308,7 +308,9 @@
     "updateLater": "Más tarde",
     "updateCheckFailed": "Error de actualización",
     "updateSkipCheck": "Omitir comprobación",
-    "saving": "Guardando ajustes..."
+    "saving": "Guardando ajustes...",
+    "titleBar": "Barra de título de la ventana",
+    "titleBarDesc": "Elige el estilo de los botones de la ventana"
   },
   "about": {
     "description": "ViewPDF es una aplicación para presentaciones de video y anotación de documentos.",

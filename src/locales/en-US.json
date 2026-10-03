@@ -309,7 +309,9 @@
     "updateLater": "Later",
     "updateCheckFailed": "Update check failed",
     "updateSkipCheck": "Skip Check",
-    "saving": "Saving settings..."
+    "saving": "Saving settings...",
+    "titleBar": "Window title bar",
+    "titleBarDesc": "Choose the style of the window buttons"
   },
   "about": {
     "description": "ViewPDF is an application for video presentation and document annotation.",
