@@ -4,6 +4,9 @@
 
 ### 新增
 
+- **工具栏文字提示开关加入 OOBE，独立成一步，排在「窗口标题栏」之后**（第 8 步，引导流程共 11 步）。补 `oobe.toolbarText` / `oobe.toolbarTextDesc` 步骤标题与 `settings.toolbarTextHint` 说明文案（9 个语言包）。同样不做即时预览 —— 引导窗口没有主工具栏，`init.js` 在下次启动时经 `theme_set_user_toolbar_text` 应用。
+  - 兜底方向与标题栏开关**相反**：Rust `settings_defaults` 里 `macosTitleBar: true` 而 `showToolbarText: false`，所以元素缺失时前者回落 `true`、后者回落 `false`。没有统一的「安全方向」，不变式是「回落各自的 Rust 默认值」，验证脚本直接读 `lib.rs` 比对，而不是信任写了两次的常量。
+  - `importConfig` 接住导入配置里的 `showToolbarText`，理由同 `macosTitleBar`。
 - **macOS 样式标题栏开关独立成一步，排在「检查更新」之后**（原挂在「外观」步里）。补 `oobe.titleBar` / `oobe.titleBarDesc` 步骤标题与 `settings.macosTitleBarHint` 说明文案（9 个语言包）。不做即时预览 —— 引导窗口本身无边框，没有标题栏可供预览。
   - 新增 `STEP` 步骤下标表，`STEPS` 由它派生。**别在别处写裸数字**：插入这一步时，
     散落的 `doTransition(7)` 从「去完成页」变成「去标题栏页」—— 数字一模一样、含义变了，
@@ -19,6 +22,7 @@
 
 ### 修复
 
+- **设置面板里两个开关在 6 种语言下显示为字面量 `settings.macosTitleBar` / `settings.toolbarText`**：`i18n.format_translate` 找不到键时**返回键本身**，而这两个标签只有 zh-CN / zh-TW / en-US 三个语言包有 —— de-DE / es-ES / fr-FR / ja-JP / ko-KR / ru-RU 的设置面板那一行直接显示 `settings.toolbarText` 这样一串英文标识符。不报错、不空白、不崩，只是难看，因此此前一直没人发现。6 个语言包补齐。
 - **遥测心跳一直是 `400 invalid_client / Platform not found`**：上报用的 `platform_id` 一直是服务端规范的**平台 ID**，而 `POST /api/stats/online` 只认 **Client ID** —— 于是每次心跳都被拒。之所以长期没被发现：`POST /api/stats/version` **两种 ID 都收**（还会静默归一到平台 ID），版本上报一路绿灯，看起来"统计在工作"，实际上在线人数、并发峰值、地区分布三张表的数据源一直是空的。现：SECTL 身份标识收敛到 `src/modules/sectl-client.js` **单一常量**，客户端一律发 Client ID；平台 ID 只作为服务端规范 ID 记录在注释里，不再有可发送的副本。分发接口此前也有同样的问题（传平台 ID 会拿到 200 + 三个空数组），一并修掉。
 - **IP 归属地兼底长期失效**：ipapi.co 现对**所有**客户端返回 Cloudflare 挑战页（`403 Just a moment...`），浏览器 UA、默认 UA、自定义 UA 结果完全相同，非浏览器客户端已拿不到 JSON —— 之前每次启动都在发一个必然失败的请求，兼底形同虚设。现换成 freeipapi.com（HTTPS、无需 key、返回国/省/市名称），Rust 域名白名单同步收窄（移除已死的 ipapi.co，新增 freeipapi.com，并给 GET 加上 `https_only`）。freeipapi 把区名塞在市名括号里（`"Jinrongjie (Xicheng District)"`），新增 `splitCityDistrict` 拆开，否则 city 与 district 会是同一个字符串。
 - **预发布版永远不会被提示更新**：旧版本比较用 `parts[2].parse::<u32>()`，遇到 `v0.3.0-Bata2` 的 `"0-Bata2"` 直接解析失败 → 整个比较返回「无更新」，界面上看不出任何异常。现按标准 semver 优先级实现（含预发布段逐段比较、正式版高于同核心预发布）。

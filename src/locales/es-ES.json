@@ -249,7 +249,10 @@
     "updateNoPackage": "Nueva versión encontrada, pero aún no hay paquete para esta plataforma",
     "updateCurrentVersion": "Versión actual",
     "prereleaseBadge": "Preliminar",
-    "macosTitleBarHint": "Activado: semáforos de macOS (arriba a la izquierda). Desactivado: clásico de Windows (─ ▢ ✕ arriba a la derecha)"
+    "macosTitleBarHint": "Activado: semáforos de macOS (arriba a la izquierda). Desactivado: clásico de Windows (─ ▢ ✕ arriba a la derecha)",
+    "toolbarTextHint": "Activado: cada botón muestra su nombre junto al icono (ocupa más ancho)",
+    "macosTitleBar": "Barra de título estilo macOS",
+    "toolbarText": "Etiquetas de texto de la barra de herramientas"
   },
   "oobe": {
     "welcome": "Bienvenido a ViewPDF",
@@ -310,7 +313,9 @@
     "updateSkipCheck": "Omitir comprobación",
     "saving": "Guardando ajustes...",
     "titleBar": "Barra de título de la ventana",
-    "titleBarDesc": "Elige el estilo de los botones de la ventana"
+    "titleBarDesc": "Elige el estilo de los botones de la ventana",
+    "toolbarText": "Etiquetas de texto de la barra",
+    "toolbarTextDesc": "Elige si los botones de la barra muestran texto junto al icono"
   },
   "about": {
     "description": "ViewPDF es una aplicación para presentaciones de video y anotación de documentos.",

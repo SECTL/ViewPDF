@@ -247,7 +247,8 @@
     "updateNoPackage": "發現新版本，但伺服器暫未提供目前平台的安裝包",
     "updateCurrentVersion": "目前版本",
     "prereleaseBadge": "預發布版",
-    "macosTitleBarHint": "開啟為 macOS 紅綠燈（左上角圓形按鈕），關閉為 Windows 經典樣式（右上角 ─ ▢ ✕）"
+    "macosTitleBarHint": "開啟為 macOS 紅綠燈（左上角圓形按鈕），關閉為 Windows 經典樣式（右上角 ─ ▢ ✕）",
+    "toolbarTextHint": "開啟後每個工具按鈕圖示旁會顯示名稱，佔用更多水平空間"
   },
   "oobe": {
     "welcome": "歡迎使用 ViewPDF",
@@ -308,7 +309,9 @@
     "updateSkipCheck": "跳過檢查",
     "saving": "正在儲存設定...",
     "titleBar": "視窗標題列",
-    "titleBarDesc": "選擇視窗右上角按鈕的樣式"
+    "titleBarDesc": "選擇視窗右上角按鈕的樣式",
+    "toolbarText": "工具列文字提示",
+    "toolbarTextDesc": "選擇工具列按鈕是否在圖示旁顯示文字"
   },
   "about": {
     "description": "ViewPDF 是一款用於影片演示和文件批註的應用程式。",

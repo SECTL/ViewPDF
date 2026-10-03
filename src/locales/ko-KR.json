@@ -249,7 +249,10 @@
     "updateNoPackage": "새 버전을 찾았지만 이 플랫폼용 패키지가 아직 제공되지 않았습니다",
     "updateCurrentVersion": "현재 버전",
     "prereleaseBadge": "프리릴리스",
-    "macosTitleBarHint": "켜기: macOS 교통등(왼쪽 위). 끄기: Windows 클래식(오른쪽 위 ─ ▢ ✕)"
+    "macosTitleBarHint": "켜기: macOS 교통등(왼쪽 위). 끄기: Windows 클래식(오른쪽 위 ─ ▢ ✕)",
+    "toolbarTextHint": "켜기: 각 버튼이 아이콘 옆에 이름을 표시(가로 공간을 더 차지)",
+    "macosTitleBar": "macOS 스타일 제목 표시줄",
+    "toolbarText": "도구 모음文字 레이블"
   },
   "oobe": {
     "welcome": "ViewPDF에 오신 것을 환영합니다",
@@ -310,7 +313,9 @@
     "updateSkipCheck": "확인 건너뛰기",
     "saving": "설정 저장 중...",
     "titleBar": "창 제목 표시줄",
-    "titleBarDesc": "창 버튼 스타일을 선택하세요"
+    "titleBarDesc": "창 버튼 스타일을 선택하세요",
+    "toolbarText": "도구 모음文字 레이블",
+    "toolbarTextDesc": "도구 모음 버튼에 아이콘 옆 텍스트를 표시할지 선택하세요"
   },
   "about": {
     "description": "ViewPDF는 비디오 프레젠테이션 및 문서 주석을 위한 애플리케이션입니다.",

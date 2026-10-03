@@ -250,7 +250,8 @@
     "updateNoPackage": "New version found, but no package is available for this platform yet",
     "updateCurrentVersion": "Current version",
     "prereleaseBadge": "Prerelease",
-    "macosTitleBarHint": "On: macOS traffic lights (top left). Off: Windows classic (─ ▢ ✕ at top right)"
+    "macosTitleBarHint": "On: macOS traffic lights (top left). Off: Windows classic (─ ▢ ✕ at top right)",
+    "toolbarTextHint": "On: each tool button shows its name beside the icon, taking more horizontal space"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",
@@ -311,7 +312,9 @@
     "updateSkipCheck": "Skip Check",
     "saving": "Saving settings...",
     "titleBar": "Window title bar",
-    "titleBarDesc": "Choose the style of the window buttons"
+    "titleBarDesc": "Choose the style of the window buttons",
+    "toolbarText": "Toolbar text labels",
+    "toolbarTextDesc": "Choose whether toolbar buttons show text next to their icons"
   },
   "about": {
     "description": "ViewPDF is an application for video presentation and document annotation.",

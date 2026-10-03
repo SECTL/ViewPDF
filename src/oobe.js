@@ -21,6 +21,10 @@ const state = {
   // 与 Rust 侧 config.json 默认值一致（lib.rs settings_defaults "macosTitleBar": true）。
   // 不一致的话 OOBE 显示的开与用户实际看到的会相反。
   macosTitleBar: true,
+  // 同上，对应 settings_defaults "showToolbarText": false（默认**不**显示工具栏文字）。
+  // 注意这个默认值与 macosTitleBar 相反：gatherStepData 元素缺失时的兜底必须跟着各自
+  // 的默认值走，不能统一回落一个方向。
+  showToolbarText: false,
   importedSettings: null,
   updateChecked: false,
   updateResult: null,
@@ -140,8 +144,9 @@ const STEP = {
   defaultApps: 5,
   checkUpdate: 6,
   titleBar: 7,
-  complete: 8,
-  installing: 9,
+  toolbarText: 8,
+  complete: 9,
+  installing: 10,
 };
 
 /** 这些步骤不显示导航栏：检查更新会自动前进，完成页与安装页是终点 */
@@ -236,6 +241,7 @@ function renderStepContent(stepIndex, direction) {
   else if (stepIndex === STEP.defaultApps) setupDefaultApps();
   else if (stepIndex === STEP.checkUpdate) setupCheckUpdate();
   else if (stepIndex === STEP.titleBar) setupTitleBar();
+  else if (stepIndex === STEP.toolbarText) setupToolbarText();
   else if (stepIndex === STEP.complete) setupComplete();
   else if (stepIndex === STEP.installing) setupInstalling();
 }
@@ -331,6 +337,11 @@ function gatherStepData(step) {
     // 兜底 true：与 Rust 默认值一致。元素不存在时若回落 false，会把没碰过这个
     // 开关的用户静默改成 Windows 经典样式。
     state.macosTitleBar = tbToggle ? tbToggle.checked : true;
+  }
+  if (step === STEP.toolbarText) {
+    const tbtToggle = document.getElementById('toolbarTextToggle');
+    // 兜底 false：这个键的 Rust 默认值就是 false（与 macosTitleBar 相反）。
+    state.showToolbarText = tbtToggle ? tbtToggle.checked : false;
   }
   if (step === STEP.performance) {
     const frGroup = document.getElementById('frameRateModeGroup');
@@ -545,7 +556,23 @@ const STEP_TPL = [
       </label>
     </div>
   `,
-  // 8 — Complete
+  // 8 — Toolbar Text
+  () => html`
+    <div class="step-icon"></div>
+    <div class="step-title">${_t('oobe.toolbarText')}</div>
+    <div class="step-subtitle">${_t('oobe.toolbarTextDesc')}</div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">${_t('settings.toolbarText')}</div>
+        <div class="toggle-desc">${_t('settings.toolbarTextHint')}</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="toolbarTextToggle" ${state.showToolbarText ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  `,
+  // 9 — Complete
   () => html`
     <div class="checkmark"></div>
     <div class="step-title">${_t('oobe.setupComplete')}</div>
@@ -554,7 +581,7 @@ const STEP_TPL = [
       <button class="btn btn-success" id="btnFinishStep">${_t('oobe.restartApp')}</button>
     </div>
   `,
-  // 9 — Installing
+  // 10 — Installing
   () => html`
     <div class="installing-view">
       <div class="spinner"></div>
@@ -608,6 +635,14 @@ function setupTitleBar() {
   // （960x540 no decorations），没有标题栏可供预览。
   document.getElementById('macosTitleBarToggle')?.addEventListener('change', (e) => {
     state.macosTitleBar = e.target.checked;
+  });
+}
+
+function setupToolbarText() {
+  // 同样不做即时预览：OOBE 窗口没有主工具栏。init.js 会在下次启动时应用
+  // （theme_set_user_toolbar_text）。
+  document.getElementById('toolbarTextToggle')?.addEventListener('change', (e) => {
+    state.showToolbarText = e.target.checked;
   });
 }
 
@@ -1076,6 +1111,9 @@ async function importConfig() {
     if (typeof settings.macosTitleBar === 'boolean') {
       state.macosTitleBar = settings.macosTitleBar;
     }
+    if (typeof settings.showToolbarText === 'boolean') {
+      state.showToolbarText = settings.showToolbarText;
+    }
     showImportStatus('success', _t('oobe.importSuccess'));
     setTimeout(() => doTransition(STEP.checkUpdate), 800);
   } catch (err) {
@@ -1109,6 +1147,7 @@ function mergeSettings() {
     blackboardEnabled: state.blackboardEnabled,
     restoreLastDoc: state.restoreLastDoc,
     macosTitleBar: state.macosTitleBar,
+    showToolbarText: state.showToolbarText,
     renderPerfTier: ['low', 'balanced', 'high'].includes(state.renderPerfTier)
       ? state.renderPerfTier : 'balanced',
     penColors: PEN_COLORS,

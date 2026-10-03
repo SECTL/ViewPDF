@@ -249,7 +249,10 @@
     "updateNoPackage": "新しいバージョンが見つかりましたが、このプラットフォーム向けパッケージは未提供です",
     "updateCurrentVersion": "現在のバージョン",
     "prereleaseBadge": "プレリリース版",
-    "macosTitleBarHint": "オン: macOS の信号機（左上）。オフ: Windows クラシック（右上 ─ ▢ ✕）"
+    "macosTitleBarHint": "オン: macOS の信号機（左上）。オフ: Windows クラシック（右上 ─ ▢ ✕）",
+    "toolbarTextHint": "オン: 各ボタンのアイコン横に名称を表示（横方向の使用量が増えます）",
+    "macosTitleBar": "macOS 風のタイトルバー",
+    "toolbarText": "ツールバーの文字ラベル"
   },
   "oobe": {
     "welcome": "ViewPDF へようこそ",
@@ -310,7 +313,9 @@
     "updateSkipCheck": "確認をスキップ",
     "saving": "設定を保存中...",
     "titleBar": "ウィンドウタイトルバー",
-    "titleBarDesc": "ウィンドウボタンのスタイルを選択します"
+    "titleBarDesc": "ウィンドウボタンのスタイルを選択します",
+    "toolbarText": "ツールバーの文字ラベル",
+    "toolbarTextDesc": "ツールバーボタンのアイコン横に文字を表示するかを選択します"
   },
   "about": {
     "description": "ViewPDF はビデオプレゼンテーションと文書注釈のためのアプリケーションです。",
