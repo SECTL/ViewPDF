@@ -22,6 +22,7 @@ import {
 } from './update-resolve.js';
 // 身份常量直接取自单一事实来源，不经 update-resolve.js 转手
 import { SECTL_API_BASE, SECTL_CLIENT_ID } from '../sectl-client.js';
+import { resolve_build_identity } from '../build-identity.js';
 
 let _unlistenProgress = null;
 
@@ -113,7 +114,11 @@ export async function checkForUpdate(opts = {}) {
   const channel = opts.channel === CHANNEL_PRERELEASE ? CHANNEL_PRERELEASE : CHANNEL_STABLE;
   const platform = opts.platform || (await invoke('app_fetch_platform'));
 
-  const build = await invoke('app_fetch_build_info');
+  // 走 resolve_build_identity 而不是直接 invoke('app_fetch_build_info')：
+  // 唯一的差别是它多给开发期覆盖留了个口子（ViewPDFDev.setVersion），
+  // 于是「预发布构建不被要求重装自己」这类判定不必改 Cargo 版本重新打包就能验。
+  // 形状与 AppBuildInfo 一致，resolve_update 那边一个字都不用改。
+  const build = await resolve_build_identity(invoke);
 
   const tag_url = build_latest_tag_url(channel);
   const [tagRes, dist] = await Promise.all([_api_get(tag_url, invoke), _fetch_distribution(invoke)]);

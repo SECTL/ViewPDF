@@ -3,6 +3,15 @@
  */
 import ThemeManager from './themes/theme.js';
 import * as Eraser from './modules/eraser/eraser.js';
+// 侧载导入，只为把 window.ViewPDFDev 挂上。
+//
+// ⚠️ 必须在这里、也就是**主窗口启动就加载**的地方导入，不能只靠消费方
+// （设置面板 / 更新模块）间接带进来：那两个都是懒加载的 —— 设置面板要用户
+// 打开才 `import()`，于是应用刚启动、控制台里敲 `ViewPDFDev.setVersion(...)`
+// 只会得到 `ViewPDFDev is not defined`。而这恰恰是它唯一的使用场景：
+// 开发者打开控制台就是为了在**还没进设置面板**的时候改版本看效果。
+// 本模块无副作用（除注册全局），挂进来没有代价。
+import './modules/build-identity.js';
 
 console.log('[init] module loaded, readyState:', document.readyState);
 
