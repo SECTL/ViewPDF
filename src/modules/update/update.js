@@ -28,13 +28,28 @@ let _unlistenProgress = null;
 // ── 接口调用 ───────────────────────────────────────────────────────
 
 /**
+ * Tauri IPC 的注入缝。
+ *
+ * 默认走 `window.__TAURI__`，但允许由 `opts.invoke` 覆盖 —— 验证脚本据此**真跑**
+ * `checkForUpdate`（喂真实抓下来的响应），而不是拿正则去猜它的控制流。
+ *
+ * 这个缝不是「为了测试而加的可疑抽象」：`checkForUpdate` 的返回值形状是**两个
+ * 调用点与 UI 之间的契约**，而它此前从第一天起就和调用点对不上
+ * （返回 `{has_update, ...}`，调用点却写 `const { result } = await ...`，
+ * 于是 `result` 恒为 `undefined`，`if (!result)` 把每次检查都判成失败）。
+ * 纯函数层的测试再多也验不到跨这一层的形状不一致，只有把函数本身跑起来才行。
+ */
+function _ipc(opts) {
+  return opts?.invoke || window.__TAURI__.core.invoke;
+}
+
+/**
  * 走 Tauri IPC 发 GET（绕开 WebView 的 CORS）。
  * Rust 侧只放行 `appwrite.sectl.cn`，且**不把非 2xx 当错误** ——
  * 404 + JSON 体是「该通道没有版本」这一正常业务结果的表达方式，
  * 所以状态码必须原样带回前端判断。
  */
-async function _api_get(path_and_query) {
-  const { invoke } = window.__TAURI__.core;
+async function _api_get(path_and_query, invoke) {
   const raw = await invoke('update_http_get', { url: SECTL_API_BASE + path_and_query });
   const parsed = JSON.parse(raw);
   const status = parsed?.status ?? 0;
@@ -57,15 +72,15 @@ async function _api_get(path_and_query) {
  * `{projects:[],versions:[],packages:[]}` + HTTP 200，不报错、不告警 ——
  * 症状就是「永远提示已是最新」。
  */
-async function _fetch_distribution() {
-  const by_id = await _api_get(`/api/software/distribution?platformId=${encodeURIComponent(SECTL_CLIENT_ID)}`);
+async function _fetch_distribution(invoke) {
+  const by_id = await _api_get(`/api/software/distribution?platformId=${encodeURIComponent(SECTL_CLIENT_ID)}`, invoke);
   if (by_id.status === 200 && by_id.body?.projects?.length) return by_id.body;
   if (by_id.status !== 200) {
     console.warn('[update] distribution filtered query failed:', by_id.status, by_id.body);
   }
 
   console.warn('[update] distribution matched no project for the Client ID, falling back to unfiltered + slug match');
-  const all = await _api_get('/api/software/distribution');
+  const all = await _api_get('/api/software/distribution', invoke);
   if (all.status !== 200 || !Array.isArray(all.body?.projects)) return null;
   if (!all.body.projects.some(p => p?.slug === DISTRIBUTION_PROJECT_SLUG)) return null;
 
@@ -85,16 +100,23 @@ async function _fetch_distribution() {
  * @param opts.channel  'stable'（默认）| 'prerelease'
  * @param opts.platform 由 app_fetch_platform 提供
  * @param opts.arch     可选，用于在同平台多包时进一步收窄
+ * @param opts.invoke   可选，覆盖 Tauri IPC（验证脚本注入假实现用）
+ *
+ * **返回值就是结果本身**（`{has_update, channel, ...}`），没有外层包装。
+ * 调用点必须写 `const result = await checkForUpdate(...)`；写成
+ * `const { result } = await ...` 会解构出 `undefined`，而两个 UI 都有
+ * `if (!result) → 检查失败`，于是每次检查都被判成失败 —— 这个不匹配在纯函数
+ * 层的测试里永远看不见，只有真跑这个函数才抓得到。
  */
 export async function checkForUpdate(opts = {}) {
-  const { invoke } = window.__TAURI__.core;
+  const invoke = _ipc(opts);
   const channel = opts.channel === CHANNEL_PRERELEASE ? CHANNEL_PRERELEASE : CHANNEL_STABLE;
   const platform = opts.platform || (await invoke('app_fetch_platform'));
 
   const build = await invoke('app_fetch_build_info');
 
   const tag_url = build_latest_tag_url(channel);
-  const [tagRes, dist] = await Promise.all([_api_get(tag_url), _fetch_distribution()]);
+  const [tagRes, dist] = await Promise.all([_api_get(tag_url, invoke), _fetch_distribution(invoke)]);
 
   // ⚠️ 这一段的分岔是**整个更新检查里最要命的一处**：服务端「查不到」和
   // 「这个通道确实没版本」返回的 HTTP 码**都是 404**，body 形状却不同

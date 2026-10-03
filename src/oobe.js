@@ -941,7 +941,10 @@ async function _checkForUpdate() {
   try {
     // OOBE 永远只查正式版通道：预发布是「主动选择」，不该在首次设置流程里
     // 把用户推到测试版上。要预发布得去设置里显式切换。
-    const { result } = await checkForUpdate({ channel: 'stable' });
+    // ⚠️ 不能写 `const { result } = await ...` —— checkForUpdate 直接返回结果
+    //    对象，没有外层 result 字段，解构出来恒为 undefined，`if (!result)`
+    //    会把每次检查都判成失败。oobe-titlebar.mjs 有对应守卫。
+    const result = await checkForUpdate({ channel: 'stable' });
     // 用户可能在检查返回前就点了「跳过检查」——结果作废，不再回填。
     if (state.updateSkipRequested) return;
     state.updateChecked = true;

@@ -2032,7 +2032,11 @@ async function initSettings() {
 
     async function _doCheckUpdate() {
         try {
-            const { result } = await checkForUpdate({ channel: _update_channel() });
+            // ⚠️ 不能写 `const { result } = await ...` —— checkForUpdate 直接
+            // 返回结果对象，没有外层 result 字段，解构出来恒为 undefined，
+            // `if (!result)` 会把每次检查都判成失败。verify/update-resolve.mjs
+            // 有对应守卫（真跑 checkForUpdate 并比对调用点的读法）。
+            const result = await checkForUpdate({ channel: _update_channel() });
             _updateChecked = true;
             _updateResult = result;
             _showUpdateResult(result);
