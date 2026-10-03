@@ -4,6 +4,7 @@
 
 ### 新增
 
+- **更新页的「更新通道」下拉移到下载按钮下方，并收窄为标签与下拉并排的一行**：原先它贴在页面顶部、占满 520px 三行堆叠，一进更新页最显眼的就是这个控件，而它只是次要设置。视觉重心现在回到「有没有新版 / 要不要下载」上。控件宽度由页面的 520px 收到 300px，标签「更新通道」与下拉同一行，说明文字仍整行独占（用 `flex-flow: row wrap` + `flex-basis: 100%`，不加包裹元素）。下拉的 `min-width: 0` 是必需的 —— 父级变成 flex 行之后，没有它 flex 子项的 min-content 宽度会顶破容器，窄块反而被撑成宽块。
 - **工具栏文字提示开关加入 OOBE，独立成一步，排在「窗口标题栏」之后**（第 8 步，引导流程共 11 步）。补 `oobe.toolbarText` / `oobe.toolbarTextDesc` 步骤标题与 `settings.toolbarTextHint` 说明文案（9 个语言包）。同样不做即时预览 —— 引导窗口没有主工具栏，`init.js` 在下次启动时经 `theme_set_user_toolbar_text` 应用。
   - 兜底方向与标题栏开关**相反**：Rust `settings_defaults` 里 `macosTitleBar: true` 而 `showToolbarText: false`，所以元素缺失时前者回落 `true`、后者回落 `false`。没有统一的「安全方向」，不变式是「回落各自的 Rust 默认值」，验证脚本直接读 `lib.rs` 比对，而不是信任写了两次的常量。
   - `importConfig` 接住导入配置里的 `showToolbarText`，理由同 `macosTitleBar`。

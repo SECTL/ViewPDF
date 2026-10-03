@@ -1349,31 +1349,47 @@
     text-align: center;
 }
 
-/* 通道选择：贴在页面顶部，检查前就能改 */
+/* 通道选择：放在下载按钮**下方**，窄块、标签与下拉同一行。
+   之前贴在页面顶部且占满 520px 三行堆叠，更新页一进来最显眼的是这个控件，
+   而它只是次要设置；收窄并降级到按钮下方后，视觉重心回到「有没有新版 /
+   要不要下载」上。 */
 #pageUpdate .sp-update-channel {
     width: 100%;
-    max-width: 520px;
-    margin: 0 auto 12px;
+    max-width: 300px;
+    margin: 10px auto 0;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    /* 标签与下拉并排，说明文字整行换行 —— 用 wrap + basis:100% 而不是加一层
+       包裹元素，少一个 DOM 就少一处能写错的地方 */
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 6px 10px;
 }
 
 #pageUpdate .sp-update-channel-label {
     font-size: 13px;
     font-weight: 600;
     color: var(--color-ink);
+    /* 不参与伸缩：中文标签长度随语言变，压缩它会把 4 个字挤成两行 */
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 #pageUpdate .sp-update-channel-hint {
     font-size: 12px;
     color: var(--color-ink-muted, #888);
     line-height: 1.5;
+    /* 独占一行 —— 提示是一整句话，跟下拉挤在一行必然折行错位 */
+    flex: 1 0 100%;
 }
 
 #pageUpdate .sp-select-native {
-    width: 100%;
-    padding: 8px 10px;
+    /* 父级是 flex 行，原来的 width:100% 会把标签挤出去。min-width:0 是必需的：
+       没有它，flex 子项的 min-content 宽度会顶破容器，窄块反而撑成宽块 */
+    flex: 1 1 120px;
+    width: auto;
+    min-width: 0;
+    padding: 6px 8px;
     font-size: 13px;
     font-family: inherit;
     color: var(--color-ink);
