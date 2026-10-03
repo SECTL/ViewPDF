@@ -1964,6 +1964,7 @@ async function initSettings() {
     let _downloadCancelled = false;
     let _updateChecked = false;
     let _updateResult = null;
+    let _channel_bound = false;
 
     const _upd = {
         banner: document.getElementById('updateBanner'),
@@ -1990,7 +1991,37 @@ async function initSettings() {
         _upd.btnDownload.onclick = _startDownload;
     }
 
+    /**
+     * 通道选择：正式版 / 预发布版。
+     * 从设置读，用户改了就落盘 —— 切换后必须重新检查（`_updateChecked` 复位），
+     * 否则面板会拿上一个通道的结论继续显示。
+     */
+    function _update_channel() {
+        const el = document.getElementById('updateChannelSelect');
+        return el && el.value === 'prerelease' ? 'prerelease' : 'stable';
+    }
+
+    function _setup_update_channel() {
+        const el = document.getElementById('updateChannelSelect');
+        if (!el) return;
+        el.value = _loadedSettings?.updateChannel === 'prerelease' ? 'prerelease' : 'stable';
+        // 每次进更新页都会调 setupCheckUpdate → 这里。重复 addEventListener 会让
+        // 一次 change 触发 N 次「保存 + 重新检查」，请求量翻 N 倍。
+        if (_channel_bound) return;
+        _channel_bound = true;
+        el.addEventListener('change', async () => {
+            const channel = el.value === 'prerelease' ? 'prerelease' : 'stable';
+            await settings_save_all_local({ updateChannel: channel });
+            // 通道变了，之前的结论作废，重新检查
+            _updateChecked = false;
+            _updateResult = null;
+            _resetUpdateUI();
+            setupCheckUpdate();
+        });
+    }
+
     function setupCheckUpdate() {
+        _setup_update_channel();
         if (_updateChecked) {
             _showUpdateResult(_updateResult);
         } else {
@@ -2001,7 +2032,7 @@ async function initSettings() {
 
     async function _doCheckUpdate() {
         try {
-            const { result } = await checkForUpdate();
+            const { result } = await checkForUpdate({ channel: _update_channel() });
             _updateChecked = true;
             _updateResult = result;
             _showUpdateResult(result);
@@ -2041,23 +2072,43 @@ async function initSettings() {
         }
 
         _upd.appInfo.style.display = '';
+        _show_build_identity(result);
+
+        // 该通道没有版本（例如没有领先的预发布版）—— 不是失败，别弹红色横幅
+        if (result.channel_empty) {
+            _upd.banner.className = 'update-banner banner-latest';
+            _upd.banner.textContent = window.i18n?.format_translate('settings.noVersionOnChannel') || '该通道当前没有可用版本';
+            _upd.banner.style.display = '';
+            _upd.notes.style.display = 'none';
+            return;
+        }
 
         if (result.has_update) {
             _upd.banner.style.display = 'none';
-            if (result.release?.body) {
-                _upd.notes.innerHTML = _render_changelog(result.release.body);
+            if (result.release_notes) {
+                _upd.notes.innerHTML = _render_changelog(result.release_notes);
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';
             }
-            _upd.btnDownload.style.display = '';
-            _latestRelease = result.release;
+            _latestRelease = result;
+            // 有新版但服务端没镜像本平台的包 —— 必须区别于「可更新」，
+            // 否则用户点下载才报错，且不知道是分发侧的问题
+            if (result.package_missing) {
+                _upd.btnDownload.style.display = 'none';
+                _upd.banner.className = 'update-banner banner-error';
+                _upd.banner.textContent = window.i18n?.format_translate('settings.updateNoPackage') || '发现新版本，但服务端暂未提供当前平台的安装包';
+                _upd.banner.style.display = '';
+            } else {
+                _upd.btnDownload.style.display = '';
+                _upd.btnDownload.textContent = window.i18n?.format_translate('settings.downloadUpdate') || '下载更新';
+            }
         } else {
             _upd.banner.className = 'update-banner banner-latest';
             _upd.banner.textContent = window.i18n?.format_translate('settings.alreadyLatest') || '当前已是最新版本';
             _upd.banner.style.display = '';
-            if (result.current_release?.body) {
-                _upd.notes.innerHTML = _render_changelog(result.current_release.body);
+            if (result.release_notes) {
+                _upd.notes.innerHTML = _render_changelog(result.release_notes);
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';
@@ -2065,8 +2116,26 @@ async function initSettings() {
         }
     }
 
+    /**
+     * 显示当前构建身份。
+     * 预发布构建必须显式标出来：Cargo 版本与正式版完全相同（都是 0.3.0），
+     * 只显示版本号的话，测试版用户看不出自己跑的不是正式版。
+     */
+    function _show_build_identity(result) {
+        const el = document.getElementById('updateBuildInfo');
+        if (!el) return;
+        const v = result?.current_version || '';
+        const t = window.i18n?.format_translate('settings.updateCurrentVersion') || '当前版本';
+        if (result?.current_is_prerelease) {
+            const pre = window.i18n?.format_translate('settings.prereleaseBadge') || '预发布版';
+            el.textContent = `${t} ${v} (${pre} ${result.current_tag || ''})`.trim();
+        } else {
+            el.textContent = `${t} ${v}`;
+        }
+    }
+
     _upd.btnDownload?.addEventListener('click', async () => {
-        if (!_latestRelease || !_latestRelease.assets?.length) return;
+        if (!_latestRelease || !_latestRelease.package) return;
 
         if (_downloadFilePath) {
             _startInstall();
@@ -2074,8 +2143,6 @@ async function initSettings() {
         }
 
         try {
-            const platform = await window.__TAURI__.core.invoke('app_fetch_platform');
-
             _upd.btnDownload.style.display = 'none';
             _upd.progress.style.display = '';
             _upd.progressBar.style.width = '0%';
@@ -2088,7 +2155,7 @@ async function initSettings() {
                 _upd.progressText.textContent = Math.round(p) + '%';
             });
 
-            _downloadFilePath = await startDownload(_latestRelease, platform, '');
+            _downloadFilePath = await startDownload(_latestRelease);
 
             offProgress();
 

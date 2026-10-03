@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "Сохраняет страницу, масштаб и положение, восстанавливаемые при запуске",
     "strokesOptionSave": "Сохранять",
     "strokesOptionDiscard": "Не сохранять",
-    "strokesOptionAsk": "Спрашивать при каждом закрытии"
+    "strokesOptionAsk": "Спрашивать при каждом закрытии",
+    "updateChannel": "Канал обновления",
+    "updateChannelHint": "Предварительные сборки могут быть нестабильны; только для тестирования",
+    "channelStable": "Стабильная",
+    "channelPrerelease": "Предварительная",
+    "noVersionOnChannel": "На этом канале нет доступных версий",
+    "updateNoPackage": "Найдена новая версия, но пакет для этой платформы ещё недоступен",
+    "updateCurrentVersion": "Текущая версия",
+    "prereleaseBadge": "Предварительная"
   },
   "oobe": {
     "welcome": "Добро пожаловать в ViewPDF",

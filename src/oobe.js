@@ -766,13 +766,26 @@ async function showUpdateResult(result) {
     return;
   }
 
+  // 该通道没有版本（例如没有领先的预发布版）—— 不是失败，按「已是最新」收场
+  if (result.channel_empty) {
+    bannerEl.className = 'update-banner banner-latest';
+    bannerEl.textContent = _t('oobe.updateUpToDate');
+    bannerEl.style.display = '';
+    const notesEl0 = document.getElementById('updateNotes');
+    if (notesEl0) notesEl0.style.display = 'none';
+    await new Promise(r => setTimeout(r, 1200));
+    if (state.updateSkipRequested) return;
+    doTransition(7, 'forward');
+    return;
+  }
+
   if (result.has_update) {
     statusEl.innerHTML = '';
     bannerEl.style.display = 'none';
     const notesEl = document.getElementById('updateNotes');
     if (notesEl) {
-      if (result.release?.body) {
-        notesEl.innerHTML = renderMarkdownSimple(result.release.body);
+      if (result.release_notes) {
+        notesEl.innerHTML = renderMarkdownSimple(result.release_notes);
         notesEl.style.display = '';
       } else {
         notesEl.style.display = 'none';
@@ -784,7 +797,7 @@ async function showUpdateResult(result) {
 
     document.getElementById('btnUpdateSkip')?.addEventListener('click', () => doTransition(7, 'forward'));
     document.getElementById('btnUpdateDownload')?.addEventListener('click', async () => {
-      if (!invoke || !result.release?.assets?.length) return;
+      if (!invoke || !result.package) return;
 
       if (_downloadFilePath) {
         doTransition(8);
@@ -792,8 +805,6 @@ async function showUpdateResult(result) {
       }
 
       try {
-        const platform = await invoke('app_fetch_platform');
-
         const progressEl = document.getElementById('updateProgress');
         const progressBar = document.getElementById('updateProgressBar');
         const progressText = document.getElementById('updateProgressText');
@@ -809,7 +820,7 @@ async function showUpdateResult(result) {
           if (progressText) progressText.textContent = Math.round(p) + '%';
         });
 
-        _downloadFilePath = await startDownload(result.release, platform, '');
+        _downloadFilePath = await startDownload(result);
 
         offProgress();
 
@@ -844,7 +855,9 @@ async function _checkForUpdate() {
   if (notesEl) notesEl.style.display = 'none';
 
   try {
-    const { result } = await checkForUpdate();
+    // OOBE 永远只查正式版通道：预发布是「主动选择」，不该在首次设置流程里
+    // 把用户推到测试版上。要预发布得去设置里显式切换。
+    const { result } = await checkForUpdate({ channel: 'stable' });
     // 用户可能在检查返回前就点了「跳过检查」——结果作废，不再回填。
     if (state.updateSkipRequested) return;
     state.updateChecked = true;

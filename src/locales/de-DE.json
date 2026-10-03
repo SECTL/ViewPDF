@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "Speichert Seite, Zoom und Position, Wiederherstellung beim Start",
     "strokesOptionSave": "Speichern",
     "strokesOptionDiscard": "Nicht speichern",
-    "strokesOptionAsk": "Bei jedem Schließen fragen"
+    "strokesOptionAsk": "Bei jedem Schließen fragen",
+    "updateChannel": "Update-Kanal",
+    "updateChannelHint": "Vorabversionen können instabil sein; nur zum Testen empfohlen",
+    "channelStable": "Stabil",
+    "channelPrerelease": "Vorabversion",
+    "noVersionOnChannel": "Auf diesem Kanal ist keine Version verfügbar",
+    "updateNoPackage": "Neue Version gefunden, aber für diese Plattform ist noch kein Paket verfügbar",
+    "updateCurrentVersion": "Aktuelle Version",
+    "prereleaseBadge": "Vorabversion"
   },
   "oobe": {
     "welcome": "Willkommen bei ViewPDF",

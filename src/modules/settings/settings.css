@@ -1341,6 +1341,53 @@
     letter-spacing: -0.3px;
 }
 
+/* 当前构建身份。预发布构建的 Cargo 版本与正式版完全相同（都是 0.3.0），
+   只显示版本号测试版用户看不出自己跑的不是正式版，所以 tag 必须露出来。 */
+#pageUpdate .sp-update-app-info .sp-update-build-info {
+    font-size: 12px;
+    color: var(--color-ink-muted, #888);
+    text-align: center;
+}
+
+/* 通道选择：贴在页面顶部，检查前就能改 */
+#pageUpdate .sp-update-channel {
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#pageUpdate .sp-update-channel-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-ink);
+}
+
+#pageUpdate .sp-update-channel-hint {
+    font-size: 12px;
+    color: var(--color-ink-muted, #888);
+    line-height: 1.5;
+}
+
+#pageUpdate .sp-select-native {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--color-ink);
+    background: var(--color-surface, #fff);
+    border: 1px solid var(--color-border, rgba(0, 0, 0, 0.12));
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+#pageUpdate .sp-select-native:focus-visible {
+    outline: 2px solid var(--color-primary, #3498db);
+    outline-offset: 1px;
+}
+
 #pageUpdate .sp-update-banner {
     width: 100%;
     max-width: 520px;

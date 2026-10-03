@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "페이지, 확대/축소, 위치를 저장하여 시작 시 복원합니다",
     "strokesOptionSave": "저장",
     "strokesOptionDiscard": "저장 안 함",
-    "strokesOptionAsk": "종료 시 매번 묻기"
+    "strokesOptionAsk": "종료 시 매번 묻기",
+    "updateChannel": "업데이트 채널",
+    "updateChannelHint": "프리릴리스 버전은 불안정할 수 있으며 테스트 용도로만 권장됩니다",
+    "channelStable": "정식 버전",
+    "channelPrerelease": "프리릴리스",
+    "noVersionOnChannel": "이 채널에는 사용할 수 있는 버전이 없습니다",
+    "updateNoPackage": "새 버전을 찾았지만 이 플랫폼용 패키지가 아직 제공되지 않았습니다",
+    "updateCurrentVersion": "현재 버전",
+    "prereleaseBadge": "프리릴리스"
   },
   "oobe": {
     "welcome": "ViewPDF에 오신 것을 환영합니다",

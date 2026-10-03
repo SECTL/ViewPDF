@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "ページ番号・ズーム・位置を保存し、起動時に復元します",
     "strokesOptionSave": "保存する",
     "strokesOptionDiscard": "保存しない",
-    "strokesOptionAsk": "終了時に毎回確認"
+    "strokesOptionAsk": "終了時に毎回確認",
+    "updateChannel": "更新チャンネル",
+    "updateChannelHint": "プレリリース版は不安定な場合があるため、テスト用途推奨",
+    "channelStable": "正式版",
+    "channelPrerelease": "プレリリース版",
+    "noVersionOnChannel": "このチャンネルには利用可能なバージョンがありません",
+    "updateNoPackage": "新しいバージョンが見つかりましたが、このプラットフォーム向けパッケージは未提供です",
+    "updateCurrentVersion": "現在のバージョン",
+    "prereleaseBadge": "プレリリース版"
   },
   "oobe": {
     "welcome": "ViewPDF へようこそ",

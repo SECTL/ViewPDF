@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "Guarda página, zoom y posición, restaurados al iniciar",
     "strokesOptionSave": "Guardar",
     "strokesOptionDiscard": "No guardar",
-    "strokesOptionAsk": "Preguntar en cada cierre"
+    "strokesOptionAsk": "Preguntar en cada cierre",
+    "updateChannel": "Canal de actualización",
+    "updateChannelHint": "Las versiones preliminares pueden ser inestables; solo para pruebas",
+    "channelStable": "Estable",
+    "channelPrerelease": "Preliminar",
+    "noVersionOnChannel": "No hay ninguna versión disponible en este canal",
+    "updateNoPackage": "Nueva versión encontrada, pero aún no hay paquete para esta plataforma",
+    "updateCurrentVersion": "Versión actual",
+    "prereleaseBadge": "Preliminar"
   },
   "oobe": {
     "welcome": "Bienvenido a ViewPDF",

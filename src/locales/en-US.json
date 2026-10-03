@@ -241,7 +241,15 @@
     "restoreSavePreviewHint": "Saves page, zoom and position, restored at startup",
     "strokesOptionSave": "Save",
     "strokesOptionDiscard": "Don't Save",
-    "strokesOptionAsk": "Ask on Every Close"
+    "strokesOptionAsk": "Ask on Every Close",
+    "updateChannel": "Update channel",
+    "updateChannelHint": "Prerelease builds may be unstable; recommended for testing only",
+    "channelStable": "Stable",
+    "channelPrerelease": "Prerelease",
+    "noVersionOnChannel": "No version available on this channel",
+    "updateNoPackage": "New version found, but no package is available for this platform yet",
+    "updateCurrentVersion": "Current version",
+    "prereleaseBadge": "Prerelease"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",

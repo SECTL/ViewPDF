@@ -1119,85 +1119,99 @@ fn app_fetch_platform() -> String {
     { "unknown".to_string() }
 }
 
+/// 构建身份：编译期注入的版本号 + release tag
+///
+/// 两者必须一起给前端：`CARGO_PKG_VERSION` 区分不了预发布与正式版
+/// （`v0.3.0-Bata2` 与 `v0.3.0` 的 Cargo 版本都是 `0.3.0`），
+/// tag 才是通道的唯一事实来源。见 build.rs。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct GitHubAsset {
-    name: String,
-    browser_download_url: String,
-    size: u64,
+struct AppBuildInfo {
+    version: String,
+    tag: String,
+    /// 解析出的语义化版本（已剥 `v`/`V` 前缀），前端据此做比较
+    semver: String,
+    prerelease: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    name: Option<String>,
-    html_url: String,
-    body: Option<String>,
-    assets: Vec<GitHubAsset>,
-}
-
-/// 版本检测结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UpdateCheckResult {
-    has_update: bool,
-    current_version: String,
-    latest_version: String,
-    release: Option<GitHubRelease>,
-    current_release: Option<GitHubRelease>,
-}
-
-/// 解析语义化版本字符串为三元组，忽略前导 'v'
-fn version_calc_parse(version: &str) -> Option<(u32, u32, u32)> {
-    let version = version.trim_start_matches('v');
-    let parts: Vec<&str> = version.split('.').collect();
-    
-    if parts.len() >= 3 {
-        let major = parts[0].parse::<u32>().ok()?;
-        let minor = parts[1].parse::<u32>().ok()?;
-        let patch = parts[2].parse::<u32>().ok()?;
-        return Some((major, minor, patch));
-    }
-    None
-}
-
-/// 比较两个版本号，判断 latest 是否比 current 更新
-fn version_validate_newer(current: &str, latest: &str) -> bool {
-    let current_ver = version_calc_parse(current);
-    let latest_ver = version_calc_parse(latest);
-    
-    match (current_ver, latest_ver) {
-        (Some(c), Some(l)) => l > c,
-        _ => false,
+#[tauri::command]
+fn app_fetch_build_info() -> AppBuildInfo {
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let tag = option_env!("VIEWPDF_BUILD_TAG")
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let tag = if tag.is_empty() {
+        format!("v{}", version)
+    } else {
+        tag
+    };
+    let semver = version_strip_tag_prefix(&tag);
+    let prerelease = version_has_prerelease(&semver);
+    AppBuildInfo {
+        version,
+        tag,
+        semver,
+        prerelease,
     }
 }
 
-/// 校验 URL 是否为合法的 GitHub 域名，支持 gh-proxy.com 等通用镜像前缀
-fn url_validate_github(url: &str) -> Result<(), String> {
-    let known_mirror_prefixes = [
-        "https://gh-proxy.com/",
-    ];
+/// 剥掉 tag 的 `v` / `V` 前缀
+fn version_strip_tag_prefix(tag: &str) -> String {
+    tag.trim().trim_start_matches(['v', 'V']).to_string()
+}
 
-    for prefix in &known_mirror_prefixes {
-        if url.starts_with(prefix) {
-            let original_url = url.strip_prefix(prefix).unwrap_or(url);
-            let parsed = url::Url::parse(original_url).map_err(|e| format!("Invalid URL: {}", e))?;
-            let host = parsed.host_str().unwrap_or("");
-            let valid_domains = ["github.com", "www.github.com", "api.github.com"];
-            if !valid_domains.contains(&host) {
-                return Err(format!("Invalid GitHub URL: unexpected domain {}", host));
-            }
-            return Ok(());
-        }
+/// 粗判是否预发布：`-` 之后有内容即算。够用且与 tag 后缀写法无关
+/// （本仓库用 `-Bata1`/`-Bata2`，不是标准 semver 的 `-beta.1`）。
+fn version_has_prerelease(semver: &str) -> bool {
+    match semver.split_once('-') {
+        Some((_, rest)) => !rest.is_empty(),
+        None => false,
     }
+}
 
+/// SECTL 分发 API 主机：版本查询 + 包列表都走这里
+const SECTL_API_HOST: &str = "appwrite.sectl.cn";
+
+/// 更新下载的可信来源域名。
+///
+/// 下载产物随后会被 `update_install_release` **执行**，所以这份名单就是信任边界：
+/// 名单外的域名即便能返回 302 也不放行。四个来源对应三级回退链：
+/// 1. `appwrite.sectl.cn` —— SECTL 分发接口，302 到 `stk.sectl.cn` 服务器镜像
+/// 2. `stk.sectl.cn` —— 上一条 302 的落点（reqwest 会自动跟随，故也要在名单内）
+/// 3. `gh-proxy.com` —— GitHub 镜像，国内直连 GitHub 常不可用
+/// 4. `github.com` —— 最终兜底
+const UPDATE_ALLOWED_HOSTS: [&str; 4] = [
+    "appwrite.sectl.cn",
+    "stk.sectl.cn",
+    "gh-proxy.com",
+    "github.com",
+];
+
+/// `gh-proxy.com` 是前缀式镜像：真实目标在路径里，需单独拆出来校验，
+/// 否则 `https://gh-proxy.com/任意域名/` 会变成万能跳板。
+const UPDATE_MIRROR_PREFIX: &str = "https://gh-proxy.com/";
+
+fn url_validate_update_source(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
-    
-    let valid_domains = ["github.com", "www.github.com", "api.github.com"];
-    let host = parsed.host_str().unwrap_or("");
-    
-    if !valid_domains.contains(&host) {
-        return Err(format!("Invalid GitHub URL: unexpected domain {}", host));
+    if parsed.scheme() != "https" {
+        return Err(format!("Invalid update URL scheme: {}", parsed.scheme()));
     }
-    
+
+    let host = parsed.host_str().unwrap_or("");
+
+    // 镜像前缀：剥掉前缀后按真实域名再判一次
+    if let Some(original) = url.strip_prefix(UPDATE_MIRROR_PREFIX) {
+        let inner = url::Url::parse(original).map_err(|e| format!("Invalid mirror URL: {}", e))?;
+        let inner_host = inner.host_str().unwrap_or("");
+        if !UPDATE_ALLOWED_HOSTS.contains(&inner_host) {
+            return Err(format!("Update mirror target not allowed: {}", inner_host));
+        }
+        return Ok(());
+    }
+
+    if !UPDATE_ALLOWED_HOSTS.contains(&host) {
+        return Err(format!("Update URL host not allowed: {}", host));
+    }
     Ok(())
 }
 
@@ -1222,7 +1236,7 @@ fn sanitize_file_name(raw: &str) -> Result<String, String> {
 /// 两个命令都直接接受前端传入的 URL，若不做域名限制，页面内任意脚本
 /// 都能拿它当 SSRF 跳板访问内网。
 ///
-/// ipapi.co 已移除（2026-10-03）：它对所有客户端返回 Cloudflare 挑战页 403，
+/// `ipapi.co` 已移除（2026-10-03）：它对所有客户端返回 Cloudflare 挑战页 403，
 /// 兼底永久失效。名单只留真正在用的域名 —— 名单越窄，SSRF 面越小。
 const TELEMETRY_ALLOWED_HOSTS: [&str; 2] = ["appwrite.sectl.cn", "freeipapi.com"];
 
@@ -1249,13 +1263,26 @@ fn validate_hex_md5(raw: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-/// Tauri IPC 命令：检查是否有新版本
+/// Tauri IPC 命令：更新检查用的 HTTP GET（绕过 CORS）
 ///
-/// 直接通过 GitHub Releases API 获取最新发布（tag/说明/资产），
-/// 与当前编译版本比较决定是否提示更新
+/// 只做传输，不含任何业务判断：端点选择、通道判定、版本比较、包选择全在前端
+/// `modules/update/` 里 —— 那些是纯函数，可以被 `.workbuddy/verify/` 真跑验证；
+/// 留在 Rust 侧就只能靠人肉读代码 review。
+///
+/// 域名白名单只放 `appwrite.sectl.cn`：版本与包信息一律取自 SECTL 分发接口，
+/// 客户端不再直连 GitHub（既避开 GitHub 限流，也避开国内直连不通）。
 #[tauri::command]
-async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
-    let current_version = env!("CARGO_PKG_VERSION");
+async fn update_http_get(url: String) -> Result<String, String> {
+    let parsed = url::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("Invalid update URL scheme: {}", parsed.scheme()));
+    }
+    if parsed.host_str() != Some(SECTL_API_HOST) {
+        return Err(format!(
+            "Update API host not allowed: {}",
+            parsed.host_str().unwrap_or("")
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
@@ -1264,79 +1291,26 @@ async fn update_fetch_check() -> Result<UpdateCheckResult, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 候选地址：直连优先，失败回退公共镜像（国内网络常无法直连 GitHub）
-    let latest_candidates = [
-        "https://api.github.com/repos/SECTL/ViewPDF/releases/latest".to_string(),
-        "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/latest"
-            .to_string(),
-    ];
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let mut latest_release: Option<GitHubRelease> = None;
-    let mut last_err = String::from("未知错误");
-    for url in &latest_candidates {
-        match client.get(url).send().await {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    last_err = format!("GitHub API error: {}", resp.status());
-                    continue;
-    }
-                match resp.json::<GitHubRelease>().await {
-                    Ok(r) => {
-                        latest_release = Some(r);
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = format!("解析 GitHub 响应失败: {}", e);
-                        continue;
-                    }
-                }
-            }
-            Err(e) => {
-                last_err = format!("网络错误: {}", e);
-                continue;
-            }
-        }
-    }
-    let latest_release =
-        latest_release.ok_or_else(|| format!("无法获取最新版本（已尝试直连与镜像）: {}", last_err))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
 
-    let latest_version = latest_release.tag_name.trim_start_matches('v').to_string();
-    if latest_version.is_empty() {
-        return Err("Invalid GitHub response: empty tag_name".to_string());
-    }
-    let has_update = version_validate_newer(current_version, &latest_version);
-
-    // 2. 当前版本的 Release 信息（"已是最新"时展示对应说明，缺失不影响流程）
-    let current_tag = format!("v{}", current_version);
-    let current_candidates = [
-        format!(
-            "https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
-            current_tag
-        ),
-        format!(
-            "https://gh-proxy.com/https://api.github.com/repos/SECTL/ViewPDF/releases/tags/{}",
-            current_tag
-        ),
-    ];
-    let mut current_release: Option<GitHubRelease> = None;
-    for url in &current_candidates {
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
-                if let Ok(r) = resp.json::<GitHubRelease>().await {
-                    current_release = Some(r);
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(UpdateCheckResult {
-        has_update,
-        current_version: current_version.to_string(),
-        latest_version,
-        release: if has_update { Some(latest_release) } else { None },
-        current_release,
+    // 非 2xx 不当错误抛出：接口用 404 + JSON 体表达「该通道没有领先版本」，
+    // 这是**正常业务结果**（例如没有预发布版），由前端按 body 语义处理。
+    // 这里把状态码一起交回去，避免前端为了看状态码再发一次请求。
+    Ok(serde_json::json!({
+        "status": status.as_u16(),
+        "body": text,
     })
+    .to_string())
 }
 
 /// 遥测 HTTP POST 请求（绕过 CORS）
@@ -1943,11 +1917,16 @@ fn updates_cleanup_on_startup(app: &tauri::AppHandle) {
 
 /// Tauri IPC 命令：下载更新文件
 ///
-/// 优先使用 SECTL 分发接口下载，失败时回退到 GitHub 镜像加速。
+/// `urls` 是**有序候选链**，由前端按可信度排好（服务器镜像 → gh-proxy → GitHub），
+/// 逐个尝试直到成功。Rust 侧不替前端决定优先级，只负责传输与信任校验。
+///
+/// 下载产物随后会被 `update_install_release` **执行**，所以每个候选 URL 以及
+/// **跟随 302 之后的最终 URL** 都要过 `url_validate_update_source`。只校验初始
+/// URL 是不够的：初始地址在白名单里，302 照样能把我们送去任意主机。
 #[tauri::command]
 async fn update_download_file(
     app: tauri::AppHandle,
-    url: String,
+    urls: Vec<String>,
     file_name: String,
     version_tag: Option<String>,
 ) -> Result<String, String> {
@@ -1964,13 +1943,18 @@ async fn update_download_file(
     let file_path = updates_dir.join(&safe_file_name);
     log::info!("保存路径: {:?}", file_path);
 
-    // 更新源已切换为 GitHub Releases；version_tag 参数保留以兼容前端调用，不再使用
     let _ = &version_tag;
 
-    // 只允许 GitHub 域（下载产物随后会被 update_install_release 执行，域名必须可信）
-    url_validate_github(&url)?;
+    // 候选链里只要有一个不合法就整体拒绝：宁可整条链作废，也不要「跳过坏的、
+    // 拿剩下那条继续下载并执行」。前端构造链时已保证全部合法，这里是兜底。
+    if urls.is_empty() {
+        return Err("没有可用的下载地址".to_string());
+    }
+    for u in &urls {
+        url_validate_update_source(u)?;
+    }
 
-    let fallback_urls: Vec<String> = vec![url];
+    let fallback_urls: Vec<String> = urls;
 
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
@@ -2012,6 +1996,16 @@ async fn update_download_file(
                 continue;
             }
         };
+
+        // 302 已被 reqwest 自动跟随，这里拿到的是**最终**地址。
+        // 分发接口会 302 到 stk.sectl.cn（白名单内）——但白名单机制的前提是
+        // 「落点也必须可信」，因为这个字节流随后会被执行。所以最终地址要再判一次：
+        // 初始地址在名单里就放行，等于把 302 当成了绕过白名单的后门。
+        if let Err(e) = url_validate_update_source(response.url().as_str()) {
+            let msg = format!("拒绝跟随重定向到非白名单地址: {}", response.url());
+            log::error!("{} ({})", msg, e);
+            return Err(msg);
+        }
 
         let total_size = response.content_length().unwrap_or(0);
         log::info!("文件大小: {} bytes ({:.2} MB)", total_size, total_size as f64 / 1024.0 / 1024.0);
@@ -3858,7 +3852,8 @@ pub fn app_init_run() {
             window_toggle_maximize,
             app_fetch_version,
             app_fetch_platform,
-            update_fetch_check,
+            app_fetch_build_info,
+            update_http_get,
             update_download_file,
             update_download_cancel,
             update_install_release,

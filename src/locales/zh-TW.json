@@ -238,7 +238,15 @@
     "restoreSavePreviewHint": "儲存頁碼、縮放與位置，啟動時恢復",
     "strokesOptionSave": "儲存",
     "strokesOptionDiscard": "不儲存",
-    "strokesOptionAsk": "每次關閉時詢問"
+    "strokesOptionAsk": "每次關閉時詢問",
+    "updateChannel": "更新通道",
+    "updateChannelHint": "預發布版可能不穩定，僅建議在測試環境使用",
+    "channelStable": "正式版",
+    "channelPrerelease": "預發布版",
+    "noVersionOnChannel": "該通道目前沒有可用版本",
+    "updateNoPackage": "發現新版本，但伺服器暫未提供目前平台的安裝包",
+    "updateCurrentVersion": "目前版本",
+    "prereleaseBadge": "預發布版"
   },
   "oobe": {
     "welcome": "歡迎使用 ViewPDF",

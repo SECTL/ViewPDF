@@ -240,7 +240,15 @@
     "restoreSavePreviewHint": "Enregistre la page, le zoom et la position, restaurés au démarrage",
     "strokesOptionSave": "Enregistrer",
     "strokesOptionDiscard": "Ne pas enregistrer",
-    "strokesOptionAsk": "Demander à chaque fermeture"
+    "strokesOptionAsk": "Demander à chaque fermeture",
+    "updateChannel": "Canal de mise à jour",
+    "updateChannelHint": "Les versions préliminaires peuvent être instables ; recommandées pour les tests uniquement",
+    "channelStable": "Stable",
+    "channelPrerelease": "Préliminaire",
+    "noVersionOnChannel": "Aucune version disponible sur ce canal",
+    "updateNoPackage": "Nouvelle version trouvée, mais aucun paquet n’est encore disponible pour cette plateforme",
+    "updateCurrentVersion": "Version actuelle",
+    "prereleaseBadge": "Préliminaire"
   },
   "oobe": {
     "welcome": "Bienvenue sur ViewPDF",
