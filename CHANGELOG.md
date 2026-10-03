@@ -4,8 +4,22 @@
 
 ### 新增
 
-- **更新页的「更新通道」下拉移到下载按钮下方，并收窄为标签与下拉并排的一行**：原先它贴在页面顶部、占满 520px 三行堆叠，一进更新页最显眼的就是这个控件，而它只是次要设置。视觉重心现在回到「有没有新版 / 要不要下载」上。控件宽度由页面的 520px 收到 300px，标签「更新通道」与下拉同一行，说明文字仍整行独占（用 `flex-flow: row wrap` + `flex-basis: 100%`，不加包裹元素）。下拉的 `min-width: 0` 是必需的 —— 父级变成 flex 行之后，没有它 flex 子项的 min-content 宽度会顶破容器，窄块反而被撑成宽块。
-- **工具栏文字提示开关加入 OOBE，独立成一步，排在「窗口标题栏」之后**（第 8 步，引导流程共 11 步）。补 `oobe.toolbarText` / `oobe.toolbarTextDesc` 步骤标题与 `settings.toolbarTextHint` 说明文案（9 个语言包）。同样不做即时预览 —— 引导窗口没有主工具栏，`init.js` 在下次启动时经 `theme_set_user_toolbar_text` 应用。
+- **beta 构建会在设置页内容区顶部显示一条常驻警示横条**：「此版本可能会不稳定，请不要在正式环境中使用！！！」并附当前构建的 tag（如 `v0.3.1-Bata3`）。只有预发布构建可见，正式版完全不显示。
+  - 横条是 `.sp-content` 的第一个子元素，刻意**不是** `.sp-page` —— 那些靠 `display` 随当前页切换，而「你在 beta 上」与当前页无关，必须常驻。
+  - 先做过一版放在侧栏「关于」上方，但侧栏只有 220px，塞一条带版本号的横幅既挤窄导航、又要靠缩窄自己才塞得下；移到内容区后按页面内容的宽度铺开即可。
+  - 样式用 `color-mix` 而非硬编码，`--color-warning` 淡染 14% 做底 + 同色 45% 做边框，两套主题自动自适应。文字用 `--color-ink` 而非 `--color-warning` —— `#f59e0b` 在浅色主题卡片底上只有约 2:1 对比度，13px 小字读不清。
+- **「关于」页的版本号在预发布构建下显示 tag 原文**（`v0.3.0-Bata2`），正式版仍显示 Cargo 版本 `0.3.0`。**不是无条件显示 tag** —— 那样所有正式版用户的版本号会凭空多出个 `v` 前缀。
+- **新增 `ViewPDFDev` 构建身份覆盖命令**（webview 控制台可用，纯前端）：`ViewPDFDev.setVersion('v0.3.1-Bata3')` / `clearVersion()` / `getVersion()` / `isOverridden()`。用来在正式版构建里预览「只有 beta 才出现」的界面，以及验证更新判定逻辑，不必改 Cargo 版本重新打包。设置面板若已打开会立即刷新。
+  - 只存在于内存，不写配置、不落盘，重启即失效 —— 持久化等于给发行版埋一个「用户会误触发的假版本号」，而假版本号会一路影响更新判定。
+  - **不影响遥测**：`reportVersion` 仍直接调 `app_fetch_version`，不经过覆盖入口。否则开发期每次预览都会往服务端上报假版本号，把版本分布统计搅乱。
+  - 覆盖出来的 `version` 填**核心版本**（`0.3.0`）而非带后缀的全串，与真实 beta 构建的 `AppBuildInfo` 形状一致 —— 否则预览出来的行为和真 beta 不一样，预览就失去意义。
+  - 非法输入**抛错**而非静默忽略：控制台里敲错一个字符却毫无反馈，下一步只会去怀疑别处。
+- **构建通道改由 `src-tauri/build-info.json` 显式声明**（与 `build.rs` 同级）：
+  ```json
+  { "prerelease": false, "beta": 0 }
+  ```
+  `prerelease:false` → tag 固定为 `v{Cargo 版本}`；`prerelease:true, beta:N` → `v{Cargo 版本}-BataN`。`VIEWPDF_BUILD_TAG` 环境变量仍然优先，留给 CI 一次性覆盖。
+- **更新页的「更新通道」下拉移到下载按钮下方，并收窄为标签与下拉并排的一行**：原先它贴在页面顶部、占满 520px 三行堆叠，一进更新页最显眼的就是这个控件，而它只是次要设置。视觉重心现在回到「有没有新版 / 要不要下载」上。控件宽度由页面的 520px 收到 300px，标签「更新通道」与下拉同一行，说明文字仍整行独占（用 `flex-flow: row wrap` + `flex-basis: 100%`，不加包裹元素）。下拉的 `min-width: 0` 是必需的 —— 父级变成 flex 行之后，没有它 flex 子项的 min-content 宽度会顶破容器，窄块反而被撑成宽块。检查更新的动画也一并移到下载按钮正下方，顺序现为 应用信息 → 横幅 → 更新日志 → [下载按钮] → [检查更新动画] → 下载进度 → [更新通道]。- **工具栏文字提示开关加入 OOBE，独立成一步，排在「窗口标题栏」之后**（第 8 步，引导流程共 11 步）。补 `oobe.toolbarText` / `oobe.toolbarTextDesc` 步骤标题与 `settings.toolbarTextHint` 说明文案（9 个语言包）。同样不做即时预览 —— 引导窗口没有主工具栏，`init.js` 在下次启动时经 `theme_set_user_toolbar_text` 应用。
   - 兜底方向与标题栏开关**相反**：Rust `settings_defaults` 里 `macosTitleBar: true` 而 `showToolbarText: false`，所以元素缺失时前者回落 `true`、后者回落 `false`。没有统一的「安全方向」，不变式是「回落各自的 Rust 默认值」，验证脚本直接读 `lib.rs` 比对，而不是信任写了两次的常量。
   - `importConfig` 接住导入配置里的 `showToolbarText`，理由同 `macosTitleBar`。
 - **macOS 样式标题栏开关独立成一步，排在「检查更新」之后**（原挂在「外观」步里）。补 `oobe.titleBar` / `oobe.titleBarDesc` 步骤标题与 `settings.macosTitleBarHint` 说明文案（9 个语言包）。不做即时预览 —— 引导窗口本身无边框，没有标题栏可供预览。
@@ -23,6 +37,10 @@
 
 ### 修复
 
+- **构建通道曾靠 `git describe --exact-match` 反推，漏 tag 时会把 `-Bata2` 悄悄变成正式版 `v0.3.0`**：那要求必须从打了 tag 的提交构建，而漏了**不报任何错** —— beta 用户以为自己在正式版，正式版用户又被提示「你在 beta 上」，两头都错，而控制台干干净净。现改为 `build-info.json` 显式声明（见「新增」）。**声明错了会让构建直接失败**（`beta: 0` 配 `prerelease: true`、JSON 语法错、字段缺失、文件缺失），刻意不做「回退成正式版」—— 把一个没填好的 beta 声明当正式版发出去，代价比构建失败大得多。
+- **`ViewPDFDev` 曾只在消费方被间接加载，导致控制台里 `ViewPDFDev is not defined`**：设置面板与更新模块都是懒加载的，应用刚启动时模块压根没被 import 过 —— 而启动后立刻在控制台改版本恰恰是它唯一的使用场景。现由 `init.js` 侧载导入，全局从启动起就在。
+- **更新页的下载按钮随状态出现/消失，把下面的控件顶得上下跳**：按钮由 JS 切 `display`，而检查更新的动画紧跟在其下。现给按钮所在行加 `min-height: var(--btn-height, 40px)` 预留，三种状态（「检查更新 / 已是最新 / 有新版」）下位置完全一致。用同一个 `--btn-height` 而不是写死 40px —— 按钮高度可被主题改，写死就会在改过该变量的主题下重新错位，而这种错位只在特定主题下出现，默认主题上肉眼根本发现不了。
+- **`settings_load_version()` 里两行从未生效的代码**：`getElementById('currentVersion')` / `'latestVersion'` 在全项目任何标记里都不存在，`if (el)` 恒假。已删。顺带把版本号与预发布横幅原本各自的两次 IPC 合并为一次查询 —— 它们问的是同一个问题，拆开不仅多一轮往返，还留下「两处读到不同结果」的空间。
 - **更新检查从来没有真正成功过一次 —— 用户看到的始终是「检查更新失败」**。三个 bug 串在一条链上，任何一个单独存在都不会暴露：
   1. **返回值形状与调用点对不上（界面症状的直接来源）**。`checkForUpdate` 返回的是结果对象本身 `{has_update, channel, ...}`，两个调用点（OOBE 与设置面板）却都写 `const { result } = await checkForUpdate(...)` —— 解构出来的 `result` **恒为 `undefined`**，而两个 UI 都有 `if (!result) → 检查失败`，于是每一次检查都被判成失败。`has_update` 分支、下载按钮、更新日志整片代码从接入 SECTL 接口那天起就是**死代码**，从未执行过。
   2. `latest-tag` 的 `repo` 参数用了 `encodeURIComponent`，把 `SECTL/ViewPDF` 编成 `SECTL%2FViewPDF`。服务端拿这个字符串直接比对已配置的仓库、**不解码**，于是查不到，返回 `404 "Software project or GitHub repository is not configured"`。同一时刻 A/B 对照 4 轮全一致：`%2F` → 404，字面斜杠 → 200 `latest.tag=v0.3.0`。现改用 `encodeURI`（保留 `/`）。
