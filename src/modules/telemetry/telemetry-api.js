@@ -2,11 +2,8 @@
  * HTTP 请求封装：reportOnline()
  */
 
-import {
-    API_BASE,
-    PLATFORM_ID,
-    API_ENDPOINT_ONLINE
-} from './telemetry-config.js';
+import { API_ENDPOINT_ONLINE } from './telemetry-config.js';
+import { SECTL_API_BASE, SECTL_CLIENT_ID } from '../sectl-client.js';
 import { getInstallUUID, getDeviceType } from './telemetry-identity.js';
 import { getGeo } from './telemetry-geo.js';
 
@@ -41,7 +38,7 @@ export async function reportOnline() {
         const geo = await getGeo();
 
         const body = {
-            platform_id: PLATFORM_ID,
+            platform_id: SECTL_CLIENT_ID,
             device_uuid: installId,
             device_type: deviceType,
             ip_address: geo?.ip || '',
@@ -60,7 +57,7 @@ export async function reportOnline() {
         }
 
         const result = await invoke('telemetry_http_post', {
-            url: `${API_BASE}${API_ENDPOINT_ONLINE}`,
+            url: `${SECTL_API_BASE}${API_ENDPOINT_ONLINE}`,
             body: JSON.stringify(body)
         });
 

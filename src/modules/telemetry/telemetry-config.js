@@ -2,9 +2,6 @@
  * 遥测模块常量配置
  */
 
-export const API_BASE = 'https://appwrite.sectl.cn';
-export const PLATFORM_ID = 'platform_9c8003bb30f77c70';
-
 export const STORAGE_KEY_INSTALL_ID = 'viewstage_install_id';
 export const STORAGE_KEY_GEO_CACHE = 'viewstage_geo_cache';
 
