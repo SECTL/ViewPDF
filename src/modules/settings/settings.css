@@ -284,6 +284,49 @@
     text-transform: uppercase;
 }
 
+/* 预发布版横幅：仅 beta 构建可见，作为内容区（.sp-content）里的常驻横条。
+   之前放在侧栏「关于」上方，但侧栏是导航、宽度只有 220px，塞一条带版本号的
+   横幅既挤窄了导航、又要靠缩窄自己才塞得下；移到内容区后可以按页面内容的
+   宽度铺开，标签与版本号也能并排显示。
+
+   它刻意**不是** `.sp-page`：那些靠 `display` 随当前页切换，而「你在 beta 上」
+   是与当前页无关的事实，横条必须常驻。 */
+.sp-content .sp-prerelease-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    /* 横向 32px 与 .sp-page 的 padding 对齐，横条不会比正文宽或窄一截 */
+    margin: 16px 32px 0;
+    padding: 8px 12px;
+    border-radius: var(--rounded-md, 8px);
+    font-size: 13px;
+    line-height: 1.5;
+    /* 文字用 --color-ink 而不是 --color-warning：#f59e0b 在浅色主题的卡片底上
+       只有 ~2:1 对比度，13px 小字读不清。warning 色留给边框，底色用同色淡染 ——
+       color-mix 让两套主题都自适应，与 .sp-update-banner 的做法一致。 */
+    color: var(--color-ink);
+    background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface-card));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+.sp-content .sp-prerelease-banner-label {
+    /* 现在是一整句警示语，不是「预发布版」那种短标签了 —— nowrap 会让它在窄窗口
+       里直接溢出。flex:1 让它吃掉剩余宽度、窄了先折行，版本号始终跟在后面。 */
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+}
+
+.sp-content .sp-prerelease-banner-tag {
+    /* 版本号不参与折行：从中间断开成 "v0.3.1-Bat / a3" 比折行本身更糟。
+       空间不够时先压警示语（上面 flex:1），标签固定不缩。 */
+    flex: 0 0 auto;
+    white-space: nowrap;
+    color: var(--color-muted);
+    font-family: ui-monospace, Consolas, monospace;
+}
+
 #settingsSidebar .sidebar-item {
     display: flex;
     align-items: center;
@@ -1349,10 +1392,10 @@
     text-align: center;
 }
 
-/* 通道选择：放在下载按钮**下方**，窄块、标签与下拉同一行。
-   之前贴在页面顶部且占满 520px 三行堆叠，更新页一进来最显眼的是这个控件，
-   而它只是次要设置；收窄并降级到按钮下方后，视觉重心回到「有没有新版 /
-   要不要下载」上。 */
+/* 通道选择：整页最底部的次要设置，窄块、标签与下拉同一行。
+   之前它贴在页面顶部且占满 520px 三行堆叠，更新页一进来最显眼的就是这个控件，
+   而它只是次要设置；先移到下载按钮下方，再沉到整页最后，视觉重心才回到
+   「有没有新版 / 要不要下载」上。 */
 #pageUpdate .sp-update-channel {
     width: 100%;
     max-width: 300px;
@@ -1473,6 +1516,15 @@
     gap: 12px;
     width: 100%;
     max-width: 520px;
+    /* 下载按钮只在「有新版」时显示（JS 切 display），而检查更新的动画
+       （#updateStatus）紧跟在按钮下方，于是动画会在三种状态间上下跳：
+       检查更新时按钮还没出现 → 悬在最上；「已是最新」时按钮不出现 → 偏高；
+       「有新版」时按钮出现 → 被顶下去。预留一个与按钮等高的高度，
+       三种状态下动画与通道行的位置完全一致。
+       用同一个 --btn-height 而不是写死 40px：按钮高度可被主题改，
+       写死就会在改过 --btn-height 的主题下重新错位。 */
+    min-height: var(--btn-height, 40px);
+    align-items: center;
 }
 
 #pageUpdate .sp-update-download-progress {

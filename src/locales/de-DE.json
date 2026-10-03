@@ -252,7 +252,8 @@
     "macosTitleBarHint": "An: macOS-Ampeln (oben links). Aus: Windows-Klassisch (─ ▢ ✕ oben rechts)",
     "toolbarTextHint": "An: Jede Schaltfläche zeigt ihren Namen neben dem Symbol (mehr Platzbedarf)",
     "macosTitleBar": "Titelleiste im macOS-Stil",
-    "toolbarText": "Textbeschriftungen der Symbolleiste"
+    "toolbarText": "Textbeschriftungen der Symbolleiste",
+    "prereleaseWarning": "Diese Version ist möglicherweise instabil – bitte nicht in Produktionsumgebungen verwenden!"
   },
   "oobe": {
     "welcome": "Willkommen bei ViewPDF",

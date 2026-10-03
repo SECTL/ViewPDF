@@ -251,7 +251,8 @@
     "updateCurrentVersion": "Current version",
     "prereleaseBadge": "Prerelease",
     "macosTitleBarHint": "On: macOS traffic lights (top left). Off: Windows classic (─ ▢ ✕ at top right)",
-    "toolbarTextHint": "On: each tool button shows its name beside the icon, taking more horizontal space"
+    "toolbarTextHint": "On: each tool button shows its name beside the icon, taking more horizontal space",
+    "prereleaseWarning": "This version may be unstable — do not use it in production!!!"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",

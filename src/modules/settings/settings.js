@@ -15,6 +15,7 @@
  */
 
 import { checkForUpdate, startDownload, installDownload, onProgress, offProgress } from '../update/update.js';
+import { resolve_build_identity, on_build_identity_change } from '../build-identity.js';
 
 let _initialized = false;
 
@@ -124,31 +125,55 @@ async function initSettings() {
     // ==================== DOM 元素引用 ====================
     const auroraBg = document.getElementById('auroraBg');
     
-    // ==================== 版本信息加载 ====================
+    // ==================== 构建身份 / 版本信息  ====================
     /**
-     * 加载应用版本号和版权年份
+     * 加载构建身份：版本号、预发布横幅、版权年份。
+     *
+     * 用 `resolve_build_identity()` 而不是 `app_fetch_version`：后者只返回
+     * `CARGO_PKG_VERSION`，而预发布 tag（`v0.3.0-Bata2`）与正式版 tag
+     * （`v0.3.0`）的 Cargo 版本**都是 `0.3.0`** —— 分不出通道。只有 build.rs
+     * 编译期注入的 tag 才是事实来源。走 `resolve_build_identity` 同时让开发期
+     * 覆盖（ViewPDFDev）能预览这套显示，而不必改 Cargo 版本重新打包。
+     *
+     * 「版本」那栏的显示规则：**预发布构建显示 tag 原文**（`v0.3.0-Bata2`），
+     * 正式版仍显示 Cargo 版本（`0.3.0`）。这样对正式版用户完全无变化 ——
+     * 不能无条件显示 tag，否则所有正式版用户的版本号会凭空多出个 `v` 前缀。
+     *
+     * 版本号与横幅共用这一次 IPC：两者问的是同一个问题，拆成两次调用只会
+     * 多一轮 IPC，还留下「两处可能读到不同结果」的空间。
      */
     async function settings_load_version() {
-        if (window.__TAURI__) {
-            try {
-                const { invoke } = window.__TAURI__.core;
-                const version = await invoke('app_fetch_version');
-                
-                const versionNumber = document.getElementById('versionNumber');
-                const currentVersion = document.getElementById('currentVersion');
-                const latestVersion = document.getElementById('latestVersion');
-                
-                if (versionNumber) versionNumber.textContent = version;
-                if (currentVersion) currentVersion.textContent = version;
-                if (latestVersion) latestVersion.textContent = version;
-            } catch (error) {
-                console.error('获取版本号失败:', error);
-            }
-        }
-        
         const copyrightYear = document.getElementById('copyrightYear');
         if (copyrightYear) {
             copyrightYear.textContent = new Date().getFullYear();
+        }
+
+        const banner = document.getElementById('prereleaseBanner');
+        const versionNumber = document.getElementById('versionNumber');
+        if (!window.__TAURI__) return;
+
+        try {
+            const { invoke } = window.__TAURI__.core;
+            const info = await resolve_build_identity(invoke);
+            const v = info?.version || '';
+            if (versionNumber) {
+                versionNumber.textContent = info?.prerelease ? (info.tag || v) : v;
+            }
+
+            if (banner) {
+                if (info?.prerelease) {
+                    const tagEl = document.getElementById('prereleaseBannerTag');
+                    if (tagEl) tagEl.textContent = info.tag || '';
+                    banner.style.display = '';
+                } else {
+                    banner.style.display = 'none';
+                }
+            }
+        } catch (error) {
+            // 查不到构建身份：横幅必须隐藏 —— 正式版用户看到「预发布版」比看不到
+            // 更糟。版本号保持模板里的占位符，也不要拿空串把「版本」清空。
+            console.warn('获取构建身份失败:', error);
+            if (banner) banner.style.display = 'none';
         }
     }
     
@@ -608,7 +633,11 @@ async function initSettings() {
     }
 
     
+    // 横幅与版本号共用这一次构建身份查询，见 settings_load_version 的注释。
     settings_load_version();
+    // 开发期覆盖（ViewPDFDev.setVersion）后就地刷新，不必重开设置面板。
+    // 面板未打开时元素不存在，settings_load_version 会安全地什么都不做。
+    on_build_identity_change(() => settings_load_version());
     settings_load_all().then(settings => {
         if (settings.developerMode) {
             developer_options_activate();

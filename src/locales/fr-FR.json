@@ -252,7 +252,8 @@
     "macosTitleBarHint": "Activé : feux macOS (en haut à gauche). Désactivé : classique Windows (─ ▢ ✕ en haut à droite)",
     "toolbarTextHint": "Activé : chaque bouton affiche son nom à côté de l’icône (plus large)",
     "macosTitleBar": "Barre de titre style macOS",
-    "toolbarText": "Étiquettes de la barre d’outils"
+    "toolbarText": "Étiquettes de la barre d’outils",
+    "prereleaseWarning": "Cette version peut être instable — ne l’utilisez pas en environnement de production !"
   },
   "oobe": {
     "welcome": "Bienvenue sur ViewPDF",

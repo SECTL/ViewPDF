@@ -248,7 +248,8 @@
     "updateCurrentVersion": "目前版本",
     "prereleaseBadge": "預發布版",
     "macosTitleBarHint": "開啟為 macOS 紅綠燈（左上角圓形按鈕），關閉為 Windows 經典樣式（右上角 ─ ▢ ✕）",
-    "toolbarTextHint": "開啟後每個工具按鈕圖示旁會顯示名稱，佔用更多水平空間"
+    "toolbarTextHint": "開啟後每個工具按鈕圖示旁會顯示名稱，佔用更多水平空間",
+    "prereleaseWarning": "此版本可能會不穩定，請不要在正式環境中使用！！！"
   },
   "oobe": {
     "welcome": "歡迎使用 ViewPDF",
