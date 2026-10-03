@@ -9,12 +9,16 @@
 
 import {
   resolve_update,
-  channel_has_version,
+  build_latest_tag_url,
+  probe_channel,
+  channel_probe_reason,
   build_download_candidates,
   DISTRIBUTION_PROJECT_SLUG,
-  DISTRIBUTION_REPO,
   CHANNEL_STABLE,
   CHANNEL_PRERELEASE,
+  CHANNEL_PROBE_OK,
+  CHANNEL_PROBE_EMPTY,
+  CHANNEL_PROBE_ERROR,
 } from './update-resolve.js';
 // 身份常量直接取自单一事实来源，不经 update-resolve.js 转手
 import { SECTL_API_BASE, SECTL_CLIENT_ID } from '../sectl-client.js';
@@ -89,12 +93,21 @@ export async function checkForUpdate(opts = {}) {
 
   const build = await invoke('app_fetch_build_info');
 
-  const tag_url =
-    `/api/software/latest-tag?repo=${encodeURIComponent(DISTRIBUTION_REPO)}&channel=${channel}`;
+  const tag_url = build_latest_tag_url(channel);
   const [tagRes, dist] = await Promise.all([_api_get(tag_url), _fetch_distribution()]);
 
-  // 该通道没有任何版本（例如没发过领先的预发布版）——不是错误，别弹失败横幅
-  if (!channel_has_version(tagRes.status, tagRes.body)) {
+  // ⚠️ 这一段的分岔是**整个更新检查里最要命的一处**：服务端「查不到」和
+  // 「这个通道确实没版本」返回的 HTTP 码**都是 404**，body 形状却不同
+  // （见 probe_channel 的注释）。早先的实现把非 2xx 一律当成「通道没版本」，
+  // 于是任何服务端故障都被翻译成一句绿色的「已是最新」—— 所有版本的用户都被
+  // 告知无需更新，而真相是检查压根没成功。故障必须往上抛，让 UI 弹红色横幅。
+  const probe = probe_channel(tagRes.status, tagRes.body);
+  if (probe === CHANNEL_PROBE_ERROR) {
+    throw new Error(`latest-tag 查询失败：${channel_probe_reason(tagRes.status, tagRes.body)}`);
+  }
+
+  // 该通道没有任何版本（例如没发过领先的预发布版）—— 不是错误，别弹失败横幅
+  if (probe === CHANNEL_PROBE_EMPTY) {
     return {
       has_update: false,
       channel_empty: true,
@@ -114,6 +127,13 @@ export async function checkForUpdate(opts = {}) {
   }
 
   if (!dist) throw new Error('获取软件分发信息失败');
+
+  // probe_channel 只该产出 ok / empty / error 三种。真出了别的（例如以后加了
+  // 新状态而这里没跟上），**不要**当成「正常」继续往下走 —— 那正好落回本次要修的
+  // 那个坑：把判不出来说成「已是最新」。
+  if (probe !== CHANNEL_PROBE_OK) {
+    throw new Error(`latest-tag 响应无法判定：${channel_probe_reason(tagRes.status, tagRes.body)}`);
+  }
 
   return resolve_update(tagRes.body, dist, build, { platform, arch: opts.arch || '', channel });
 }

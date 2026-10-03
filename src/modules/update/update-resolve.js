@@ -268,14 +268,64 @@ export function resolve_update(latestTag, dist, build, opts) {
 }
 
 /**
- * 该通道当前是否可用。
+ * 构造 `latest-tag` 的查询 URL。
  *
- * `latest-tag?channel=prerelease` 在没有领先预发布版时返回 **404 + JSON 体**，
- * 这是**正常业务结果**而不是故障（ViewPDF 目前就是如此：v0.3.0 正式版比
- * v0.3.0-Bata2 新，旧预发布不对外暴露）。所以非 2xx 一律按「该通道没版本」
- * 处理 —— 前端据此安静收场，不弹失败横幅。
+ * ⚠️ `repo` 是 `owner/name`，其中的 **`/` 必须原样发出去**。
+ *
+ * `encodeURIComponent('SECTL/ViewPDF')` 得到 `SECTL%2FViewPDF`；服务端拿这个
+ * 字符串**直接**去比对已配置的仓库（不解码），于是查不到，返回：
+ *   404 {"error":"not_found",
+ *        "error_description":"Software project or GitHub repository is not configured"}
+ * `encodeURI` 正好保留 `/`（仍会转义空格等该转义的字符），所以用它，
+ * **不要**用 `encodeURIComponent`。
+ *
+ * 实测 2026-10-03，同一时刻 A/B 4 轮全一致：
+ *   repo=SECTL%2FViewPDF → 404
+ *   repo=SECTL/ViewPDF   → 200 latest.tag = v0.3.0
+ *
+ * 这条曾造成**所有版本的用户都被告知「已是最新」**（见 `probe_channel`）。
  */
-export function channel_has_version(status, body) {
-  if (status < 200 || status >= 300) return false;
-  return !!body?.latest;
+export function build_latest_tag_url(channel) {
+  const ch = channel === CHANNEL_PRERELEASE ? CHANNEL_PRERELEASE : CHANNEL_STABLE;
+  return `/api/software/latest-tag?repo=${encodeURI(DISTRIBUTION_REPO)}&channel=${ch}`;
+}
+
+export const CHANNEL_PROBE_OK = 'ok';
+export const CHANNEL_PROBE_EMPTY = 'empty';
+export const CHANNEL_PROBE_ERROR = 'error';
+
+/**
+ * 判定 `latest-tag` 的响应属于哪一种。
+ *
+ * 必须区分**两种形状完全不同的 404**。把它们混为一谈，就会把「服务端查不到」
+ * 伪装成「你已是最新」——用户看到一句绿色横幅，完全不知道更新检查其实挂了：
+ *
+ *   通道真的没版本（正常业务结果，安静收场，不弹红色横幅）：
+ *     404 {"error":"not_found",
+ *          "error_description":"No leading prerelease version found for this project",
+ *          "channel":"prerelease","project":{...}}
+ *
+ *   查询本身失败（**必须报错**，绝不能说「已是最新」）：
+ *     404 {"error":"not_found",
+ *          "error_description":"Software project or GitHub repository is not configured"}
+ *     ↑ 注意它**没有** channel / project 字段 —— 服务端根本没走到「查这个通道」
+ *       那一步，是更早的「项目/仓库没配」或查询参数没被识别。
+ *
+ * 判据取 `channel` 字段在不在，**不**去匹配 `error_description` 的文案：
+ * 文案是服务端随时可改的，字段结构不是。
+ */
+export function probe_channel(status, body) {
+  if (status >= 200 && status < 300) {
+    // 2xx 但没有 latest：响应形状不对，当故障处理（当成「无版本」同样是在撒谎）
+    return body?.latest ? CHANNEL_PROBE_OK : CHANNEL_PROBE_ERROR;
+  }
+  if (status === 404 && body?.error === 'not_found' && typeof body?.channel === 'string') {
+    return CHANNEL_PROBE_EMPTY;
+  }
+  return CHANNEL_PROBE_ERROR;
+}
+
+/** 供调用方在故障时带上服务端给的原因 */
+export function channel_probe_reason(status, body) {
+  return body?.error_description || (body?.error ? String(body.error) : `HTTP ${status}`);
 }

@@ -22,6 +22,11 @@
 
 ### 修复
 
+- **所有版本的用户都被告知「你已是最新」—— 更新检查其实从来没成功过**。两个 bug 叠在一起，症状完全看不出异常：
+  1. `latest-tag` 的 `repo` 参数用了 `encodeURIComponent`，把 `SECTL/ViewPDF` 编成 `SECTL%2FViewPDF`。服务端拿这个字符串直接比对已配置的仓库、**不解码**，于是查不到，返回 `404 "Software project or GitHub repository is not configured"`。同一时刻 A/B 对照 4 轮全一致：`%2F` → 404，字面斜杠 → 200 `latest.tag=v0.3.0`。现改用 `encodeURI`（保留 `/`）。
+  2. 就算 URL 正确，`latest-tag` **对两种完全不同的事都返回 404**：通道真的没版本（body 带 `channel` / `project` 字段）与查询本身失败（body 没有这两个字段，只有 `error_description`）。旧代码把非 2xx 一律当成「该通道没版本」，于是**服务端故障被翻译成一句绿色的「已是最新」** —— 用户看到的是一次「成功的检查」。现由 `probe_channel` 三态判定（ok / empty / error），故障一律抛出、UI 弹红色横幅并带上服务端给的原因；判据取 `channel` 字段在不在，而不是匹配 `error_description` 文案（文案服务端随时可改，字段结构不会）。
+  - 修复前：这五种情况**全部**显示「已是最新」—— 0.2.5 用户、预发布构建、预发布通道、无网、各种服务端故障。修复后用真实接口响应复跑：0.2.5/Windows → 正确提示 v0.3.0 并选中 `.exe`（不是 `.msi`）、候选链三条齐全；0.2.5/Linux → AppImage；已是 0.3.0 → 确实是「已是最新」；预发布构建在正式通道不被要求重装；预发布通道 → 「该通道无版本」（v0.3.0 比 Bata2 新，属正确结果）。
+  - 这与之前修过的「传错 ID 导致 `distribution` 返回 200 + 空数组」是**同一类错误**：把服务的失败当成业务结果。这次一并加了两道守卫 —— URL 构造与三态判定都从 `update.js` 挪进纯函数 `update-resolve.js`（原先 URL 在 `update.js` 里无法被测，所以完全没被测到），并把两份 404 响应**原样**钉进测试夹具（不是编的）。
 - **设置面板里两个开关在 6 种语言下显示为字面量 `settings.macosTitleBar` / `settings.toolbarText`**：`i18n.format_translate` 找不到键时**返回键本身**，而这两个标签只有 zh-CN / zh-TW / en-US 三个语言包有 —— de-DE / es-ES / fr-FR / ja-JP / ko-KR / ru-RU 的设置面板那一行直接显示 `settings.toolbarText` 这样一串英文标识符。不报错、不空白、不崩，只是难看，因此此前一直没人发现。6 个语言包补齐。
 - **遥测心跳一直是 `400 invalid_client / Platform not found`**：上报用的 `platform_id` 一直是服务端规范的**平台 ID**，而 `POST /api/stats/online` 只认 **Client ID** —— 于是每次心跳都被拒。之所以长期没被发现：`POST /api/stats/version` **两种 ID 都收**（还会静默归一到平台 ID），版本上报一路绿灯，看起来"统计在工作"，实际上在线人数、并发峰值、地区分布三张表的数据源一直是空的。现：SECTL 身份标识收敛到 `src/modules/sectl-client.js` **单一常量**，客户端一律发 Client ID；平台 ID 只作为服务端规范 ID 记录在注释里，不再有可发送的副本。分发接口此前也有同样的问题（传平台 ID 会拿到 200 + 三个空数组），一并修掉。
 - **IP 归属地兼底长期失效**：ipapi.co 现对**所有**客户端返回 Cloudflare 挑战页（`403 Just a moment...`），浏览器 UA、默认 UA、自定义 UA 结果完全相同，非浏览器客户端已拿不到 JSON —— 之前每次启动都在发一个必然失败的请求，兼底形同虚设。现换成 freeipapi.com（HTTPS、无需 key、返回国/省/市名称），Rust 域名白名单同步收窄（移除已死的 ipapi.co，新增 freeipapi.com，并给 GET 加上 `https_only`）。freeipapi 把区名塞在市名括号里（`"Jinrongjie (Xicheng District)"`），新增 `splitCityDistrict` 拆开，否则 city 与 district 会是同一个字符串。
