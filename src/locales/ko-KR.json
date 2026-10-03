@@ -248,7 +248,8 @@
     "noVersionOnChannel": "이 채널에는 사용할 수 있는 버전이 없습니다",
     "updateNoPackage": "새 버전을 찾았지만 이 플랫폼용 패키지가 아직 제공되지 않았습니다",
     "updateCurrentVersion": "현재 버전",
-    "prereleaseBadge": "프리릴리스"
+    "prereleaseBadge": "프리릴리스",
+    "macosTitleBarHint": "켜기: macOS 교통등(왼쪽 위). 끄기: Windows 클래식(오른쪽 위 ─ ▢ ✕)"
   },
   "oobe": {
     "welcome": "ViewPDF에 오신 것을 환영합니다",

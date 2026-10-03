@@ -246,7 +246,8 @@
     "noVersionOnChannel": "該通道目前沒有可用版本",
     "updateNoPackage": "發現新版本，但伺服器暫未提供目前平台的安裝包",
     "updateCurrentVersion": "目前版本",
-    "prereleaseBadge": "預發布版"
+    "prereleaseBadge": "預發布版",
+    "macosTitleBarHint": "開啟為 macOS 紅綠燈（左上角圓形按鈕），關閉為 Windows 經典樣式（右上角 ─ ▢ ✕）"
   },
   "oobe": {
     "welcome": "歡迎使用 ViewPDF",

@@ -248,7 +248,8 @@
     "noVersionOnChannel": "Aucune version disponible sur ce canal",
     "updateNoPackage": "Nouvelle version trouvée, mais aucun paquet n’est encore disponible pour cette plateforme",
     "updateCurrentVersion": "Version actuelle",
-    "prereleaseBadge": "Préliminaire"
+    "prereleaseBadge": "Préliminaire",
+    "macosTitleBarHint": "Activé : feux macOS (en haut à gauche). Désactivé : classique Windows (─ ▢ ✕ en haut à droite)"
   },
   "oobe": {
     "welcome": "Bienvenue sur ViewPDF",

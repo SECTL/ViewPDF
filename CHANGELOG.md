@@ -4,6 +4,10 @@
 
 ### 新增
 
+- **macOS 样式标题栏开关加入 OOBE**：放在「外观」步（紧跟主题选择，两者同属长相），补 `settings.macosTitleBarHint` 说明文案（9 个语言包）。不做即时预览 —— 引导窗口本身无边框，没有标题栏可供预览。
+  - 默认值与 Rust 侧 `settings_defaults` 对齐（都是 true）；不一致会让 OOBE 显示的开关状态与用户实际看到的相反。
+  - `gatherStepData` 在元素缺失时回落 **true** 而非 false：没碰过这个开关的用户不该被静默改成 Windows 经典样式。
+  - `importConfig` 接住导入配置里的 `macosTitleBar`：`mergeSettings` 里 OOBE 显式管理的键会**覆盖**导入值，不接住的话，导入 `macosTitleBar:false` 的旧配置会被静默改回默认，且界面上看不出发生过任何事（同 `renderPerfTier` 的处理）。
 - **更新通道（正式版 / 预发布版）**：设置 → 更新页顶部可切换通道，切换后立即按新通道重新检查。OOBE 的检查页固定走正式版 —— 预发布是「主动选择」，不该在首次设置流程里把用户推到测试版上。当前构建是预发布时会在版本号旁显式标注（预发布构建的 Cargo 版本与正式版完全相同，都是 `0.3.0`，不标出来测试版用户看不出自己跑的不是正式版）。9 个语言包同步补齐。
 - **更新数据源切到 SECTL 分发接口**（`/api/software/latest-tag` + `/api/software/distribution`），**不再由客户端直连 GitHub API**：既避开 GitHub 限流，也避开国内直连不通的老问题；下载优先走服务器镜像（stk），并会计入 `server_download_count` 统计。版本比较、选包、下载地址构造全部挪到前端纯函数 `update-resolve.js`（Rust 只留传输与信任校验），因此可被验证脚本真跑。更新日志改从 `versions[].changelog` 取。分发查询用平台的 **Client ID**（`6a48ced10013cdd594f8`）而非遥测的平台 ID —— 实测传遥测那个会拿到 HTTP 200 + 三个空数组，不报错，症状是「永远提示已是最新」；`?projectSlug=` / `?projectId=` 服务端根本不过滤，已在代码注释与验证脚本中钉死。
 - **版本使用统计上报**（`POST /api/stats/version`）：按**软件安装**（`device_uuid`）去重上报当前版本号，各版本软件数之和即平台去重后的安装总数（此前该接口完全没接，版本分布页长期空白）。每次启动报一次，**不进周期心跳** —— 心跳是在线口径、版本是安装口径，混在一起会把 `report_count` 变成在线时长的代理指标。版本号剥 `v` 前缀并夹到服务端 1–64 字符上限，空值不上报。

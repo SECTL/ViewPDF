@@ -249,7 +249,8 @@
     "noVersionOnChannel": "No version available on this channel",
     "updateNoPackage": "New version found, but no package is available for this platform yet",
     "updateCurrentVersion": "Current version",
-    "prereleaseBadge": "Prerelease"
+    "prereleaseBadge": "Prerelease",
+    "macosTitleBarHint": "On: macOS traffic lights (top left). Off: Windows classic (─ ▢ ✕ at top right)"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",

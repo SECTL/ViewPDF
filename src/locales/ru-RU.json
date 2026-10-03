@@ -248,7 +248,8 @@
     "noVersionOnChannel": "На этом канале нет доступных версий",
     "updateNoPackage": "Найдена новая версия, но пакет для этой платформы ещё недоступен",
     "updateCurrentVersion": "Текущая версия",
-    "prereleaseBadge": "Предварительная"
+    "prereleaseBadge": "Предварительная",
+    "macosTitleBarHint": "Вкл: светофор macOS (слева вверху). Выкл: классический Windows (─ ▢ ✕ справа вверху)"
   },
   "oobe": {
     "welcome": "Добро пожаловать в ViewPDF",

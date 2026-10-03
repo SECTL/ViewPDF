@@ -248,7 +248,8 @@
     "noVersionOnChannel": "このチャンネルには利用可能なバージョンがありません",
     "updateNoPackage": "新しいバージョンが見つかりましたが、このプラットフォーム向けパッケージは未提供です",
     "updateCurrentVersion": "現在のバージョン",
-    "prereleaseBadge": "プレリリース版"
+    "prereleaseBadge": "プレリリース版",
+    "macosTitleBarHint": "オン: macOS の信号機（左上）。オフ: Windows クラシック（右上 ─ ▢ ✕）"
   },
   "oobe": {
     "welcome": "ViewPDF へようこそ",

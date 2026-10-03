@@ -18,6 +18,9 @@ const state = {
   renderPerfTier: 'balanced',   // 由 _autoPerfTier() 按硬件预选；用户可改
   blackboardEnabled: true,
   restoreLastDoc: true,
+  // 与 Rust 侧 config.json 默认值一致（lib.rs settings_defaults "macosTitleBar": true）。
+  // 不一致的话 OOBE 显示的开与用户实际看到的会相反。
+  macosTitleBar: true,
   importedSettings: null,
   updateChecked: false,
   updateResult: null,
@@ -306,6 +309,10 @@ function gatherStepData(step) {
     const panel = document.querySelector('[data-step="1"]');
     const sel = panel?.querySelector('.card.selected[data-theme]');
     if (sel) state.theme = sel.dataset.theme;
+    const tbToggle = document.getElementById('macosTitleBarToggle');
+    // 兜底 true：与 Rust 默认值一致。元素不存在时若回落 false，会把没碰过这个
+    // 开关的用户静默改成 Windows 经典样式。
+    state.macosTitleBar = tbToggle ? tbToggle.checked : true;
   }
   if (step === 3) {
     const frGroup = document.getElementById('frameRateModeGroup');
@@ -368,6 +375,17 @@ const STEP_TPL = [
           <div class="card-title">${o.label}</div>
         </div>
       `).join('')}
+    </div>
+    <div class="divider"></div>
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">${_t('settings.macosTitleBar')}</div>
+        <div class="toggle-desc">${_t('settings.macosTitleBarHint')}</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="macosTitleBarToggle" ${state.macosTitleBar ? 'checked' : ''}>
+        <span class="toggle-slider"></span>
+      </label>
     </div>
   `,
   // 2 — Import Config
@@ -559,6 +577,12 @@ function setupTheme() {
       state.theme = themeId;
       await window.ThemeManager.theme_update_active(themeId);
     }
+  });
+
+  // 标题栏样式开关。放在外观这步（与主题同属「长相」），且不做即时预览 ——
+  // OOBE 窗口本身无边框（960x540 no decorations），没有标题栏可供预览。
+  document.getElementById('macosTitleBarToggle')?.addEventListener('change', (e) => {
+    state.macosTitleBar = e.target.checked;
   });
 }
 
@@ -1020,6 +1044,13 @@ async function importConfig() {
       state.renderPerfTier = settings.renderPerfTier;
       _tierPickedByUser = true;
     }
+    // 同理接住标题栏样式偏好。mergeSettings 里 OOBE 显式管理的键会**覆盖**导入值，
+    // 所以不接进来的话：用户导入 macosTitleBar:false 的旧配置，勾选框仍显示
+    // 默认的「开」，保存时又写回 true —— 导入的偏好被静默改掉，且界面上看不出
+    // 发生过任何事。
+    if (typeof settings.macosTitleBar === 'boolean') {
+      state.macosTitleBar = settings.macosTitleBar;
+    }
     showImportStatus('success', _t('oobe.importSuccess'));
     setTimeout(() => doTransition(6), 800);
   } catch (err) {
@@ -1052,6 +1083,7 @@ function mergeSettings() {
     frameRateMode: state.frameRateMode,
     blackboardEnabled: state.blackboardEnabled,
     restoreLastDoc: state.restoreLastDoc,
+    macosTitleBar: state.macosTitleBar,
     renderPerfTier: ['low', 'balanced', 'high'].includes(state.renderPerfTier)
       ? state.renderPerfTier : 'balanced',
     penColors: PEN_COLORS,
