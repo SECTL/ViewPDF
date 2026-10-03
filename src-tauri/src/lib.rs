@@ -1217,11 +1217,14 @@ fn sanitize_file_name(raw: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-/// 遥测出口域名白名单：POST 走自建 Appwrite，GET 走 ipapi.co 查 IP 归属地。
+/// 遥测出口域名白名单：POST 走自建 Appwrite，GET 走 freeipapi 查 IP 归属地。
 ///
 /// 两个命令都直接接受前端传入的 URL，若不做域名限制，页面内任意脚本
 /// 都能拿它当 SSRF 跳板访问内网。
-const TELEMETRY_ALLOWED_HOSTS: [&str; 2] = ["appwrite.sectl.cn", "ipapi.co"];
+///
+/// ipapi.co 已移除（2026-10-03）：它对所有客户端返回 Cloudflare 挑战页 403，
+/// 兼底永久失效。名单只留真正在用的域名 —— 名单越窄，SSRF 面越小。
+const TELEMETRY_ALLOWED_HOSTS: [&str; 2] = ["appwrite.sectl.cn", "freeipapi.com"];
 
 fn url_validate_telemetry(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
@@ -1377,6 +1380,7 @@ async fn telemetry_http_get(url: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .user_agent("ViewPDF")
         .timeout(std::time::Duration::from_secs(5))
+        .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
 

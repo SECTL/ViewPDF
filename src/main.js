@@ -992,6 +992,23 @@ function main_setup_pdf_file_open() {
             window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
         }
 
+        // 遥测开关：立即生效，不等下一个心跳周期。
+        // 关掉必须 telemetry_stop()（清定时器），否则关开关后还会继续发最多一条；
+        // 打开则补一次启动上报，用户不必重启应用。
+        // 心跳内部每次也会重读开关，所以这里是「更快」而不是「唯一」判据 ——
+        // 事件丢了最多延迟一个周期，不会漏发。
+        if (settings.telemetryEnabled !== undefined) {
+            import('./modules/telemetry/telemetry.js').then(m => {
+                if (settings.telemetryEnabled === false) {
+                    m.telemetry_stop();
+                } else {
+                    m.telemetryInit();
+                }
+            }).catch(err => {
+                console.warn('[telemetry] 开关变更处理失败:', err);
+            });
+        }
+
         }).catch(err => {
         console.error('settings-changed 事件监听失败:', err);
     });

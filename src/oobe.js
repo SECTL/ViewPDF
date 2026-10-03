@@ -691,12 +691,9 @@ async function setupInstalling() {
     } else {
       await invoke('oobe_submit_complete');
     }
-    // 遥测上报：OOBE 完成（telemetryInit 内部会先检查用户开关）
-    import('./modules/telemetry/telemetry.js').then(m => {
-      m.telemetryInit();
-    }).catch(e => {
-      console.warn('[oobe] telemetry report failed:', e);
-    });
+    // 注意：这里**不要**起遥测。OOBE 完成后紧接着就是 oobe_submit_complete →
+    // app_restart，本进程连同它的定时器一起没了，第一次心跳必然发不出去。
+    // 统计由主窗口重启后的 init.js 负责起（那里 oobe_check_active 已为 false）。
   } catch (err) {
     console.error('Setup failed:', err);
     if (_downloadFilePath) {

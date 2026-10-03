@@ -768,6 +768,13 @@ async function main_init_all() {
         // 注册退出保存流程（Rust 拦截关闭 → 保存批注/位置 → 确认退出）
         init_app_close_flow();
 
+        // 遥测心跳：启动即发一次版本 + 在线，之后按 HEARTBEAT_INTERVAL_MS 周期发在线心跳。
+        // 必须在这里（主窗口）起，不能留在 OOBE —— oobe_submit_complete 会重启进程，
+        // OOBE 窗口里挂的定时器连第一次都发不出去。
+        import('./modules/telemetry/telemetry.js')
+            .then(m => m.telemetryInit())
+            .catch(e => console.warn('[init] telemetry start failed:', e));
+
         // 初始化标签管理器和UI状态
         if (window.main_update_tabs) {
             window.main_update_tabs();
