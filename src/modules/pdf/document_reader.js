@@ -130,6 +130,20 @@ const PDF_RASTER_ZOOM_HEADROOM = 2;
  * 虚拟化窗口、RENDER_MAX、canvas 池这几项，而不是位图宽。别把低配档做成
  * 「只降分辨率」——那样在 5 代机上等于什么都没做。
  */
+/** 超过此页数才启用 DOM 虚拟化；短文档全部页常驻，省掉滑动中的 mount/unmount 往返 */
+const DOM_VIRTUALIZE_MIN_PAGES = 100;
+
+/** 连续移动期间禁止挂载视口外 DOM 的静默期（ms）。刻意与渲染暂停窗口
+ *  （_render_pause_until = 120ms）分开：那个窗口控制 commit 挂起与渲染并发降级，
+ *  动它会牵连整套渲染管线；而挂载门控只想知道「还在不在连续滑动」。 */
+const MOUNT_IDLE_AFTER_MS = 100;
+
+/** 距文档末尾 ≤ 此页数时，滑动期仍允许挂载（否则滑到最后必然白屏） */
+const MOUNT_TAIL_EXEMPT_PAGES = 4;
+
+/** 距文档末尾 ≤ 此页数时，尾部全部挂载（挂载窗口在文档末端不硬裁剪） */
+const MOUNT_TAIL_KEEP_PAGES = 3;
+
 const RENDER_PERF_TIERS = {
     low: {
         raster_max_dev_w: 1024,     // 仅影响放大上限；1x 由 1:1 下限兜住
@@ -137,7 +151,11 @@ const RENDER_PERF_TIERS = {
         motion_dpr_max: 0.5,        // 运动期直接用占位密度
         bitmap_cache_bytes: 32 * 1024 * 1024,
         bitmap_cache_entries: 4,
-        wrapper_keep_distance: 3,
+        // 包裹常驻数三档统一 50（原先 3/6/8）：这一项控的是**空壳 DOM** 数量，
+        // 不是渲染资源 —— 后者由 raster_max_dev_w / *_keep_distance / 缓存字节数
+        // 决定。滑动卡顿的来源是滑到未挂载区才现场建 DOM，所以窗口要一次开到
+        // 前后各 50 页；分档只会让低配机在滑动中重新体验同一卡顿。
+        wrapper_keep_distance: 50,
         image_keep_distance: 3,
         blob_keep_distance: 4,
         prerender_distance: 2,
@@ -152,7 +170,7 @@ const RENDER_PERF_TIERS = {
         motion_dpr_max: 0.75,
         bitmap_cache_bytes: 96 * 1024 * 1024,
         bitmap_cache_entries: 8,
-        wrapper_keep_distance: 6,
+        wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档
         image_keep_distance: 4,
         blob_keep_distance: 6,
         prerender_distance: 4,
@@ -167,7 +185,7 @@ const RENDER_PERF_TIERS = {
         motion_dpr_max: 0.75,
         bitmap_cache_bytes: 128 * 1024 * 1024,
         bitmap_cache_entries: 10,
-        wrapper_keep_distance: 8,
+        wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档
         image_keep_distance: 5,
         blob_keep_distance: 6,
         prerender_distance: 5,
@@ -285,7 +303,13 @@ class DocumentReaderManager {
         this._tile_keep_distance = 5;
         this._image_keep_distance = 5;
         this._blob_keep_distance = 6;
-        this._wrapper_keep_distance = 8;   // 包裹层虚拟化窗口：超出此范围的页面从文档树卸载（仅留缓存坐标）
+        this._wrapper_keep_distance = 50;  // 包裹层虚拟化窗口：超出此范围的页面从文档树卸载（仅留缓存坐标）
+        // 连续移动窗口的到期时刻。**只在 _dr_mark_render_gesture() 里续期**，
+        // 不在各平移输入源分别打戳 —— 后者会把程序化冲量（翻页/跳页，impulse=true，
+        // 根本不经过 _dr_mark_render_gesture）误判成「仍在滑动」，于是刚点完
+        // 「下一页」的预渲染被门控挡下，翻页后出现短暂空白。
+        // 代价是各输入源漏一处就少一处续期，但漏的方向是「提前放行」而非「误挡」。
+        this._dr_mount_block_until = 0;
         this._layout_gap = 16;              // 页面间垂直间距（与 CSS .dr-zoom-wrapper gap 同步，构建时实测）
         this._layout_pad = 16;              // 滚动容器内边距（与 CSS padding 同步，构建时实测）
         this._prerender_distance = 5;           // 预渲染距离：静止/对称时前后各 N 屏
@@ -365,7 +389,18 @@ class DocumentReaderManager {
         this._tab_views = new Map();
         this._view_keep_alive = () => window.state?.viewKeepAlive === true;
         // 包裹层虚拟化（默认开启）：远页从文档树彻底卸载，仅保留缓存坐标，活动标签 DOM 最小
-        this._dom_virtualize = () => window.state?.domVirtualize !== false;
+        // 虚拟化判定。全项目只有这一个写入点曾经的读取点，`state.domVirtualize`
+        // 从未被赋值，所以这个条件此前恒为真 —— 「非虚拟化」整条路径是死代码。
+        // 现在由页数真正决定：短文档全部页 DOM 常驻，省掉 mount/unmount 往返。
+        //
+        // 阈值必须落在**这个函数**里，不能只改 _build_page_dom：调用点有 13 处
+        // （_cleanup_hidden_page_gpu 的 unmount、_batch_read_page_positions 读缓存
+        // 坐标还是实时 offsetTop、_resize_page_layout 是否全文档重算…）。任一处
+        // 判定不一致就是「按虚拟化卸载、按非虚拟化定位」，页面直接错位或消失。
+        this._dom_virtualize = () => {
+            if (window.state?.domVirtualize === false) return false;
+            return (this.page_manager?.pages_list?.length || 0) > DOM_VIRTUALIZE_MIN_PAGES;
+        };
         this._dr_is_zooming = false;            // 缩放进行中标记，缩放结束后延迟批量重绘
         this._zoom_complete_timer = null;        // 缩放结束延迟触发重绘
 
@@ -1974,12 +2009,19 @@ class DocumentReaderManager {
             this._refresh_page_aspect(pages[i]);
         }
 
-        // ［性能］仅构建近活动页(±K)的 DOM，其余页保持 page_element=null，
+        // ［性能］虚拟化时仅构建近活动页(±K)的 DOM，其余页保持 page_element=null，
         // 滚动进入可视区时由虚拟化懒建。千页文档首屏同步开销从 O(N) 降到 O(K)。
+        //
+        // **非虚拟化时必须建全部**，且这一点是开关能生效的前提：否则既不建
+        // （这里只建 5 个）又不会卸载（_cleanup_hidden_page_gpu 的 unmount 分支
+        // 带 _dom_virtualize() 守卫），其余页永远停在 page_element=null；
+        // 而 _check_page_visibility 在非虚拟化模式下对未挂载页 `continue` 跳过
+        // —— 结果是「100 页以下的文档打开后一片空白」。
         const K = 2;
         const center = Math.max(0, Math.min(len - 1, this.active_page_index || 0));
-        const from = Math.max(0, center - K);
-        const to = Math.min(len - 1, center + K);
+        const virtualized = this._dom_virtualize();
+        const from = virtualized ? Math.max(0, center - K) : 0;
+        const to = virtualized ? Math.min(len - 1, center + K) : len - 1;
 
         // DocumentFragment 批量挂载，避免逐 page appendChild 触发布局
         const fragment = document.createDocumentFragment();
@@ -2593,8 +2635,9 @@ class DocumentReaderManager {
         // 已虚拟化/已滚离的页不预渲染（理由同 _schedule_prerender 的过滤）：
         // 重建成果会被虚拟化清理再次卸载，形成 mount/unmount 循环
         if (page_data.is_virtualized) return;
-        if (this._dom_virtualize() &&
-            !this._is_page_near_active(page_index, this._wrapper_keep_distance)) return;
+        if (this._dom_virtualize() && !this._in_mount_window(page_index)) return;
+        // 滑动期不挂视口外的页：现场建 DOM 正是滑动卡顿的主源，等停手 100ms 再追平
+        if (!this._mount_allowed_offscreen(page_index)) return;
         // 已有不低于预渲染目标的成图：重复派发只会空转一轮守卫判定
         if (this._prerender_already_adequate(page_index, page_data)) return;
 
@@ -2759,6 +2802,17 @@ class DocumentReaderManager {
                 const pd = pages[i];
                 if (!pd || pd.is_visible || pd.page_element) continue;
                 if (pd.render_mode !== 'pdfjs' && !pd.loaded && !pd.image_url) continue;
+                // 连续移动期不预挂 DOM。这一段是泵自己的挂载路径，**不经过**
+                // _prerender_page，所以 _mount_allowed_offscreen 的门控必须
+                // 在这里也接一道 —— 而滑动期恰好是这里在跑（gesture=true 时
+                // 泵走 _render_pdf_page_direct，同样绕过 _prerender_page）。
+                // 漏掉这一处，「滑动时不加载 DOM」在滑动路径上完全落空。
+                //
+                // 用 break 而非 continue：候选是按滚动方向逐页推进的，第一个
+                // 没有 DOM 的页就是最该挂的；它被挡说明门控生效，后面各页更远，
+                // 没有理由退而求其次去挂更远的页。末尾豁免由判据内部的
+                // MOUNT_TAIL_EXEMPT_PAGES 负责，真滑到最后几页时这里照样放行。
+                if (!this._mount_allowed_offscreen(i)) break;
                 this._ensure_page_element(i);
                 break;
             }
@@ -3054,6 +3108,50 @@ class DocumentReaderManager {
         return Math.abs(page_index - this.active_page_index) <= distance;
     }
 
+    /**
+     * 包裹层挂载窗口（取代裸的 `_is_page_near_active(i, _wrapper_keep_distance)`）。
+     *
+     * 与「前后各 N 页」的唯一区别在文档末端：对称窗口在末尾会被硬裁到
+     * `active + N`，而 active 最多只能到 `total - 1` —— 滑到文档尾部时窗口仍是
+     * ±50，尾部几页进不了窗口，于是**越接近末尾越容易空白**，正是最该有内容的地方。
+     * 所以距末尾 ≤ MOUNT_TAIL_KEEP_PAGES 时尾部全部纳入。
+     */
+    _in_mount_window(page_index) {
+        const total = this.page_manager?.pages_list?.length || 0;
+        if (!total) return false;
+        if (this.active_page_index < 0) return false;
+        const d = this._wrapper_keep_distance;
+        const lo = Math.max(0, this.active_page_index - d);
+        let hi = Math.min(total - 1, this.active_page_index + d);
+        if (total - 1 - hi <= MOUNT_TAIL_KEEP_PAGES) hi = total - 1;
+        return page_index >= lo && page_index <= hi;
+    }
+
+    /**
+     * 连续移动期是否允许挂载**视口外**的页。
+     *
+     * 只约束视口外的页，不约束可见页：可见页必须挂载，否则内容根本没地方显示 ——
+     * 「滑动时不加载 DOM」只能解释为「不加载视口外的」，这也是唯一可行的读法。
+     *
+     * 放行条件有二，任一满足即可：
+     * - 已停手 MOUNT_IDLE_AFTER_MS：滑动中现场建 DOM 是卡顿主源，但持续不建会
+     *   留下大片空白，所以停手后立刻追平（`_check_page_visibility` 每帧都在跑，
+     *   不需要额外定时器来唤醒）。
+     * - 距末尾 ≤ MOUNT_TAIL_EXEMPT_PAGES：滑到文档尾部时用户马上要看最后几页，
+     *   此时挡住必然白屏，而那几页本来也快到窗口内了。
+     *
+     * 判据是「连续移动窗口」而不是「最近一次输入时刻」。后者语义不对：程序化
+     * 翻页/跳页是冲量（impulse=true），不续期这个窗口，用「最近输入时刻」判会
+     * 把翻页误判成仍在滑动 —— 实测症状是点完「下一页」后目标页预渲染被挡下，
+     * 翻页后短暂空白。
+     */
+    _mount_allowed_offscreen(page_index) {
+        if (performance.now() >= (this._dr_mount_block_until || 0)) return true;
+        const total = this.page_manager?.pages_list?.length || 0;
+        if (!total) return false;
+        return (total - 1 - page_index) <= MOUNT_TAIL_EXEMPT_PAGES;
+    }
+
     _cleanup_hidden_page_gpu() {
         if (!this.page_manager?.pages_list) return;
 
@@ -3095,7 +3193,7 @@ class DocumentReaderManager {
             if (!pd || pd.is_visible || i === this.active_page_index) continue;
             if (!pd.loaded && !pd.image_url) continue;
 
-            if (this._dom_virtualize() && !this._is_page_near_active(i, this._wrapper_keep_distance)) {
+            if (this._dom_virtualize() && !this._in_mount_window(i)) {
                 // 远于包裹窗口：释放图层/图片并彻底卸载出文档树（仅留缓存坐标），
                 // 是当前标签内 DOM 节点数最小化的关键——373 页文档常态仅 ~17 个包裹常驻。
                 // 仅虚拟化模式执行：非虚拟化(flex 流)下无绝对定位补偿，卸载会导致页面消失
@@ -3993,6 +4091,11 @@ class DocumentReaderManager {
     /** 手势帧标记：平移/惯性/滚轮每帧调用，续期静默期限并确保恢复定时器在途 */
     _dr_mark_render_gesture() {
         this._render_pause_until = performance.now() + 120;
+        // 挂载门控的连续移动窗口挂在这里：这是「正在连续滑动」的唯一权威信号。
+        // 单独维护、各输入源分别打戳会踩坑 —— 程序化翻页（impulse）根本不经过
+        // 本方法，用「最近输入时刻」判定就会把翻页误判成仍在滑动。
+        // 120ms 与 100ms 各自独立：渲染暂停的时长不能被挂载门控改，反之亦然。
+        this._dr_mount_block_until = performance.now() + MOUNT_IDLE_AFTER_MS;
         this._render_host?.set_throttled?.(true);
         if (this._render_resume_timer === null) {
             this._render_resume_timer = setTimeout(() => {
