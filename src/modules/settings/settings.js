@@ -487,6 +487,10 @@ async function initSettings() {
                 if (toolbarTextToggle) {
                     toolbarTextToggle.checked = settings.showToolbarText === true;
                 }
+                const moveCursorIconToggle = document.getElementById('moveCursorIconToggle');
+                if (moveCursorIconToggle) {
+                    moveCursorIconToggle.checked = settings.moveCursorIcon === true;
+                }
 
 
                 // 文档关联状态检测（功能检测）
@@ -1296,6 +1300,17 @@ async function initSettings() {
             const show = toolbarTextToggle.checked;
             await settings_save_all_local({ showToolbarText: show });
             window.ThemeManager?.theme_set_user_toolbar_text?.(show);
+        });
+    }
+
+    // 「移动」图标换成 Windows 光标造型。setter 内部会 theme_load_icons()，
+    // 所以阅读器与小黑板两处工具栏、包括已打开的黑板面板，一次全刷。
+    const moveCursorIconToggle = document.getElementById('moveCursorIconToggle');
+    if (moveCursorIconToggle) {
+        moveCursorIconToggle.addEventListener('change', async () => {
+            const enabled = moveCursorIconToggle.checked;
+            await settings_save_all_local({ moveCursorIcon: enabled });
+            window.ThemeManager?.theme_set_user_move_cursor_icon?.(enabled);
         });
     }
 

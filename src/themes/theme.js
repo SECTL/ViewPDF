@@ -192,6 +192,25 @@ const ThemeManager = {
   },
 
   /**
+   * 设置「移动」图标是否改用 Windows 光标造型，并立即刷新已插入的图标
+   * @param {boolean} enabled
+   */
+  theme_set_user_move_cursor_icon(enabled) {
+    this._user_move_cursor_icon = enabled === true;
+    // 已插入 DOM 的 <img> 必须重设 src。不刷的话要等到下次全量加载才变，
+    // 而「下次」可能永远不来 —— 黑板工具栏是懒加载的，用户不一定打开过。
+    this.theme_load_icons();
+  },
+
+  /**
+   * 是否把「移动」图标换成 Windows 光标造型
+   * @returns {boolean}
+   */
+  theme_fetch_move_cursor_icon() {
+    return this._user_move_cursor_icon === true;
+  },
+
+  /**
    * 获取当前激活的主题包名
    * @returns {string|null} 主题包名
    */
@@ -258,10 +277,14 @@ const ThemeManager = {
    * @returns {string} 图标资源相对/绝对路径
    */
   theme_fetch_icon_path(iconName) {
+    // 「移动」→ Windows 光标造型的重定向放在解析口，而不是去改两处按钮的
+    // data-icon：drBtnMove 与 bbBtnMove 是两处独立创建的 DOM，且黑板工具栏懒加载，
+    // 只有「谁用 data-icon="move" 都自动跟随」这一种写法不会漏。
+    const name = (iconName === 'move' && this.theme_fetch_move_cursor_icon()) ? 'move-cursor' : iconName;
     if (this.currentThemeModule && this.currentThemeModule.fetch_icon_path) {
-      return this.currentThemeModule.fetch_icon_path(iconName);
+      return this.currentThemeModule.fetch_icon_path(name);
     }
-    return `themes/${this.currentTheme}/icons/${iconName}.svg`;
+    return `themes/${this.currentTheme}/icons/${name}.svg`;
   },
 
   /**

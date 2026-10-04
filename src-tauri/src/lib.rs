@@ -1473,6 +1473,9 @@ fn config_fetch_default() -> serde_json::Value {
         "theme": "com.viewstage.theme.simplify",
         "macosTitleBar": true,
         "showToolbarText": false,
+        // 「移动」工具改用 Windows 光标造型图标。放进 defaults 才能吃到
+        // config_validate_and_merge 的 bool 类型校验（同 macosTitleBar）。
+        "moveCursorIcon": false,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
         "wordCacheClearDays": 30,

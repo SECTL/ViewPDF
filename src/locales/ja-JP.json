@@ -253,6 +253,7 @@
     "toolbarTextHint": "オン: 各ボタンのアイコン横に名称を表示（横方向の使用量が増えます）",
     "macosTitleBar": "macOS 風のタイトルバー",
     "toolbarText": "ツールバーの文字ラベル",
+    "moveCursorIcon": "移動ツールにカーソルアイコンを使用",
     "prereleaseWarning": "このバージョンは不安定な可能性があります。本番環境では使用しないでください！"
   },
   "oobe": {

@@ -120,6 +120,7 @@
     "resetApp": "Reset",
     "blackboardEnabled": "Blackboard",
     "toolbarText": "Toolbar text labels",
+    "moveCursorIcon": "Use cursor icon for Move tool",
     "macosTitleBar": "macOS-style title bar",
     "blackboardEnabledHint": "Enable the blackboard for drawing and annotation",
     "telemetry": "Telemetry",

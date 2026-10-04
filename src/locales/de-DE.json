@@ -253,6 +253,7 @@
     "toolbarTextHint": "An: Jede Schaltfläche zeigt ihren Namen neben dem Symbol (mehr Platzbedarf)",
     "macosTitleBar": "Titelleiste im macOS-Stil",
     "toolbarText": "Textbeschriftungen der Symbolleiste",
+    "moveCursorIcon": "Cursor-Symbol für das Werkzeug „Verschieben\" verwenden",
     "prereleaseWarning": "Diese Version ist möglicherweise instabil – bitte nicht in Produktionsumgebungen verwenden!"
   },
   "oobe": {

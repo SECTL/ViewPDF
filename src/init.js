@@ -754,6 +754,12 @@ async function main_init_all() {
         // 须在主题应用前设置，主题应用内部的文字显隐刷新即携带该偏好
         window.ThemeManager?.theme_set_user_toolbar_text?.(settings?.showToolbarText === true);
 
+        // 「移动」图标改用 Windows 光标造型。同样的理由必须在主题应用前设置，
+        // 但比工具栏文字多一步：theme_load_icons() 扫的是**当时已在 DOM 里**的
+        // [data-icon]，而阅读器工具栏要到 open() 才建 —— 所以这里只保证开关值
+        // 已就位，具体生效由 theme_fetch_icon_path 在建图标那一刻读它。
+        window.ThemeManager?.theme_set_user_move_cursor_icon?.(settings?.moveCursorIcon === true);
+
         // 标题栏窗口控件样式（macOS 红绿灯默认开启，关闭后为 Windows 经典右置）
         window.main_apply_titlebar_style?.(settings?.macosTitleBar !== false);
 

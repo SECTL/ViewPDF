@@ -120,6 +120,7 @@
     "resetApp": "重置應用",
     "blackboardEnabled": "小黑板",
     "toolbarText": "工具列文字提示",
+    "moveCursorIcon": "移動工具使用游標圖示",
     "macosTitleBar": "macOS 樣式標題列",
     "blackboardEnabledHint": "啟用小黑板進行繪圖和標註",
     "telemetry": "遙測功能",

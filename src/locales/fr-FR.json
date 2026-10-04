@@ -253,6 +253,7 @@
     "toolbarTextHint": "Activé : chaque bouton affiche son nom à côté de l’icône (plus large)",
     "macosTitleBar": "Barre de titre style macOS",
     "toolbarText": "Étiquettes de la barre d’outils",
+    "moveCursorIcon": "Utiliser l'icône de curseur pour l'outil Déplacement",
     "prereleaseWarning": "Cette version peut être instable — ne l’utilisez pas en environnement de production !"
   },
   "oobe": {

@@ -253,6 +253,7 @@
     "toolbarTextHint": "Activado: cada botón muestra su nombre junto al icono (ocupa más ancho)",
     "macosTitleBar": "Barra de título estilo macOS",
     "toolbarText": "Etiquetas de texto de la barra de herramientas",
+    "moveCursorIcon": "Usar icono de cursor para la herramienta Mover",
     "prereleaseWarning": "Esta versión puede ser inestable: ¡no la uses en entornos de producción!"
   },
   "oobe": {
