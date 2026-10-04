@@ -5931,28 +5931,46 @@ class DocumentReaderManager {
 
     _start_stroke(type) {
         const DRAW_CONFIG = window.DRAW_CONFIG;
-        const baseEraserSize = DRAW_CONFIG.eraserSize;
+        // 线宽必须与坐标用**同一个** inv_scale 折算。
+        //
+        // 坐标已经折算过了（inputMove 里 `(ev.position.x - rect.left) * inv`），
+        // 而线宽此前是配置原值。两者不同步的结果：同样划 100px 的线，
+        // scale=1 时屏幕上是 100×5，scale=2 时是 100×10 —— 放大后画的线在
+        // 屏幕上明显更粗，长宽比也失真。
+        //
+        // 折算后长宽比与缩放无关：scale=2 时文档坐标长度 50、线宽 2.5，
+        // 渲染乘 2 回到屏幕 100×5，与 scale=1 一致。
+        //
+        // 三处佐证这一向是原设计：stroke-renderer.js 的注释「线宽在书写时已按
+        // 当时的缩放折算进 stroke.lineWidth，渲染侧不需要再乘缩放」；它还原
+        // eraserSize 时用的 `eraserSizeRaw / stroke.scale`；以及小黑板
+        // drawing-engine.js 的同名方法本来就写着 `* inv_scale`（三件里只有
+        // 阅读器漏了）。
+        const inv_scale = this.dr_cached_inv_scale || 1;
+        const baseEraserSize = DRAW_CONFIG.eraserSize * inv_scale;
         this.current_stroke = {
             type: type,
             points: [],
             color: type === 'draw' ? DRAW_CONFIG.penColor : '#000000',
-            lineWidth: type === 'draw' ? DRAW_CONFIG.penWidth : baseEraserSize,
+            lineWidth: type === 'draw' ? DRAW_CONFIG.penWidth * inv_scale : baseEraserSize,
             eraserSize: baseEraserSize,
             eraserSizeRaw: DRAW_CONFIG.eraserSize,
             eraserShape: 'square',
-            scale: 1,
+            // 真实书写缩放。此前硬编码 1，等于让 stroke-renderer 的
+            // `eraserSizeRaw / scale` 兜底永远算出原值 —— 该字段形同虚设。
+            scale: this.dr_scale || 1,
             bounds: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
             variableWidths: [],
             _cache_uid: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         };
 
         this.current_pressure = 0.5;
-        this.current_line_width = DRAW_CONFIG.penWidth;
-        this.last_line_width = DRAW_CONFIG.penWidth;
+        this.current_line_width = DRAW_CONFIG.penWidth * inv_scale;
+        this.last_line_width = DRAW_CONFIG.penWidth * inv_scale;
 
         this.cached_draw_type = type;
         this.cached_draw_color = type === 'draw' ? DRAW_CONFIG.penColor : '#000000';
-        this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth : baseEraserSize;
+        this.cached_draw_line_width = type === 'draw' ? DRAW_CONFIG.penWidth * inv_scale : baseEraserSize;
 
         if (this.batch_draw) {
             this.batch_draw.batch_draw_init_start();
@@ -5981,9 +5999,11 @@ class DocumentReaderManager {
             this.last_line_width = this.current_line_width;
             currentWidth = stroke.lineWidth * (0.9 + pressure * 0.2);
             this.current_line_width = currentWidth;
-            this.cached_draw_line_width = DRAW_CONFIG.penWidth;
+            // 每点都要重置成折算后的基础宽：不折算的话实时预览线宽与最终提交的
+            // stroke.variableWidths 会差 inv_scale 的倒数倍 —— 抬笔瞬间线宽跳一下。
+            this.cached_draw_line_width = DRAW_CONFIG.penWidth * this.dr_cached_inv_scale;
         } else if (stroke.type === 'erase') {
-            this.cached_draw_line_width = DRAW_CONFIG.eraserSize;
+            this.cached_draw_line_width = DRAW_CONFIG.eraserSize * this.dr_cached_inv_scale;
         }
 
         stroke.variableWidths.push(currentWidth);
