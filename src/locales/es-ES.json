@@ -58,7 +58,9 @@
     "image": "Imagen",
     "file": "Archivo",
     "home": "Inicio",
-    "close": "Cerrar"
+    "close": "Cerrar",
+    "exitFullscreen": "Salir de pantalla completa",
+    "fullscreen": "Pantalla completa"
   },
   "tabs": {
     "document": "Documento",
@@ -254,6 +256,7 @@
     "macosTitleBar": "Barra de título estilo macOS",
     "toolbarText": "Etiquetas de texto de la barra de herramientas",
     "moveCursorIcon": "Usar icono de cursor para la herramienta Mover",
+    "showFullscreenButton": "Mostrar botón de pantalla completa",
     "prereleaseWarning": "Esta versión puede ser inestable: ¡no la uses en entornos de producción!"
   },
   "oobe": {

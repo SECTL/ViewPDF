@@ -19,6 +19,17 @@
   - 重定向是**精确匹配且幂等**：`startsWith('move')` 配上拼接输出会把 `move-cursor` 变成 `move-cursor-cursor`，图标变空白，而且只在开关打开后出现。
   - setter 内部会 `theme_load_icons()` 刷新已插入的 `<img>`，所以切换立即生效、不必重启；否则「下次刷新」可能永远不来（黑板工具栏用户不一定打开过）。
   - 配置键 `moveCursorIcon`，放进 Rust `settings_defaults` 才吃得到 `config_validate_and_merge` 的 bool 类型校验。9 个语言包补 `settings.moveCursorIcon`。
+- **文档阅读器工具栏新增「全屏」按钮**，点击在**窗口系统全屏**与窗口模式之间切换（等同 F11，独占整块显示器、隐藏系统标题栏）。设置 → 应用设置新增「显示全屏按钮」开关控制该按钮的显隐，**默认显示**。
+  - 做的是系统全屏而不是「隐藏标题栏的沉浸模式」：后者要另做一套布局显隐、与侧边栏让位高度（`--dr-toolbar-band`）和标题栏锚点 `--app-titlebar-h` 缠在一起，而系统全屏由窗口管理器负责，页面布局一行不用改。
+  - **`setFullscreen` 需要 `core:window:allow-set-fullscreen`，而它不在 `core:window:default` 里**（官方 window 命名空间文档：default 只放开 getter 与 `is*` 查询，每一个改变窗口的方法都要自己的权限）。漏掉这条权限时调用被 ACL 拒绝，症状是**按钮点了毫无反应、控制台只有一条被 catch 掉的 warn**。
+  - **切换是「读当前态再置反」，不是无脑置 `true`**：全屏还能被系统途径退出（Win+↑、任务栏右键、其它窗口的全屏菜单），按钮必须能把它关回去。`main_toggle_fullscreen` 回传**实际结果**而非乐观值 —— 权限缺失时 `setFullscreen` 会 reject，此时若让图标写死「已进全屏」，用户再点一次是「再次进入」，于是永远出不来。
+  - **状态同步靠 `isFullscreen()` 轮询，而不是事件**：Tauri v2 的 JS 侧 `Window` 只有 `onCloseRequested` / `onDragDropEvent` / `onFocusChanged` / `onMoved` / `onResized` / `onScaleChanged` / `onThemeChanged`，**没有全屏事件**。所以挂在 `onResized` + `onFocusChanged` 上。Windows 上进出全屏都会改窗口尺寸并伴随焦点变化，「系统途径退出全屏」走的是同一套 resize 通知，图标不会滞留在退出态。
+  - 同步带**代次令牌**：`onResized` 在拖窗口/缩放时高频触发，`isFullscreen()` 是跨进程 IPC，慢回包后到会覆盖新状态 —— 表现为刚进全屏图标又跳回「进入」。
+  - 进入/退出两枚图标取自 **[Fluent System Icons](https://github.com/microsoft/fluentui-system-icons)** 的 `Full Screen Maximize` / `Full Screen Minimize` 24 filled（MIT，© 2020 Microsoft Corporation），两套主题各存一份相同副本。选 filled 而非 regular：工具栏按 18px 渲染，regular 的细边在这个尺寸偏虚，而工具栏现有图标（`move` / `pen` / `eraser`）也一律是实心。
+  - **只把 `fill="#212121"` 换成 `fill="currentColor"`**，其余路径数据逐字照抄。Fluent 原素材是钉死的近黑色，直接搬进主题图标目录会在深色主题上几乎看不见 —— `.toolbar-btn img` 上有 `filter: none !important`，图标颜色完全来自 SVG 自身，没有任何 CSS 兜底。
+  - 进入/退出两枚图标常驻 DOM、靠 CSS 二选一（与标题栏最大化 ▢/❐ 同一套路）。16px 的角括号用户看不出当前点了是进还是退，所以 `title` / `aria-label` / 工具栏文字都跟着状态换。
+  - `_create_toolbar` 里补了一次 `theme_load_icons()`：主题图标是启动时扫全文档 `[data-icon]` **一次性**加载的，而阅读器工具栏是 `documentReaderManager.init()` 里现建的（晚于那次扫描）。不补这一次按钮图标会停在**无 src 的空白** —— 两枚 `<img>` 靠 CSS 二选一，缺 src 的那枚永远画不出来。
+  - 开关的缺省方向是**显示**，与 Rust `config_fetch_default` 的 `showFullscreenButton: true` 同向。写成 `=== true` 的话，升级前的老配置（没有这个键）与「用户主动关掉」无法区分，所有人打开就发现按钮不见了，而他们从没碰过这个开关。
 - **beta 构建会在设置页内容区顶部显示一条常驻警示横条**：「此版本可能会不稳定，请不要在正式环境中使用！！！」并附当前构建的 tag（如 `v0.3.1-Bata3`）。只有预发布构建可见，正式版完全不显示。
   - 横条是 `.sp-content` 的第一个子元素，刻意**不是** `.sp-page` —— 那些靠 `display` 随当前页切换，而「你在 beta 上」与当前页无关，必须常驻。
   - 先做过一版放在侧栏「关于」上方，但侧栏只有 220px，塞一条带版本号的横幅既挤窄导航、又要靠缩窄自己才塞得下；移到内容区后按页面内容的宽度铺开即可。

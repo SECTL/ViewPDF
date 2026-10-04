@@ -44,6 +44,8 @@
     "chevron-left": "chevron-left",
     "chevron-right": "chevron-right",
     "add": "add",
-    "reply": "reply"
+    "reply": "reply",
+    "fullscreen": "fullscreen",
+    "fullscreen-exit": "fullscreen-exit"
   }
 }

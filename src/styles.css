@@ -1367,6 +1367,20 @@ body {
     pointer-events: auto;
 }
 
+/* 全屏按钮的进入/退出两枚图标二选一，is-fullscreen 类由 JS 按 isFullscreen()
+   真值维护 —— 与标题栏最大化 ▢/❐ 同一套路。两个 <img> 常驻 DOM 并都带
+   data-icon（theme_load_icons 会一次填好两个 src），所以切换只动 display，
+   不必等下一次全量图标加载。 */
+#drBtnFullscreen .tb-glyph-exit {
+    display: none;
+}
+#drBtnFullscreen.is-fullscreen .tb-glyph-enter {
+    display: none;
+}
+#drBtnFullscreen.is-fullscreen .tb-glyph-exit {
+    display: block;
+}
+
 .main-function {
     flex: 1;
     display: block;

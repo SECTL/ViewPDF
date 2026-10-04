@@ -491,6 +491,13 @@ async function initSettings() {
                 if (moveCursorIconToggle) {
                     moveCursorIconToggle.checked = settings.moveCursorIcon === true;
                 }
+                // 与 Rust 的 config_fetch_default 同向：缺省即显示。
+                // 写成 === true 的话老配置（没有这个键）会把按钮藏掉，
+                // 而用户从没碰过这个开关。
+                const fullscreenButtonToggle = document.getElementById('fullscreenButtonToggle');
+                if (fullscreenButtonToggle) {
+                    fullscreenButtonToggle.checked = settings.showFullscreenButton !== false;
+                }
 
 
                 // 文档关联状态检测（功能检测）
@@ -1311,6 +1318,18 @@ async function initSettings() {
             const enabled = moveCursorIconToggle.checked;
             await settings_save_all_local({ moveCursorIcon: enabled });
             window.ThemeManager?.theme_set_user_move_cursor_icon?.(enabled);
+        });
+    }
+
+    // 「显示全屏按钮」：只管阅读器工具栏上那个按钮的显隐，不碰窗口当前是否全屏。
+    // 立即应用（不必重开应用）—— 阅读器工具栏是 init() 里建一次就常驻的，
+    // 设置面板与它同属一个窗口，所以直接推给阅读器即可。
+    const fullscreenButtonToggle = document.getElementById('fullscreenButtonToggle');
+    if (fullscreenButtonToggle) {
+        fullscreenButtonToggle.addEventListener('change', async () => {
+            const enabled = fullscreenButtonToggle.checked;
+            await settings_save_all_local({ showFullscreenButton: enabled });
+            window.documentReaderManager?._set_fullscreen_btn_visible?.(enabled);
         });
     }
 

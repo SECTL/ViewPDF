@@ -58,7 +58,9 @@
     "image": "Bild",
     "file": "Datei",
     "home": "Start",
-    "close": "Schließen"
+    "close": "Schließen",
+    "exitFullscreen": "Vollbild beenden",
+    "fullscreen": "Vollbild"
   },
   "tabs": {
     "document": "Dokument",
@@ -254,6 +256,7 @@
     "macosTitleBar": "Titelleiste im macOS-Stil",
     "toolbarText": "Textbeschriftungen der Symbolleiste",
     "moveCursorIcon": "Cursor-Symbol für das Werkzeug „Verschieben\" verwenden",
+    "showFullscreenButton": "Vollbild-Schaltfläche anzeigen",
     "prereleaseWarning": "Diese Version ist möglicherweise instabil – bitte nicht in Produktionsumgebungen verwenden!"
   },
   "oobe": {

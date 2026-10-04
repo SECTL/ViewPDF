@@ -2544,6 +2544,35 @@ function main_toggle_maximize() {
     }
 }
 
+// 切换窗口系统全屏（独占整块显示器、隐藏系统标题栏，等同 F11）。
+// 依赖 capability 里的 core:window:allow-set-fullscreen —— 它**不在**
+// core:window:default 里，漏了这条权限时调用会被 ACL 拒绝，表现为按钮毫无反应。
+async function main_toggle_fullscreen() {
+    if (!window.__TAURI__) return false;
+    const { getCurrentWindow } = window.__TAURI__.window;
+    // 读当前态再置反，而不是无脑置 true：全屏还能被系统途径退出
+    // （Win+↑、任务栏右键、其它窗口的「全屏」菜单），按钮必须能把它关回去。
+    const current = await main_fetch_fullscreen();
+    try {
+        await getCurrentWindow().setFullscreen(!current);
+        return !current;
+    } catch (e) {
+        console.warn('[main] 切换全屏失败:', e);
+        return current;
+    }
+}
+
+// 当前是否全屏。isFullscreen 属于 core:window:default 覆盖的只读 is* 查询。
+async function main_fetch_fullscreen() {
+    if (!window.__TAURI__) return false;
+    try {
+        const { getCurrentWindow } = window.__TAURI__.window;
+        return (await getCurrentWindow().isFullscreen()) === true;
+    } catch (_) {
+        return false;
+    }
+}
+
 // 切换标题栏窗口控件样式：macOS 红绿灯（左置）/ Windows 经典（右置 ─ ▢ ✕）
 // 两套控件组独立存在于 DOM，靠 #titlebar.macos-mode 类二选一显示
 function main_apply_titlebar_style(macos_style) {
@@ -3401,6 +3430,8 @@ window.main_update_canvas_transform = main_update_canvas_transform;
 window.main_init_pdfjs = main_init_pdfjs;
 window.main_hide_window = main_hide_window;
 window.main_toggle_maximize = main_toggle_maximize;
+window.main_toggle_fullscreen = main_toggle_fullscreen;
+window.main_fetch_fullscreen = main_fetch_fullscreen;
 window.main_apply_titlebar_style = main_apply_titlebar_style;
 window.main_submit_close_window = main_submit_close_window;
 window.main_is_window_transitioning = main_is_window_transitioning;

@@ -58,7 +58,9 @@
     "image": "圖片",
     "file": "檔案",
     "home": "主頁",
-    "close": "關閉"
+    "close": "關閉",
+    "exitFullscreen": "結束全螢幕",
+    "fullscreen": "全螢幕"
   },
   "tabs": {
     "document": "文件",
@@ -121,6 +123,7 @@
     "blackboardEnabled": "小黑板",
     "toolbarText": "工具列文字提示",
     "moveCursorIcon": "移動工具使用游標圖示",
+    "showFullscreenButton": "顯示全螢幕按鈕",
     "macosTitleBar": "macOS 樣式標題列",
     "blackboardEnabledHint": "啟用小黑板進行繪圖和標註",
     "telemetry": "遙測功能",

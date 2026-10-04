@@ -351,6 +351,9 @@ class DocumentReaderManager {
         this._toolbar_band_observer = null;  // 工具栏尺寸观测（驱动侧边栏让位高度）
         this._page_rotation = 0;    // 页面旋转（0/90/180/270），随文档持久化
         this._reader_confirm_settle = null;  // 在飞的确认弹窗结算函数（防 Promise 悬挂）
+        this._show_fullscreen_btn = true;    // 全屏按钮是否显示（设置面板 showFullscreenButton）
+        this._fullscreen_sync_bound = false; // isFullscreen 状态同步是否已挂上窗口事件
+        this._fullscreen_sync_token = 0;     // 同步代次：丢弃过期回包，避免图标来回闪
 
         // 缩放状态（Blackboard 风格：CSS transform translate3d + scale）
         this.dr_scale = 1;
@@ -658,11 +661,24 @@ class DocumentReaderManager {
                     <img data-icon="chevron-right" width="16" height="16" alt="下一页">
                     <span>下一页</span>
                 </button>
+                <div class="toolbar-separator"></div>
+                <!-- 窗口全屏（窗口级动作，故与绘图工具之间用分隔线隔开）。两枚图标
+                     常驻 DOM、靠 CSS 二选一，与标题栏最大化 ▢/❐ 同一套路。 -->
+                <button class="toolbar-btn function-btn" id="drBtnFullscreen">
+                    <img class="tb-glyph-enter" data-icon="fullscreen" width="16" height="16" alt="全屏">
+                    <img class="tb-glyph-exit" data-icon="fullscreen-exit" width="16" height="16" alt="退出全屏">
+                    <span>全屏</span>
+                </button>
             </div>
         `;
         
         document.body.appendChild(toolbar);
         this._dr_tool_group = toolbar.querySelector('.toolbar-dr-group');
+        // 主题图标是启动时扫全文档 [data-icon] 一次性加载的，而本工具栏是
+        // documentReaderManager.init() 里现建的（晚于那次扫描）。不补这一次，
+        // 按钮图标会停在无 src 的空白 —— 全屏按钮尤其明显：两个 <img> 靠 CSS
+        // 二选一，缺 src 的那一个永远画不出来，退出图标也不会在切换时出现。
+        window.ThemeManager?.theme_load_icons?.();
         this._apply_text_visibility();
     }
 
@@ -6584,7 +6600,14 @@ class DocumentReaderManager {
             });
         }
 
+        const fs_btn = document.getElementById('drBtnFullscreen');
+        if (fs_btn) {
+            fs_btn.addEventListener('click', () => this._toggle_fullscreen());
+        }
+        this._setup_fullscreen_state_sync();
+
         this._update_minimize_btn_visibility();
+        this._update_fullscreen_btn_visibility();
     }
 
     async _update_minimize_btn_visibility() {
@@ -6596,6 +6619,91 @@ class DocumentReaderManager {
                 minimize_btn.style.display = 'none';
             }
         } catch (_) {}
+    }
+
+    // ====== 全屏按钮 ======
+
+    /**
+     * 切换窗口系统全屏，并立即把图标/提示刷新到新状态。
+     * 不吞异常：main_toggle_fullscreen 已 try/catch 并回传实际结果，
+     * 这里以返回值（而非乐观假设）驱动 UI，避免图标显示成错的。
+     */
+    async _toggle_fullscreen() {
+        const now_fullscreen = await window.main_toggle_fullscreen?.();
+        this._apply_fullscreen_state(now_fullscreen === true);
+    }
+
+    /**
+     * 设置面板的「显示全屏按钮」开关。默认显示（show !== false），
+     * 缺省方向与 Rust 的 config_fetch_default 保持一致。
+     */
+    _set_fullscreen_btn_visible(show) {
+        this._show_fullscreen_btn = show !== false;
+        const btn = document.getElementById('drBtnFullscreen');
+        if (btn) btn.style.display = this._show_fullscreen_btn ? '' : 'none';
+    }
+
+    // 启动/重开文档时从配置回填一次。异常时保持标记里的默认值（显示），
+    // 与 markup 未内联 display:none 一致 —— 配置读不到不该变成"按钮不见了"。
+    async _update_fullscreen_btn_visibility() {
+        try {
+            const result = await window.__TAURI__?.core?.invoke('settings_fetch_all');
+            this._set_fullscreen_btn_visible(result?.settings?.showFullscreenButton !== false);
+        } catch (_) {
+            this._set_fullscreen_btn_visible(true);
+        }
+    }
+
+    /**
+     * 把 isFullscreen 的真值写进按钮：图标二选一 + title/aria-label 换文案。
+     * 文案必须跟着状态走 —— 图标是 16px 的角括号，用户看不出当前点了是进还是退。
+     */
+    _apply_fullscreen_state(is_fullscreen) {
+        const btn = document.getElementById('drBtnFullscreen');
+        if (!btn) return;
+        btn.classList.toggle('is-fullscreen', is_fullscreen === true);
+        const label = is_fullscreen === true
+            ? (window.i18n?.format_translate('toolbar.exitFullscreen') || '退出全屏')
+            : (window.i18n?.format_translate('toolbar.fullscreen') || '全屏');
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        const span = btn.querySelector('span');
+        if (span) span.textContent = label;
+    }
+
+    /**
+     * 跟随窗口真实全屏态刷新按钮。
+     *
+     * 为什么没有 onFullscreenChange：Tauri v2 的 JS 侧 Window 只暴露
+     * onCloseRequested / onDragDropEvent / onFocusChanged / onMoved / onResized /
+     * onScaleChanged / onThemeChanged，没有全屏事件（见官方 window 命名空间文档），
+     * 所以只能由 resize / focus 事件驱动去查 isFullscreen()。Windows 上进出全屏
+     * 都会改变窗口尺寸并伴随焦点变化，这两个事件足以覆盖；而「系统途径退出全屏」
+     * （Win+↑、任务栏右键）走的是同一套 resize 通知，因此图标不会滞留在退出态。
+     *
+     * 代次令牌是必须的：onResized 在拖拽窗口 / 缩放时会高频触发，isFullscreen()
+     * 是跨进程 IPC，慢回包会后到并覆盖新状态 —— 表现为全屏中图标突然闪回「进入」。
+     */
+    _setup_fullscreen_state_sync() {
+        if (this._fullscreen_sync_bound || !window.__TAURI__) return;
+        const { getCurrentWindow } = window.__TAURI__.window;
+        if (!getCurrentWindow) return;
+        const sync = async () => {
+            const token = ++this._fullscreen_sync_token;
+            const is_fs = await window.main_fetch_fullscreen?.();
+            // 回包期间又触发了新一轮同步 → 丢弃本次，避免图标抖动
+            if (token !== this._fullscreen_sync_token) return;
+            this._apply_fullscreen_state(is_fs === true);
+        };
+        this._fullscreen_sync_bound = true;
+        // 注册失败（无 Tauri / 权限缺失）不应阻断工具栏其余按钮的绑定
+        Promise.resolve()
+            .then(() => getCurrentWindow().onResized(sync))
+            .catch(() => {})
+            .then(() => getCurrentWindow().onFocusChanged(sync))
+            .catch(() => {});
+        this._sync_fullscreen_state = sync;
+        sync();
     }
 
     async _set_draw_mode(mode) {

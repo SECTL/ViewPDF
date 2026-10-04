@@ -58,7 +58,9 @@
     "image": "画像",
     "file": "ファイル",
     "home": "ホーム",
-    "close": "閉じる"
+    "close": "閉じる",
+    "exitFullscreen": "全画面を終了",
+    "fullscreen": "全画面"
   },
   "tabs": {
     "document": "文書",
@@ -254,6 +256,7 @@
     "macosTitleBar": "macOS 風のタイトルバー",
     "toolbarText": "ツールバーの文字ラベル",
     "moveCursorIcon": "移動ツールにカーソルアイコンを使用",
+    "showFullscreenButton": "全画面ボタンを表示",
     "prereleaseWarning": "このバージョンは不安定な可能性があります。本番環境では使用しないでください！"
   },
   "oobe": {

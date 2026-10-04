@@ -1476,6 +1476,9 @@ fn config_fetch_default() -> serde_json::Value {
         // 「移动」工具改用 Windows 光标造型图标。放进 defaults 才能吃到
         // config_validate_and_merge 的 bool 类型校验（同 macosTitleBar）。
         "moveCursorIcon": false,
+        // 阅读器工具栏是否显示全屏按钮。默认**显示**：这是新增能力，
+        // 藏起来等于没人找得到。放进 defaults 同样是为了吃到 bool 校验。
+        "showFullscreenButton": true,
         "eraserSizePresets": [5, 15, 25, 38, 50],
         "penEffectMode": "limited",
         "wordCacheClearDays": 30,

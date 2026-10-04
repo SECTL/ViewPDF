@@ -58,7 +58,9 @@
     "image": "Image",
     "file": "File",
     "home": "Home",
-    "close": "Close"
+    "close": "Close",
+    "exitFullscreen": "Exit Fullscreen",
+    "fullscreen": "Fullscreen"
   },
   "tabs": {
     "document": "Document",
@@ -121,6 +123,7 @@
     "blackboardEnabled": "Blackboard",
     "toolbarText": "Toolbar text labels",
     "moveCursorIcon": "Use cursor icon for Move tool",
+    "showFullscreenButton": "Show Fullscreen Button",
     "macosTitleBar": "macOS-style title bar",
     "blackboardEnabledHint": "Enable the blackboard for drawing and annotation",
     "telemetry": "Telemetry",
