@@ -5407,45 +5407,53 @@ class DocumentReaderManager {
             // 非第一指不处理（后续手指留给 PinchZoomSourceV2）
             if (input.activeCount > 1) return;
 
-            // 页面选择
+            // 页面选择。**命中页面才切页，未命中不 return** —— 页面以外要落到
+            // 下面的平移分支去。旧实现在这里 `if (!target) return;`，于是纸张
+            // 以外的灰色留白既不切页也不平移，拖上去一点反应都没有。
             const target = ev.originEvent?.target?.closest?.('.doc-reader-page');
-            if (!target) return;
-            const page_index = parseInt(target.dataset.page);
-            if (isNaN(page_index)) return;
+            if (target) {
+                const page_index = parseInt(target.dataset.page);
+                if (isNaN(page_index)) return;
 
-            const page_data = this.page_manager.pages_list[page_index];
-            if (!page_data?.is_tiles_initialized) {
-                this._on_page_visible(page_index);
-                // 手势静默窗口/错峰排空中，上面的调用可能只把本页送进了延后
-                // 队列而没有真正建瓦片。落笔前瓦片必须就位（单页同步成本
-                // 可接受，且仅发生在与滚动窗口竞态的罕见时刻）：
-                if (page_data && !page_data.is_tiles_initialized) {
-                    this._dr_tile_init_queue.delete(page_index);
-                    this._resize_page_layout(page_index, this._get_page_base_width());
-                    this._init_page_tiles(page_index);
-                    this._update_overlay_size(page_index);
+                const page_data = this.page_manager.pages_list[page_index];
+                if (!page_data?.is_tiles_initialized) {
+                    this._on_page_visible(page_index);
+                    // 手势静默窗口/错峰排空中，上面的调用可能只把本页送进了延后
+                    // 队列而没有真正建瓦片。落笔前瓦片必须就位（单页同步成本
+                    // 可接受，且仅发生在与滚动窗口竞态的罕见时刻）：
+                    if (page_data && !page_data.is_tiles_initialized) {
+                        this._dr_tile_init_queue.delete(page_index);
+                        this._resize_page_layout(page_index, this._get_page_base_width());
+                        this._init_page_tiles(page_index);
+                        this._update_overlay_size(page_index);
+                    }
                 }
+
+                this.active_page_index = page_index;
+                this.page_manager.switch_page(page_index);
+
+                this._update_page_indicator();
+                this._sync_page_buttons();
             }
-
-            this.active_page_index = page_index;
-            this.page_manager.switch_page(page_index);
-
-            this._update_page_indicator();
-            this._sync_page_buttons();
 
             // 拖拽平移（move 模式）
             if (this.draw_mode === 'move') {
-                this.dr_is_dragging = true;
-                this._dr_multi_touch_active = false;  // 全新单指拖拽：允许惯性
-                this._dragFingerId = ev.id;
-                this.dr_start_drag_x = ev.position.x - this.dr_canvas_x;
-                this.dr_start_drag_y = ev.position.y - this.dr_canvas_y;
-                this._dr_last_canvas_x = this.dr_canvas_x;
-                this._dr_last_canvas_y = this.dr_canvas_y;
-                this._dr_gesture_vx = 0;
-                this._dr_gesture_vy = 0;
-                this._dr_last_move_time = performance.now();
-                this._dr_enable_smooth_transform();
+                this._dr_begin_pan(ev);
+                return;
+            }
+
+            // 纸张以外的留白：当作「抓手」平移文档，**与当前模式无关**。
+            //
+            // 与模式无关是刻意的。默认模式恰恰是 comment（draw_mode 初值），
+            // 而批注 / 橡皮在页面外本就没有可作用的对象 —— 若只在 move 模式下
+            // 生效，用户在默认状态下依然滑不动，等于没改。
+            //
+            // 这不是功能回退，理由两条：
+            // - 「页面内起笔、拖出页外」走的是 inputMove 的越界自动提交，
+            //   不经过这里，行为未变；
+            // - 页面外起笔本来也落不到任何页上，改前是纯粹的无响应。
+            if (!target) {
+                this._dr_begin_pan(ev);
                 return;
             }
 
@@ -5461,9 +5469,12 @@ class DocumentReaderManager {
                 this.last_x = (ev.position.x - rect.left) * inv;
                 this.last_y = (ev.position.y - rect.top) * inv;
                 this._ensure_page_tiles(this.active_page_index);
+                // `page_data` 在上面的命中块里是块内 const，这里按 active_page_index
+                // 重新取一次 —— 两者此刻相等，但 page_index 已出作用域。
+                const page_data = this.page_manager.pages_list[this.active_page_index];
                 // tile 就绪后再绑定（延迟创建的页此时才有 tile_renderer）
                 if (this.batch_draw) {
-                    this.batch_draw._tileRenderer = page_data.tile_renderer || null;
+                    this.batch_draw._tileRenderer = page_data?.tile_renderer || null;
                 }
                 this._start_stroke(this.draw_mode === 'comment' ? 'draw' : 'erase');
                 if (this.draw_mode === 'eraser') {
@@ -5755,6 +5766,29 @@ class DocumentReaderManager {
         // ====== 滚轮缩放（独立于 gesture 模块） ======
         this._bound_dr_handle_wheel = (e) => this._dr_handle_wheel(e);
         this._scroll_container.addEventListener('wheel', this._bound_dr_handle_wheel, { passive: false });
+    }
+
+    /** 起手拖拽平移：打锚点、速度归零。
+     *
+     *  两个调用点共用同一份实现 —— 页面内（move 模式）与页面外的灰色留白。
+     *  必须字面相同：锚点算错会让文档在按下的瞬间跳一下，而这两种起手位置
+     *  相邻、用户根本分不出自己在哪，如果两边行为有细微差异，"页面内好使、
+     *  页面外会跳一下"这种症状会显得像 bug 而不像实现细节。
+     *
+     *  锚点是 `按下点 − 当前位移`，所以起手那一刻内容不动，之后 1:1 跟手。
+     */
+    _dr_begin_pan(ev) {
+        this.dr_is_dragging = true;
+        this._dr_multi_touch_active = false;  // 全新单指拖拽：允许惯性
+        this._dragFingerId = ev.id;
+        this.dr_start_drag_x = ev.position.x - this.dr_canvas_x;
+        this.dr_start_drag_y = ev.position.y - this.dr_canvas_y;
+        this._dr_last_canvas_x = this.dr_canvas_x;
+        this._dr_last_canvas_y = this.dr_canvas_y;
+        this._dr_gesture_vx = 0;
+        this._dr_gesture_vy = 0;
+        this._dr_last_move_time = performance.now();
+        this._dr_enable_smooth_transform();
     }
 
     _teardown_gesture() {
