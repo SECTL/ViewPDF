@@ -92,6 +92,10 @@ CI 自动构建：推送 `v*` 标签触发，手动也可在 Actions 页面触�
 - [mammoth.js](https://github.com/mwilliamson/mammoth.js) — Word 文档转为 HTML
 - [html2canvas](https://html2canvas.hertzen.com/) — HTML 元素渲染为 Canvas
 
+### 图标
+
+- [Fluent System Icons](https://github.com/microsoft/fluentui-system-icons) — MIT，© 2020 Microsoft Corporation。用于阅读器工具栏的「全屏 / 退出全屏」与「移动」光标造型图标（`Full Screen Maximize`、`Full Screen Minimize`、`Cursor`，均为 24 filled）。路径数据逐字照搬，仅将 `fill="#212121"` 改为 `fill="currentColor"` 以跟随主题；光标图标额外保留白色填充 + 黑色描边。
+
 ### Rust 库
 
 - [image](https://github.com/image-rs/image) — 图像编解码与处理

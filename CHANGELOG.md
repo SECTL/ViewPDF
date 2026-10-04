@@ -13,8 +13,8 @@
   - 状态续期挂在 `_dr_mark_render_gesture` 一处，而不是在 5 个平移输入源分别打戳 —— 程序化翻页走 `_dr_sync_transform(true)` 根本不经过前者，各输入源分别打戳会把翻页误判成「仍在滑动」。
   - 静默期 100ms 与渲染暂停窗口 120ms 刻意分开：两者回答不同问题，动任一个都会牵连另一套管线。
 - **设置 → 应用设置新增「移动工具使用光标图标」开关**，开启后文档阅读器与小黑板工具栏的「移动」按钮改用 Windows 箭头光标造型图标（白填充 + 黑描边）。默认关闭 —— 升级即变样会让人以为图标坏了。
-  - 图标是自己画的，没有引用现成素材：Windows 官方光标是 `.cur` 二进制，网络上流传的 SVG 复刻来源与许可都不明。24×24 viewBox、白色填充 + 黑色描边、`stroke-miterlimit` 保住尖角，与现有主题图标同一套尺寸约定。
-  - **双色而非 `currentColor` 单色**是刻意的：光标的辨识特征就是白填充黑边，单色光标缩到 16px 只剩一个看不出形状的轮廓。而白 + 黑这一组在浅色与深色两套主题下都清晰。
+  - 字形来自 **[Fluent System Icons](https://github.com/microsoft/fluentui-system-icons) 的 `Cursor` 24 filled**（MIT，© 2020 Microsoft Corporation），SVG 内已注明出处。**本条此前记的是「图标是自己画的，因为 Windows 官方光标是 `.cur` 二进制、流传的 SVG 复刻许可不明」—— 那条理由已不成立**：Fluent System Icons 提供了许可明确的同款箭头光标，于是手绘版本被替换。字形之外的处理不变：24×24 viewBox、白色填充 + 黑色描边、`stroke-miterlimit` 保住尖角。
+  - **双色而非 `currentColor` 单色**是刻意的，且**继续保留**：光标的辨识特征就是白填充黑边，单色光标缩到 16px 只剩一个看不出形状的轮廓。而白 + 黑这一组在浅色与深色两套主题下都清晰 —— 换字形库不改变这个取舍，只换路径数据。
   - 开关落在 `theme_fetch_icon_path` —— 所有 `<img data-icon>` 的唯一解析口 —— 而不是去改按钮上的 `data-icon`。`drBtnMove` 与 `bbBtnMove` 是两处独立创建的 DOM，且小黑板工具栏是懒加载的，只有「谁用 `data-icon="move"` 都自动跟随」这一种写法不会漏。
   - 重定向是**精确匹配且幂等**：`startsWith('move')` 配上拼接输出会把 `move-cursor` 变成 `move-cursor-cursor`，图标变空白，而且只在开关打开后出现。
   - setter 内部会 `theme_load_icons()` 刷新已插入的 `<img>`，所以切换立即生效、不必重启；否则「下次刷新」可能永远不来（黑板工具栏用户不一定打开过）。
