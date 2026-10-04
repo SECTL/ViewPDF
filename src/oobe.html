@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="oobe.welcome">欢迎使用 ViewPDF</title>
   <link rel="stylesheet" href="oobe.css">
+  <!-- 选项组（帧率模式 / 渲染档位 / 笔效）与设置面板共用同一套 .sp-option-*
+       样式，避免同一个控件在两个窗口里长得不一样。引的是整份 settings.css：
+       它的规则全部限定在 .sp- 前缀、#settingsPanel / #settingsSidebar 或具体 id 上，
+       引导页均不存在这些节点，因此不会影响本页布局。 -->
+  <link rel="stylesheet" href="modules/settings/settings.css">
   <script src="modules/i18n.js"></script>
   <script src="modules/renderMarkdown.js"></script>
   <script>document.addEventListener('contextmenu', e => e.preventDefault());</script>

@@ -7018,6 +7018,22 @@ class DocumentReaderManager {
         for (let i = 0; i < this.page_manager.pages_list.length; i++) {
             this._resize_page_layout(i, base_w, true);
         }
+        // bulk=true 的约定是「全部页更新完后由调用方统一重算一次坐标」，那条
+        // 重算在 _handle_reader_resize 的步骤 ③ 里；旋转自己不发 resize 事件，
+        // 所以必须在这里补上，否则这个约定无人履行。
+        //
+        // 为什么必需：_compute_page_layout 的 top 是按 `base / aspect_ratio`
+        // **累加**出来的，不读 DOM。上面刚把 aspect_ratio 取了倒数 → 每页高度全变，
+        // 而缓存里的 top 还是旧值；虚拟化下 _apply_page_positions 把这些旧 top
+        // 写成绝对定位，于是「旧 top + 新高度」→ 页面互相重叠。
+        //
+        // 为什么难自查：只有 >100 页（虚拟化生效、绝对定位）才重叠，短文档走
+        // flex 流天然堆叠、看不出问题；而缩放一下就会好 —— 缩放走的是 bulk=false
+        // 的 _resize_page_layout，正好会重算。
+        if (this._dom_virtualize()) {
+            this._compute_page_layout();
+            this._apply_page_positions();
+        }
         this._dr_apply_scale(true);
         this._check_page_visibility();
         this._update_button_status();

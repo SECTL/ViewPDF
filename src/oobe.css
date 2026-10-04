@@ -718,47 +718,11 @@ body {
   white-space: nowrap;
 }
 
-#app .option-group {
-  display: inline-flex;
-  gap: 4px;
-  background: var(--color-primary-light);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  flex: none;
-  position: static;
-  grid-template-columns: none;
-}
-
-#app .option-group::before {
-  display: none;
-}
-
-#app .option-btn {
-  padding: 6px 14px;
-  font-size: 12px;
-  border: none;
-  border-radius: calc(var(--radius-sm) - 2px);
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
-  position: static;
-  opacity: 1;
-  font-weight: 500;
-  white-space: nowrap;
-  z-index: auto;
-  line-height: 1;
-}
-
-#app .option-btn.active {
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-}
-
-#app .option-btn:hover:not(.active) {
-  color: var(--color-text);
-}
+/* 注：原先这里有一组 `#app .option-group` / `#app .option-btn` 覆盖，把选项组改成
+   「填充式」（隐藏主题的滑动指示器 ::before，改用 --color-primary 填充选中项）。
+   三个选项组现已改用设置面板的 .sp-option-*（带滑动指示器），那组覆盖全部落空，
+   故整块删除 —— 留着的话主题自带的 .option-group（两列网格 + 两档指示器）会重新
+   生效，而页面上已无任何 .option-group / .option-btn 节点。 */
 
 /* ===== Navigation ===== */
 .nav-bar {

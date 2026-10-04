@@ -1841,15 +1841,20 @@
     transform: translateX(200%);
 }
 
-.sp-option-group#penEffectModeGroup[data-active="off"]::before {
+/* 笔效组：三档（off / limited / full）。id 有两个 —— 设置面板用 penEffectModeGroup，
+   引导流程用 penEffectGroup（同一个控件，共用这套样式），两个都要写。 */
+.sp-option-group#penEffectModeGroup[data-active="off"]::before,
+.sp-option-group#penEffectGroup[data-active="off"]::before {
     transform: translateX(0);
 }
 
-.sp-option-group#penEffectModeGroup[data-active="limited"]::before {
+.sp-option-group#penEffectModeGroup[data-active="limited"]::before,
+.sp-option-group#penEffectGroup[data-active="limited"]::before {
     transform: translateX(100%);
 }
 
-.sp-option-group#penEffectModeGroup[data-active="full"]::before {
+.sp-option-group#penEffectModeGroup[data-active="full"]::before,
+.sp-option-group#penEffectGroup[data-active="full"]::before {
     transform: translateX(200%);
 }
 
@@ -1857,8 +1862,10 @@
    low/adaptive/high 命名，避免两组滑块的 data-active 取值空间混在一起，
    语义上也更好——中间档叫「均衡」而不是「自适应」，它并不做自适应）。
    通用规则的 [data-active="low"] / [data-active="high"] 已能命中首尾两档，
-   只有中间的 balanced 需要这里补一条（通用规则写的是 adaptive）。 */
-.sp-option-group#renderPerfTierGroup[data-active="balanced"]::before {
+   只有中间的 balanced 需要这里补一条（通用规则写的是 adaptive）。
+   id 有两个：设置面板 renderPerfTierGroup、引导流程 renderPerfTierGroupOobe。 */
+.sp-option-group#renderPerfTierGroup[data-active="balanced"]::before,
+.sp-option-group#renderPerfTierGroupOobe[data-active="balanced"]::before {
     transform: translateX(100%);
 }
 

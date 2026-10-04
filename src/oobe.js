@@ -271,22 +271,19 @@ function renderNav() {
     return;
   }
   nav.style.display = '';
-  const isFirst = state.step === STEP.language;
   const isImport = state.step === STEP.importConfig;
 
+  // 「返回」按钮已移除（引导流程改为单向）。`.nav-left` 是**必须保留的空占位**：
+  // .nav-bar 是 justify-content: space-between，只剩 .nav-right 一个 flex item 时
+  // 它会被贴到左边，「下一步」整个跑到左侧。删掉这个 div 不会报错，只会静默错位。
   nav.innerHTML = html`
-    <div class="nav-left">
-      ${!isFirst ? `<button class="btn btn-ghost" id="btnBack">← ${_t('common.back')}</button>` : ''}
-    </div>
+    <div class="nav-left"></div>
     <div class="nav-right">
       <button class="btn btn-primary" id="btnNext">${isImport ? _t('oobe.importSkip') : _t('common.next')} →</button>
     </div>
   `;
 
-  const backBtn = document.getElementById('btnBack');
   const nextBtn = document.getElementById('btnNext');
-
-  if (backBtn) backBtn.addEventListener('click', prevStep);
   if (nextBtn) nextBtn.addEventListener('click', nextStep);
 }
 
@@ -295,10 +292,6 @@ function nextStep() {
   if (!validateStep(state.step)) return;
   gatherStepData(state.step);
   doTransition(state.step + 1, 'forward');
-}
-
-function prevStep() {
-  doTransition(state.step - 1);
 }
 
 function doTransition(target) {
@@ -345,7 +338,7 @@ function gatherStepData(step) {
   }
   if (step === STEP.performance) {
     const frGroup = document.getElementById('frameRateModeGroup');
-    const frActive = frGroup?.querySelector('.option-btn.active');
+    const frActive = frGroup?.querySelector('.sp-option-btn.sp-active');
     if (frActive) state.frameRateMode = frActive.dataset.value;
   }
   if (step === STEP.drawing) {
@@ -354,7 +347,7 @@ function gatherStepData(step) {
     const bbToggle = document.getElementById('blackboardEnabledToggle');
     state.blackboardEnabled = bbToggle ? bbToggle.checked : true;
     const group = document.getElementById('penEffectGroup');
-    const active = group?.querySelector('.option-btn.active');
+    const active = group?.querySelector('.sp-option-btn.sp-active');
     if (active) state.penEffectMode = active.dataset.value;
   }
   if (step === STEP.defaultApps) {
@@ -423,24 +416,27 @@ const STEP_TPL = [
     <div class="step-subtitle">${_t('oobe.performanceDesc')}</div>
     <div class="setting-row">
       <div class="setting-row-label">${_t('settings.frameRateMode')}</div>
-      <div class="option-group" id="frameRateModeGroup">
+      <div class="sp-option-group" id="frameRateModeGroup" data-active="${state.frameRateMode}">
         ${['low', 'adaptive', 'high'].map(v => html`
-          <button class="option-btn${state.frameRateMode === v ? ' active' : ''}" data-value="${v}">
+          <button class="sp-option-btn${state.frameRateMode === v ? ' sp-active' : ''}" data-value="${v}">
             ${_t('settings.frameRate' + v.charAt(0).toUpperCase() + v.slice(1))}
           </button>
         `).join('')}
       </div>
     </div>
-    <div class="setting-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+    <!-- 与上面帧率模式、下面笔效同构：普通 .setting-row（label 左、选项组右）。
+         此前这一行带 inline 的竖排 + 拉伸覆盖，是为下方那行说明文字准备的；
+         说明移除后，拉伸会把 inline-grid 的选项组撑满整行 520px，
+         三等分之后每个按钮宽到约 170px 去装两三个字。 -->
+    <div class="setting-row">
       <div class="setting-row-label">${_t('settings.renderPerfTier')}</div>
-      <div class="option-group" id="renderPerfTierGroupOobe" data-active="${state.renderPerfTier}">
+      <div class="sp-option-group" id="renderPerfTierGroupOobe" data-active="${state.renderPerfTier}">
         ${['low', 'balanced', 'high'].map(v => html`
-          <button class="option-btn${state.renderPerfTier === v ? ' active' : ''}" data-value="${v}">
+          <button class="sp-option-btn${state.renderPerfTier === v ? ' sp-active' : ''}" data-value="${v}">
             ${_t('settings.renderPerfTier' + v.charAt(0).toUpperCase() + v.slice(1))}
           </button>
         `).join('')}
       </div>
-      <div class="toggle-desc" id="renderPerfTierDescOobe">${_t('oobe.perfTierDetecting')}</div>
     </div>
   `,
   // 4 — Drawing
@@ -471,9 +467,9 @@ const STEP_TPL = [
     <div class="divider"></div>
     <div class="setting-row">
       <div class="setting-row-label">${_t('settings.penEffect')}</div>
-      <div class="option-group" id="penEffectGroup">
+      <div class="sp-option-group" id="penEffectGroup" data-active="${state.penEffectMode}">
         ${['off', 'limited', 'full'].map(v => html`
-          <button class="option-btn${state.penEffectMode === v ? ' active' : ''}" data-value="${v}">
+          <button class="sp-option-btn${state.penEffectMode === v ? ' sp-active' : ''}" data-value="${v}">
             ${_t('settings.penEffect' + v.charAt(0).toUpperCase() + v.slice(1))}
           </button>
         `).join('')}
@@ -654,36 +650,32 @@ function setupPerformance() {
   const frGroup = document.getElementById('frameRateModeGroup');
   if (frGroup) {
     frGroup.dataset.active = state.frameRateMode;
-    frGroup.querySelectorAll('.option-btn').forEach(btn => {
-      if (btn.dataset.value === state.frameRateMode) btn.classList.add('active');
+    frGroup.querySelectorAll('.sp-option-btn').forEach(btn => {
+      if (btn.dataset.value === state.frameRateMode) btn.classList.add('sp-active');
     });
     frGroup.addEventListener('click', (e) => {
-      const btn = e.target.closest('.option-btn');
+      const btn = e.target.closest('.sp-option-btn');
       if (!btn) return;
       const mode = btn.dataset.value;
       state.frameRateMode = mode;
       frGroup.dataset.active = mode;
-      frGroup.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+      frGroup.querySelectorAll('.sp-option-btn').forEach(b => b.classList.remove('sp-active'));
+      btn.classList.add('sp-active');
     });
   }
 
   // 渲染档位：自动预选 + 可手改
   const tierGroup = document.getElementById('renderPerfTierGroupOobe');
-  const tierDesc = document.getElementById('renderPerfTierDescOobe');
   if (tierGroup) {
     const setTier = (tier) => {
       state.renderPerfTier = tier;
       tierGroup.dataset.active = tier;
-      tierGroup.querySelectorAll('.option-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.value === tier);
+      tierGroup.querySelectorAll('.sp-option-btn').forEach(b => {
+        b.classList.toggle('sp-active', b.dataset.value === tier);
       });
-      if (tierDesc) {
-        tierDesc.textContent = _t('oobe.perfTierReason_' + tier);
-      }
     };
     tierGroup.addEventListener('click', (e) => {
-      const btn = e.target.closest('.option-btn');
+      const btn = e.target.closest('.sp-option-btn');
       if (!btn) return;
       _tierPickedByUser = true;
       setTier(btn.dataset.value);
@@ -693,10 +685,9 @@ function setupPerformance() {
     setTier(state.renderPerfTier);
     _probeDevice().then((dev) => {
       if (_tierPickedByUser) return;    // 用户已选 → 不覆盖
-      if (!dev) {
-        if (tierDesc) tierDesc.textContent = _t('oobe.perfTierReasonFallback');
-        return;
-      }
+      // 读不到硬件信息就保持默认 balanced：_autoPerfTier 对空输入同样返回
+      // balanced，绝不能静默降到 low（守在 verify/perf-tier-scoring.mjs）
+      if (!dev) return;
       setTier(_autoPerfTier(dev));
       console.log('[OOBE] 硬件探测 → 渲染档位', dev, '→', state.renderPerfTier);
     });
@@ -707,17 +698,17 @@ function setupDrawing() {
   const penGroup = document.getElementById('penEffectGroup');
   if (penGroup) {
     penGroup.dataset.active = state.penEffectMode;
-    penGroup.querySelectorAll('.option-btn').forEach(btn => {
-      if (btn.dataset.value === state.penEffectMode) btn.classList.add('active');
+    penGroup.querySelectorAll('.sp-option-btn').forEach(btn => {
+      if (btn.dataset.value === state.penEffectMode) btn.classList.add('sp-active');
     });
     penGroup.addEventListener('click', (e) => {
-      const btn = e.target.closest('.option-btn');
+      const btn = e.target.closest('.sp-option-btn');
       if (!btn) return;
       const mode = btn.dataset.value;
       state.penEffectMode = mode;
       penGroup.dataset.active = mode;
-      penGroup.querySelectorAll('.option-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+      penGroup.querySelectorAll('.sp-option-btn').forEach(b => b.classList.remove('sp-active'));
+      btn.classList.add('sp-active');
     });
   }
   document.getElementById('dynamicDprToggle')?.addEventListener('change', (e) => {
