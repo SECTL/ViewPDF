@@ -1491,7 +1491,10 @@ fn config_fetch_default() -> serde_json::Value {
         // device_detect_all 按硬件自动预选，用户可在「文档阅读器」设置页改。
         // 放进 defaults 才能吃到 config_validate_and_merge 的类型校验
         // （未知键会被原样保留、不校验），档位值拼错时才能被挡下。
-        "renderPerfTier": "balanced"
+        "renderPerfTier": "balanced",
+        // 复杂文字兼容模式：开启后用系统字体补全 PDF 缺失字形。
+        // 放进 defaults 才能吃到 config_validate_and_merge 的 bool 类型校验。
+        "systemFontFallback": false
     })
 }
 

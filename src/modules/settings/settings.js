@@ -531,6 +531,12 @@ async function initSettings() {
                     telemetryToggle.checked = telemetryEnabled;
                 }
 
+                // 复杂文字兼容模式：只有显式开启过（=== true）才回显为开。
+                const systemFontFallbackToggle = document.getElementById('systemFontFallbackToggle');
+                if (systemFontFallbackToggle) {
+                    systemFontFallbackToggle.checked = settings.systemFontFallback === true;
+                }
+
                 const macosTitleBarToggle = document.getElementById('macosTitleBarToggle');
                 if (macosTitleBarToggle) {
                     macosTitleBarToggle.checked = settings.macosTitleBar !== false;
@@ -2073,6 +2079,15 @@ async function initSettings() {
     if (telemetryToggle) {
         telemetryToggle.addEventListener('change', async () => {
             await settings_save_all_local({ telemetryEnabled: telemetryToggle.checked });
+        });
+    }
+
+    // 复杂文字兼容模式开关。新文档按此决定 pdf.js 是否启用系统字体，
+    // 已打开的文档仍是打开时的取值（提示文案已写明需重新打开）。
+    const systemFontFallbackToggle = document.getElementById('systemFontFallbackToggle');
+    if (systemFontFallbackToggle) {
+        systemFontFallbackToggle.addEventListener('change', async () => {
+            await settings_save_all_local({ systemFontFallback: systemFontFallbackToggle.checked });
         });
     }
 

@@ -992,6 +992,13 @@ function main_setup_pdf_file_open() {
             window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
         }
 
+        // 复杂文字兼容模式：开关本身只影响「新打开的文档」，因为 pdf.js 的
+        // useSystemFonts 是 getDocument 的构造参数，不能在已打开的文档上改。
+        // 这里仍然同步全局值，让本次会话里随后打开的文档立即用上新选择。
+        if (settings.systemFontFallback !== undefined) {
+            window.__systemFontFallback = settings.systemFontFallback === true;
+        }
+
         // 遥测开关：立即生效，不等下一个心跳周期。
         // 关掉必须 telemetry_stop()（清定时器），否则关开关后还会继续发最多一条；
         // 打开则补一次启动上报，用户不必重启应用。
@@ -1335,7 +1342,12 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         loadedPdfDoc = await pdfjsLib.getDocument({
             data: uint8Array,
             enableXfa: false,
-            useSystemFonts: false,
+            // 始终打开这两项：它们让 getTextContent() 的 styles 里出现 fontSubstitution，
+            // 用于检测「PDF 未嵌入、需要系统字体兜底」的文档。渲染是否真正走系统字体
+            // 由 window.__systemFontFallback 与渲染线程门控决定，不受这两项影响
+            // （渲染线程的 pdf.js 是另一个 doc，仍是 disableFontFace:true 的纯路径渲染）。
+            useSystemFonts: true,
+            fontExtraProperties: true,
             isEvalSupported: false,
             standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
             cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',
@@ -1972,6 +1984,93 @@ function main_cancel_import_view(idx) {
     main_update_ui_state();
 }
 
+// ====== 复杂文字：检测文档是否需要系统字体，并征询用户 ======
+// pdf.js 在 fontExtraProperties + useSystemFonts 下会把「未嵌入、被系统字体替换」
+// 的字体写进 textContent.styles[name].fontSubstitution；InvalidPDFjsFont_* 是
+// 字体解析失败的兜底名。任一出现即说明文档里有字形需要系统字体才能正确显示。
+const _fontFallbackAskedFolders = new WeakSet();
+const FONT_FALLBACK_SCAN_PAGES = 3;
+
+async function main_document_needs_system_font(doc) {
+    if (!doc) return false;
+    try {
+        const n = Math.min(FONT_FALLBACK_SCAN_PAGES, doc.numPages || 0);
+        for (let p = 1; p <= n; p++) {
+            const page = await doc.getPage(p);
+            const tc = await page.getTextContent({ disableNormalization: true });
+            const styles = tc?.styles || {};
+            for (const name of Object.keys(styles)) {
+                if (styles[name]?.fontSubstitution || /^InvalidPDFjsFont_/.test(name)) return true;
+            }
+        }
+    } catch (e) {
+        console.warn('[font-fallback] 检测失败（按不需要处理）:', e);
+    }
+    return false;
+}
+
+async function main_ask_system_font_fallback(folder) {
+    if (!folder || window.__systemFontFallback === true) return;
+    if (_fontFallbackAskedFolders.has(folder)) return;
+    _fontFallbackAskedFolders.add(folder);
+    if (!(await main_document_needs_system_font(folder.pdfDoc))) return;
+
+    const t = (k, fb) => window.i18n?.format_translate(k) || fb;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'font-fallback-dialog';
+
+    const title = document.createElement('h3');
+    title.textContent = t('settings.systemFontDetectTitle', '检测到特殊字体');
+    const body = document.createElement('p');
+    body.textContent = t('settings.systemFontDetectBody',
+        '该文档含有未嵌入的字体，部分字符（如音符）可能显示为方框。是否启用系统字体补全？启用后渲染会变慢。');
+    const row = document.createElement('div');
+    row.className = 'font-fallback-buttons';
+
+    const later = document.createElement('button');
+    later.type = 'button';
+    later.textContent = t('settings.systemFontDetectLater', '暂不');
+    const enable = document.createElement('button');
+    enable.type = 'button';
+    enable.className = 'primary';
+    enable.textContent = t('settings.systemFontDetectEnable', '启用补全');
+
+    const close = (yes) => {
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        if (!yes) return;
+        (async () => {
+            try {
+                // 先同步内存标志，确保紧随其后的重渲染立刻走主线程路径，
+                // 不等 settings-changed 的异步分发（落盘失败时至少本次会话生效）。
+                window.__systemFontFallback = true;
+                if (window.__TAURI__) {
+                    const { invoke } = window.__TAURI__.core;
+                    const { emit } = window.__TAURI__.event;
+                    await invoke('settings_save_all', { settings: { systemFontFallback: true } });
+                    await emit('settings-changed', { systemFontFallback: true });
+                } else {
+                    window.__systemFontFallback = true;
+                }
+                // 已打开的文档仍由渲染线程按打开时的口径渲染；清缓存并重扫可见页，
+                // 让它们立即走主线程 + 系统字体路径重渲染一次。
+                const reader = window.documentReaderManager;
+                if (reader?.is_open) reader.apply_perf_tier?.(reader.render_perf_tier || 'balanced');
+            } catch (e) {
+                console.error('[font-fallback] 启用失败:', e);
+            }
+        })();
+    };
+    later.addEventListener('click', () => close(false));
+    enable.addEventListener('click', () => close(true));
+    dialog.addEventListener('cancel', (e) => { e.preventDefault(); close(false); });
+
+    dialog.append(title, body, row);
+    row.append(later, enable);
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
 function main_finish_import_view(idx, folder, autoOpen) {
     const reader = window.documentReaderManager;
     if (idx >= 0 && state.fileList[idx]) {
@@ -1983,13 +2082,17 @@ function main_finish_import_view(idx, folder, autoOpen) {
         if (reader) {
             reader._loading_index = null;
             reader.open(idx);
+            main_ask_system_font_fallback(ph);
         }
     } else {
         // 非 autoOpen：沿用原行为（仅入列，autoOpen 才打开）；
         // 退回全屏遮罩时必须在此收起，否则遮罩残留
         DocLoader.hide_loading_overlay();
         state.fileList.push(folder);
-        if (autoOpen && reader) reader.open(state.fileList.length - 1);
+        if (autoOpen && reader) {
+            reader.open(state.fileList.length - 1);
+            main_ask_system_font_fallback(folder);
+        }
     }
 }
 
@@ -3326,7 +3429,9 @@ async function main_ensure_folder_doc(folder) {
         const doc = await pdfjsLib.getDocument({
             data: data,
             enableXfa: false,
-            useSystemFonts: false,
+            // 与首次打开同口径（检测元数据始终可用）。
+            useSystemFonts: true,
+            fontExtraProperties: true,
             isEvalSupported: false,
             standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
             cMapUrl: PDFJS_ASSETS_BASE + 'cmaps/',

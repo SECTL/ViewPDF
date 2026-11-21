@@ -256,6 +256,12 @@
     "toolbarText": "Étiquettes de la barre d’outils",
     "moveCursorIcon": "Utiliser l'icône de curseur pour l'outil Déplacement",
     "showFullscreenButton": "Afficher le bouton plein écran",
+    "systemFontFallback": "Police système de secours",
+    "systemFontFallbackHint": "Utilise les polices système pour compléter les glyphes manquants du PDF (rendu plus lent ; prend effet après réouverture du document)",
+    "systemFontDetectTitle": "Polices spéciales détectées",
+    "systemFontDetectBody": "Ce document contient des polices non intégrées. Certains caractères (comme les notes de musique) peuvent s’afficher comme des carrés. Activer la police système de secours ? Le rendu sera plus lent.",
+    "systemFontDetectEnable": "Activer",
+    "systemFontDetectLater": "Plus tard",
     "prereleaseWarning": "Cette version peut être instable — ne l’utilisez pas en environnement de production !"
   },
   "oobe": {

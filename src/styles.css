@@ -2781,3 +2781,29 @@ body {
         outline-offset: 2px;
     }
 }
+/* 复杂文字兼容提示：原生 dialog，始终加载（不依赖按需注入的设置面板样式） */
+dialog.font-fallback-dialog {
+    max-width: 420px;
+    padding: 20px;
+    border: 1px solid var(--color-hairline);
+    border-radius: 8px;
+    background: var(--color-surface-elevated);
+    color: var(--color-ink);
+}
+dialog.font-fallback-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+.font-fallback-dialog h3 { margin: 0 0 8px; font-size: 1rem; }
+.font-fallback-dialog p { margin: 0 0 16px; line-height: 1.6; color: var(--color-muted); }
+.font-fallback-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.font-fallback-buttons button {
+    padding: 6px 14px;
+    border: 1px solid var(--color-hairline);
+    border-radius: 6px;
+    background: var(--color-surface-strong);
+    color: var(--color-ink);
+    cursor: pointer;
+}
+.font-fallback-buttons button.primary {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    border-color: transparent;
+}

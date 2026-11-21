@@ -39,7 +39,7 @@ const M = [
   {
     label: '删掉 _prerender_page 的门控',
     expect: '_prerender_page 接入门控',
-    from: 'if (!this._mount_allowed_offscreen(page_index)) return;',
+    from: 'if (!skip_mount_gate && !this._mount_allowed_offscreen(page_index)) return;',
     to: '',
   },
   {

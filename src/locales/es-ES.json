@@ -256,6 +256,12 @@
     "toolbarText": "Etiquetas de texto de la barra de herramientas",
     "moveCursorIcon": "Usar icono de cursor para la herramienta Mover",
     "showFullscreenButton": "Mostrar botón de pantalla completa",
+    "systemFontFallback": "Fuentes del sistema",
+    "systemFontFallbackHint": "Usa fuentes del sistema para completar glifos faltantes del PDF (renderizado más lento; se aplica al reabrir el documento)",
+    "systemFontDetectTitle": "Fuentes especiales detectadas",
+    "systemFontDetectBody": "Este documento contiene fuentes no incrustadas. Algunos caracteres (como las notas musicales) pueden mostrarse como cuadrados. ¿Activar las fuentes del sistema? El renderizado será más lento.",
+    "systemFontDetectEnable": "Activar",
+    "systemFontDetectLater": "Ahora no",
     "prereleaseWarning": "Esta versión puede ser inestable: ¡no la uses en entornos de producción!"
   },
   "oobe": {

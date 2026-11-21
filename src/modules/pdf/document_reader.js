@@ -449,6 +449,12 @@ class DocumentReaderManager {
         this._dr_flip_recent_until = 0;     // 最近一次程序化翻页的「连点窗口」截止时刻
         this._dr_flip_rapid_window_ms = 260; // 连点判定窗口：低于它算一次意图
         this._dr_flip_drain_timer = null;   // 连点停止后错峰排空批注瓦片的兜底定时器
+        // 程序化翻页的瞬时目标页索引（仅 _scroll_to_page 的 apply_scale 期间有效）。
+        // 翻页目标必须立即按全量 DPR 栅格化：它是离散落点、用户正要盯着看，
+        // 走运动期降密度只会「先 0.75x、停手 420ms 后再 force 升 1.25x」——
+        // 两次栅格化 + 两次画布 backing store 重分配（后者是 ~200ms 帧饿元凶）。
+        // 与 _dr_flipping_rapidly 的连点窗口无关：后者只管批注瓦片错峰。
+        this._dr_flip_target = -1;
         // 运动期页面栅格化降密度（滑动/连点时用，停止后自动升回全量）。
         // 取值 0.75：阶梯档值，1920 窗口 A4 单页 45MB → 11MB（4 倍），
         // 常驻纹理随 ~17 个包裹从 ~765MB 降到 ~190MB。依据见 _pdf_motion_dpr_active。
@@ -563,6 +569,16 @@ class DocumentReaderManager {
         // 离屏 canvas 池（复用双缓冲临时 canvas，避免频繁 GC）
         this._canvas_pool = [];
         this._canvas_pool_max = 3;
+
+        // 显示画布池（2026-11-21）：页面虚拟化卸载时不把画布 width/height 置 0
+        // （那本身是一次重分配，翻回还要再分配），而是归还本池；后续新页/回翻页
+        // 按尺寸取用已分配的画布。字节+数量双封顶，避免常驻上 GB 纹理。
+        this._display_canvas_pool = [];
+        this._display_canvas_pool_bytes = 0;
+        this._display_canvas_pool_max_bytes = 48 * 1024 * 1024;
+        this._display_canvas_pool_max_count = 4;
+
+
 
         // PDFPage 对象缓存（避免每次渲染重调 folder.pdfDoc.getPage()）
         this._pdf_page_cache = new Map();
@@ -1495,6 +1511,14 @@ class DocumentReaderManager {
             c.height = 0;
         });
         this._canvas_pool = [];
+        // 显示画布池：关文档后不再复用，清空释放纹理
+        this._display_canvas_pool.forEach(c => {
+            c.__pooled = false;
+            c.width = 0;
+            c.height = 0;
+        });
+        this._display_canvas_pool = [];
+        this._display_canvas_pool_bytes = 0;
 
         // 释放缓存的 PDFPage 对象
         for (const pdf_page of this._pdf_page_cache.values()) {
@@ -2646,8 +2670,13 @@ class DocumentReaderManager {
         process_next();
     }
 
-    /** 预渲染单个页面（PDF 渲染 / 图片预加载） */
-    async _prerender_page(page_index) {
+    /** 预渲染单个页面（PDF 渲染 / 图片预加载）
+     *  @param {boolean} skip_mount_gate - 翻页邻页专用：目标邻域已由调用方在冲量里
+     *   显式挂载并校验过 wrapper_keep 窗口，不能再被「连续移动窗口」挡下——
+     *   那道门是为滚动路径设计的，翻页前若刚滑过一次，100ms 窗口未到期会
+     *   把翻页预渲染整片挡掉，正是「翻页后短暂空白」的成因。默认 false，
+     *   idle 队列 / 紧急泵等其余调用点行为不变。 */
+    async _prerender_page(page_index, skip_mount_gate = false) {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data || page_data.is_visible || page_data.pdf_render_promise) return;
 
@@ -2656,7 +2685,7 @@ class DocumentReaderManager {
         if (page_data.is_virtualized) return;
         if (this._dom_virtualize() && !this._in_mount_window(page_index)) return;
         // 滑动期不挂视口外的页：现场建 DOM 正是滑动卡顿的主源，等停手 100ms 再追平
-        if (!this._mount_allowed_offscreen(page_index)) return;
+        if (!skip_mount_gate && !this._mount_allowed_offscreen(page_index)) return;
         // 已有不低于预渲染目标的成图：重复派发只会空转一轮守卫判定
         if (this._prerender_already_adequate(page_index, page_data)) return;
 
@@ -2732,7 +2761,31 @@ class DocumentReaderManager {
             }
         }
 
-        if (prerender_indices.length > 0) {
+        if (prerender_indices.length === 0) return;
+
+        // rAF 而非 rIC（2026-11-21）：_schedule_prerender 用 requestIdleCallback
+        // （timeout 1000ms）派发，但连点翻页本身在持续写 transform + 回贴提交，
+        // 浏览器几乎没有 idle 期——回调要等到 1000ms 超时才跑，那时用户早已
+        // 翻过好几页，预渲染全成废工；紧接着翻到目标页又得现场栅格化，正是
+        // 「翻页卡顿」的直接来源。这里 ±1 最多两页，按 rAF 派发（下一个合成帧
+        // 前必执行），使邻页在用户真正翻到之前就绪。
+        // 不复用 _prerender_queue：那是有方向过滤 + 长度上限的通用队列，
+        // 翻页邻域已在此处显式判定，且 _prerender_page 自带 in-flight /
+        // 虚拟化 / 挂载窗口 / 已达标四重守卫，重复入队反而摊薄目标页带宽。
+        const dispatch = () => {
+            if (!this.is_open || !this._prerender_enabled) return;
+            for (const idx of prerender_indices) {
+                const pd = this.page_manager.pages_list[idx];
+                if (!pd || pd.is_visible || pd.pdf_render_promise) continue;
+                // 邻域已在本方法里显式挂载并校验过 wrapper_keep 窗口，
+                // 不能再被「连续移动窗口」挡下（那道门为滚动设计）：
+                // 翻页前若刚滑过一次，100ms 未到期会挡掉整片翻页预渲染。
+                Promise.resolve(this._prerender_page(idx, true)).catch(() => {});
+            }
+        };
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(dispatch);
+        } else {
             this._schedule_prerender(prerender_indices, target_index);
         }
     }
@@ -3030,6 +3083,19 @@ class DocumentReaderManager {
         const page_data = this.page_manager.pages_list[page_index];
         if (!page_data) return;
         page_data.is_visible = false;
+
+        // 立即归还显示画布到复用池（2026-11-21）：位图在提交时已入 _page_bitmap_cache，
+        // 回翻该页会走缓存快速路径直接回贴，无需重新栅格化；画布本身继续占着
+        // backing store 毫无意义（页面已完全离开视口）。早归还才能让**紧接着的
+        // 下一页**在翻页风暴中直接复用同尺寸画布，省掉每次 ~200ms 的重分配。
+        // 若页面在下面 800ms 清理窗口内重新可见，_on_page_visible 会取消定时器，
+        // 下次渲染重新从池取画布即可。
+        const canvas = page_data.pdf_canvas;
+        if (canvas) {
+            this._release_display_canvas(canvas);
+            page_data.pdf_canvas = null;
+            page_data.pdf_render_css_width = 0;
+        }
 
         // 离开视口后延迟释放页面 GPU 资源（防抖动 + requestIdleCallback 降 GPU 峰值）。
         // 定时器挂在 page_data 上（而非全局单变量）：隐藏 A 页后再显示 B 页时，
@@ -3477,6 +3543,48 @@ class DocumentReaderManager {
         }
     }
 
+    /** 取一块已按 (w,h) 分配好 backing store 的显示画布；复用时绝不重赋
+     *  width/height——那会重新分配，正是要消掉的开销。池空才新建（唯一一次分配）。 */
+    _acquire_display_canvas(w, h) {
+        if (!(w > 0) || !(h > 0)) return null;
+        for (let i = 0; i < this._display_canvas_pool.length; i++) {
+            const c = this._display_canvas_pool[i];
+            if (c.width === w && c.height === h) {
+                this._display_canvas_pool.splice(i, 1);
+                this._display_canvas_pool_bytes -= c.width * c.height * 4;
+                c.__pooled = false;
+                return c;
+            }
+        }
+        const c = document.createElement('canvas');
+        c.className = 'doc-reader-pdf-canvas';
+        c.width = w;
+        c.height = h;
+        return c;
+    }
+
+    /** 归还显示画布（仅无有效内容时调用）。先摘出 DOM 再入池，避免同一节点
+     *  挂在两个页面上；超字节/数量预算的画布直接丢弃交给 GC。 */
+    _release_display_canvas(c) {
+        if (!c || c.__pooled) return;
+        // 默认 300×150 / 空画布没有可复用 backing store，入池只会用零字节
+        // 占满数量上限、把真正有用的全尺寸画布挤出去
+        if (!(c.width > 0) || !(c.height > 0)) return;
+        if (c.parentNode) c.parentNode.removeChild(c);
+        const bytes = c.width * c.height * 4;
+        if (bytes > this._display_canvas_pool_max_bytes ||
+            this._display_canvas_pool.length >= this._display_canvas_pool_max_count) return;
+        c.__pooled = true;
+        this._display_canvas_pool.push(c);
+        this._display_canvas_pool_bytes += bytes;
+        while (this._display_canvas_pool_bytes > this._display_canvas_pool_max_bytes &&
+               this._display_canvas_pool.length) {
+            const c0 = this._display_canvas_pool.shift();
+            this._display_canvas_pool_bytes -= c0.width * c0.height * 4;
+            c0.__pooled = false;
+        }
+    }
+
     _create_pdf_page_layers(page_data) {
         const page_el = page_data?.page_element;
         if (!page_el) return;
@@ -3631,9 +3739,16 @@ class DocumentReaderManager {
         // 真正需要「便宜」的场合已经由既有机制覆盖：滑动中新进入视口的页走
         // 0.5x 占位路径（is_placeholder，早于本函数返回，且提交豁免节流），
         // 停稳后由恢复补扫统一升清——这正是「运动期低清、停手后恢复」的正解，
-        // 不需要第二套机制。本上限只补它没覆盖的场景：快速翻页时目标页
-        // （无手势暂停，渲染不被拦，此刻从无内容）直接按低清起步。
+        // 不需要第二套机制。
+        //
+        // ⚠️ 翻页目标页除外（2026-11-21）：原先连点期目标页按 0.75x 起步，
+        // 停手 420ms 后 _dr_arm_motion_upgrade 再 force 升到全量 —— 实测每次
+        // 连点翻页都是「两次栅格化 + 两次画布重分配 + 两次提交」，且第一下翻页
+        // （_dr_note_flip 在 apply_scale 之后调用，此刻窗口尚未立起）走的却是
+        // 全量，同一串连点里清晰度行为不一致。翻页是离散落点而非连续滑动，
+        // 目标页按全量一次到位反而更省：省掉的那次升清重渲染正是最贵的部分。
         const clamp_motion = (d) => {
+            if (page_index === this._dr_flip_target) return d;
             if (page_data.pdf_render_css_width > 0 || is_prerender) return d;
             return d > cap ? cap : d;
         };
@@ -3713,6 +3828,32 @@ class DocumentReaderManager {
             page_data.pdf_render_dpr <= target_dpr * 1.35 &&
             page_data.pdf_canvas?.width > 0) {
             return;
+        }
+
+        // 显示画布预尺寸化（2026-11-21）：新页/回翻页的画布若无有效内容，换入
+        // 一块**已按目标位图尺寸分配好 backing store** 的画布（来自虚拟化归还
+        // 的池，池空才新建）。提交期同尺寸守卫命中 → 零重分配。真机单次重分配
+        // 引起 ~200ms rAF 帧饿，是翻页卡顿的物理元凶（见提交处注释）。
+        // 不在有内容时换：那会让页面在异步渲染期间空白，原子换帧只能在提交期。
+        // 放在位图缓存快速路径之前：精确命中/旧位图回贴看到的已是目标尺寸。
+        if (!page_data.pdf_render_css_width) {
+            const pw = page_data.page_width || 595;
+            const ph = page_data.page_height || 842;
+            const expect_w = Math.ceil(css_w * target_dpr);
+            const expect_h = Math.ceil(ph * css_w * target_dpr / pw);
+            const old = page_data.pdf_canvas;
+            if (expect_w > 0 && expect_h > 0 &&
+                (!old || old.width !== expect_w || old.height !== expect_h)) {
+                const fresh = this._acquire_display_canvas(expect_w, expect_h);
+                if (fresh) {
+                    fresh.style.width = '100%';
+                    fresh.style.height = '100%';
+                    if (old && old.parentNode) old.parentNode.replaceChild(fresh, old);
+                    else if (page_data.page_element) page_data.page_element.prepend(fresh);
+                    page_data.pdf_canvas = fresh;
+                    this._release_display_canvas(old);
+                }
+            }
         }
 
         // 位图缓存快速路径：该页曾以相同参数渲染、后被虚拟化卸载（守卫已清零，
@@ -3807,7 +3948,13 @@ class DocumentReaderManager {
             // ====== 渲染线程路径：栅格化完全离开主线程 ======
             // 任何失败（未创建成功/打开失败/渲染出错）都落回下方主线程 pdf.js 路径，
             // 渲染线程是纯加速层，不承担正确性。
-            {
+            //
+            // 复杂文字兼容模式：渲染线程里的 pdf.js 用 disableFontFace:true，
+            // 所有字形都按内嵌字体的矢量路径绘制，没有系统字体回退——PDF 里未嵌入
+            // 的音符/符号会显示成方框。此时必须走下面的主线程路径（那里未关闭
+            // FontFace，配合 getDocument 的 useSystemFonts:true 才能补字）。
+            // 这是显式 opt-in 的慢路径，默认不受影响。
+            if (!window.__systemFontFallback) {
                 const worker_host = (this._render_host && this._render_host.available)
                     ? this._render_host
                     : await this._ensure_render_host();
@@ -3998,10 +4145,20 @@ class DocumentReaderManager {
         // _dr_flushing_commits 豁免本门（节奏由 flush 循环自身控制，防自递归）。
         // 挂起复用手势期机制：同页新结果取代旧结果、溢出入位图缓存、
         // seq 失效自动丢弃，位图生命周期语义不变。
+        //
+        // ⚠️ 可见活动页的真实渲染直通（2026-11-21）：48ms 门本是为了削全幅提交
+        // 洪峰，但它不区分「用户正在看的页」与「背景预渲染页」——连点翻页时
+        // 邻页预渲染结果常先于目标页完成并占走提交槽，目标页位图被挂起，
+        // 要等回贴队列按 48ms 间距逐帧回贴才上屏（实测 8 次翻页 17 次提交中
+        // 7 次被延迟）。给活动页真实渲染开直通：它仍会写 _dr_last_full_commit_at
+        // 占住全局节奏，后续预渲染照常被节流；变的只是谁先上屏，提交总速率不变。
+        // 手势期挂起（上一段）优先级更高，此处不改。
+        const is_active_real = !is_prerender && !is_placeholder &&
+            page_data.is_visible && page_index === this.active_page_index;
         if (!is_placeholder && cacheable && !this._dr_flushing_commits &&
             typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
             const now_ms = performance.now();
-            if (now_ms - (this._dr_last_full_commit_at || 0) < 48) {
+            if (!is_active_real && now_ms - (this._dr_last_full_commit_at || 0) < 48) {
                 page_data._dr_commit_pending = true;
                 this._dr_defer_commit({ page_index, page_data, source, src_w, src_h,
                     css_w, target_dpr, my_seq, is_prerender, cacheable, is_placeholder });
@@ -4792,10 +4949,9 @@ class DocumentReaderManager {
             } catch (_) { /* createImageBitmap 不可用：按无缓存处理 */ }
         }
 
-        if (canvas) {
-            canvas.width = 0;
-            canvas.height = 0;
-        }
+        // 归还池而非把 width/height 置 0（那本身是一次重分配，翻回还要再分配回来）
+        if (canvas) this._release_display_canvas(canvas);
+        page_data.pdf_canvas = null;
         page_data.pdf_render_css_width = 0;
         // 关键：必须清空渲染守卫 promise，否则页面被虚拟化卸载后重建时，
         // _render_pdf_page_direct 会因 pdf_render_promise 残留（truthy）而直接
@@ -4891,11 +5047,23 @@ class DocumentReaderManager {
         const aspect = this._get_page_aspect(page_data);
         const safe_h = Math.max(200, Math.round(safe_w / aspect));
 
-        page_data.page_element.style.width = safe_w + 'px';
-        page_data.page_element.style.height = safe_h + 'px';
+        // 幂等写入不再置脏（2026-11-21）：本函数在每次 _on_page_visible 的
+        // _resize_page_layout 里都会被调用，而后者在 box_ok && coords_ok 时
+        // 本应直接早退。旧实现无条件 _invalidate_page_positions，于是那次
+        // 「什么都没改」的调用仍把全局坐标缓存和 DOM 几何缓存打脏，下一次
+        // _check_page_visibility 触发 O(N) 的 _compute_page_layout，下一次
+        // _dr_update_move_bound 触发 3 次强制布局读——短文档无感，千页文档
+        // 是随 N 线性增长的纯浪费。只有尺寸真的变了才需要重算后续页 top。
+        const el = page_data.page_element;
+        const cur_w = Math.round(parseFloat(el.style.width)) || 0;
+        const cur_h = Math.round(parseFloat(el.style.height)) || 0;
+        const size_changed = cur_w !== safe_w || cur_h !== safe_h;
+
+        el.style.width = safe_w + 'px';
+        el.style.height = safe_h + 'px';
 
         // 页面尺寸变更影响所有后续页面的 offsetTop，标记缓存脏
-        this._invalidate_page_positions();
+        if (size_changed) this._invalidate_page_positions();
 
         const img = page_data._img_el;
         if (img) {
@@ -6440,7 +6608,17 @@ class DocumentReaderManager {
         // 旧行为（误判为平移手势帧）下，点「下一页」后目标页至少 290ms 内
         // 不启动任何全清渲染，只出 0.5x 模糊占位；连按几下则暂停窗口持续
         // 续期，页面一直停在模糊态。
-        this._dr_apply_scale(true);
+        //
+        // 目标页豁免运动期降密度：_render_pdf_page_direct 的期望参数在首个 await
+        // 之前同步算出，故 _dr_flip_target 只需覆盖本次 apply_scale 的调用期。
+        // 用 try/finally 保证异常路径也不残留（残留会让后续滚动中的远页永久走
+        // 全量 DPR，显存失控）。
+        this._dr_flip_target = page_index;
+        try {
+            this._dr_apply_scale(true);
+        } finally {
+            this._dr_flip_target = -1;
+        }
 
         // 翻页后预渲染相邻页面
         this._dr_note_flip();

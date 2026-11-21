@@ -256,6 +256,12 @@
     "toolbarText": "Textbeschriftungen der Symbolleiste",
     "moveCursorIcon": "Cursor-Symbol für das Werkzeug „Verschieben\" verwenden",
     "showFullscreenButton": "Vollbild-Schaltfläche anzeigen",
+    "systemFontFallback": "Systemschriftart-Ersatz",
+    "systemFontFallbackHint": "Fehlende PDF-Glyphen mit Systemschriftarten ergänzen (langsameres Rendern; wirkt nach erneutem Öffnen des Dokuments)",
+    "systemFontDetectTitle": "Spezielle Schriftarten erkannt",
+    "systemFontDetectBody": "Dieses Dokument enthält nicht eingebettete Schriftarten. Einige Zeichen (z. B. Noten) werden möglicherweise als Kästchen angezeigt. Systemschriftart-Ersatz aktivieren? Das Rendern wird langsamer.",
+    "systemFontDetectEnable": "Ersatz aktivieren",
+    "systemFontDetectLater": "Später",
     "prereleaseWarning": "Diese Version ist möglicherweise instabil – bitte nicht in Produktionsumgebungen verwenden!"
   },
   "oobe": {

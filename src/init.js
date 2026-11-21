@@ -110,6 +110,11 @@ async function settings_load_config() {
             // 加载黑板启用状态（主题在 DOM 创建后应用，见 main_init_all）
             window.__blackboardEnabled = settings.blackboardEnabled !== false;
 
+            // 复杂文字兼容模式：必须在任何 PDF 打开前落位。
+            // main.js 的 getDocument 用它决定 useSystemFonts，
+            // document_reader 的渲染路径用它决定是否绕过渲染线程。
+            window.__systemFontFallback = settings.systemFontFallback === true;
+
             // 钢笔效果模式：DRAW_CONFIG 默认 'full'，运行期唯一来源是它，
             // 此前只有设置面板初始化时才回读保存值，导致 OOBE/设置中关闭后
             // 重启仍按 'full' 生效
