@@ -80,7 +80,9 @@ class BlackboardManager {
         // transform rAF 节流（拖拽/捏合共用）
         this._pending_bb_transform = null;
         this._bb_transform_raf_id = null;
-        this._bb_last_transform = { x: 0, y: 0, scale: 1 };
+        // 拖拽脏检查统一用 bb_state.last_transform（记录 DOM 当前实际变换）。
+        // 曾有一份独立的 _bb_last_transform 只在此初始化、从不更新，导致脏检查
+        // 恒为真、每个 inputMove 都排队 rAF，放大「起笔时 DOM 仍是中间态」的窗口。
 
         this._smooth_transform_timeout_id = null; // will-change 延迟移除定时器
         this._zoom_complete_timer_id = null;       // 缩放完成延迟重绘定时器
@@ -442,6 +444,15 @@ class BlackboardManager {
             clearTimeout(this._animate_timer_id);
             this._animate_timer_id = null;
         }
+        // 同时取消尚未执行的 rAF 节流变换（拖拽平移排队，见
+        // _sync_bb_transform_schedule）。若它在起笔后才落地，会把 DOM transform
+        // 写回旧位置、而 bb_state 已是终态，起笔坐标按旧 rect 折算后偏移被烘焙进
+        // stroke.points —— 表现正是「绘制中跟手、抬笔后笔迹移位」。
+        if (this._bb_transform_raf_id !== null) {
+            cancelAnimationFrame(this._bb_transform_raf_id);
+            this._bb_transform_raf_id = null;
+        }
+        this._pending_bb_transform = null;
         w.classList.remove('smooth-transform');
         w.style.transitionDuration = '';
         const s = this.bb_state;
@@ -856,11 +867,29 @@ class BlackboardManager {
     }
 
     _bb_snapshot_state() {
+        // 快照前先把当前页最新的 undo/redo 从活跃历史栈落到 page 对象：
+        // 关闭流程里本函数先于「保存当前页历史」执行（见 _do_close），不在此同步
+        // 就会把上一次翻页/关闭时的旧历史存进快照。
+        // 门控用历史隔离标志而不是 is_open：close() 在调用 _do_close() 之前就把
+        // is_open 置 false 了，用 is_open 会让关闭路径的同步整个失效；而
+        // __HISTORY_ISOLATED 直到 pop_history_isolate() 才复位，此时仍为 true。
+        // 板未打开时它为假，也不会把全局历史写进文档板。
+        if (window.__HISTORY_ISOLATED) {
+            const cur = this.page_manager.get_current_page();
+            if (cur) {
+                cur.undo_list = [...history_state.undo_list];
+                cur.redo_list = [...history_state.redo_list];
+            }
+        }
         return {
             pageCount: this.page_manager.get_page_count(),
             // 引用共享：stroke_history 为 append-only 不可变数组，切换时直接共享引用，
             // 不再深拷贝每个笔画（多页多笔时深拷贝是切换卡顿 + 内存膨胀主因）
             histories: this.page_manager.pages_list.map(p => p.stroke_history || []),
+            // 撤销/重做栈与笔画同源，必须一起按文档快照/恢复，否则切回来后 Ctrl+Z
+            // 执行的是别的文档的命令（命令对象自带 strokeHistoryRef，引用共享即可）
+            undos: this.page_manager.pages_list.map(p => p.undo_list || []),
+            redos: this.page_manager.pages_list.map(p => p.redo_list || []),
             bb_state: {
                 canvas_x: this.bb_state.canvas_x,
                 canvas_y: this.bb_state.canvas_y,
@@ -887,10 +916,14 @@ class BlackboardManager {
         if (!snap) return;
         const target = snap.pageCount || 1;
         while (this.page_manager.get_page_count() < target) this.page_manager.add_page();
-        while (this.page_manager.get_page_count() > target) this.page_manager.remove_page(this.page_manager.get_page_count() - 1);
+        while (this.page_manager.get_page_count() > target) this.page_manager.delete_page(this.page_manager.get_page_count() - 1);
         for (let i = 0; i < target; i++) {
             const pd = this.page_manager.pages_list[i];
-            if (pd) pd.stroke_history = snap.histories[i] ? snap.histories[i] : [];
+            if (pd) {
+                pd.stroke_history = snap.histories[i] ? snap.histories[i] : [];
+                pd.undo_list = snap.undos?.[i] ? [...snap.undos[i]] : [];
+                pd.redo_list = snap.redos?.[i] ? [...snap.redos[i]] : [];
+            }
         }
         this.bb_state.canvas_x = snap.bb_state.canvas_x;
         this.bb_state.canvas_y = snap.bb_state.canvas_y;
@@ -909,7 +942,11 @@ class BlackboardManager {
     }
 
     _bb_clear_all() {
-        for (const p of this.page_manager.pages_list) p.stroke_history = [];
+        for (const p of this.page_manager.pages_list) {
+            p.stroke_history = [];
+            p.undo_list = [];
+            p.redo_list = [];
+        }
         this.bb_state.canvas_x = 0;
         this.bb_state.canvas_y = 0;
         this.bb_state.scale = 1;
@@ -1047,6 +1084,9 @@ class BlackboardManager {
 
         // 等待面板过渡完成
         await transition_promise;
+        // 面板滑入期间 overlay 的自身 rect 缓存可能停留在中间态，滑入完成后必须
+        // 失效，否则后续预览以旧基准折算、相对已提交笔迹整体偏移。
+        this.drawing_engine?.batch_draw?.overlay?.invalidate_transform?.();
         // 确保绘制解禁前笔画已就位
         await load_promise;
         this.drawing_engine.set_painting_allowed(true);
@@ -1313,10 +1353,11 @@ class BlackboardManager {
                 s.canvas_y = ev.position.y - s.start_drag_y;
                 this._update_canvas_position();
                 this._update_bb_gesture_velocity();
-                // 脏检查 + rAF 节流
-                if (this._bb_last_transform.x !== s.canvas_x ||
-                    this._bb_last_transform.y !== s.canvas_y ||
-                    this._bb_last_transform.scale !== s.scale) {
+                // 脏检查 + rAF 节流：s.last_transform 记录 DOM 当前的实际变换，
+                // 与 s.canvas_x/y（手势目标）比较，只在两者不一致时才排队写 DOM。
+                if (s.last_transform.x !== s.canvas_x ||
+                    s.last_transform.y !== s.canvas_y ||
+                    s.last_transform.scale !== s.scale) {
                     this._sync_bb_transform_schedule(s.canvas_x, s.canvas_y, s.scale);
                 }
                 return;
@@ -1378,7 +1419,7 @@ class BlackboardManager {
         this._pinch_source = pinch;
         this._sync_pinch_start_delay();
 
-        pinch.onPinchStarted = (ev) => {
+        pinch.onPinchStarted = async (ev) => {
             if (!this.is_open) return;
             this._multi_touch_active = true;  // 双指手势：松手不触发惯性
             this._cancel_momentum();
@@ -1399,7 +1440,13 @@ class BlackboardManager {
             if (this.drawing_engine.is_drawing || this.drawing_engine.current_stroke) {
                 this.drawing_engine.is_drawing = false;
                 if (this.drawing_engine.current_stroke) {
-                    this.drawing_engine._submit_stroke();
+                    try {
+                        // 必须等提交读取完 _storedWidths 再清空 batch_draw，否则收笔宽度
+                        // 轮廓丢失（预览≠成品），未捕获的 rejection 还会变成全局错误。
+                        await this.drawing_engine._submit_stroke();
+                    } catch (err) {
+                        console.error('[blackboard] 捏合起手提交笔画失败:', err);
+                    }
                 }
                 if (this.drawing_engine.batch_draw) {
                     this.drawing_engine.batch_draw.batch_draw_delete_all();
@@ -1595,6 +1642,9 @@ class BlackboardManager {
     }
 
     _on_panel_geometry_changed() {
+        // 窗口拖动（位置变、尺寸不变）时面板整体位移，但 resize() 的 w/h 判定
+        // 会被跳过；此时仍需失效 overlay 自身 rect 缓存，否则预览偏移。
+        this.drawing_engine?.batch_draw?.overlay?.invalidate_transform?.();
         // 黑板画布是屏幕 2 倍的居中大画布，拖拽中间态下视觉不受影响（无需
         // 逐帧轻量校正），重量级 resize() 防抖到尺寸稳定后一次执行：
         // tile 网格重建 + overlay 重分配 + 视口中心保持，一次到位

@@ -27,7 +27,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run verification suite
+        # build-identity* 需要 cargo 且要跑十几次构建，留给本地；CI 先跳过
+        run: node tests/run-all.mjs --skip-slow
+
   build:
+    needs: [test]
     strategy:
       fail-fast: false
       matrix:

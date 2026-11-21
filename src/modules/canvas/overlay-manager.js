@@ -97,6 +97,10 @@ class OverlayManager {
         this._transformScale = 0;
         this._transformX = 0;
         this._transformY = 0;
+        // 覆盖层自身矩形同样会变（面板滑入、窗口最大化/贴靠、容器几何调整）。
+        // 不一起失效的话，sync_transform 的 ox = originX - self.left 会用过期基准，
+        // 预览相对已提交笔迹整体偏移。attach/resize/clear 都经此入口，改一处即可。
+        this._selfRect = null;
     }
 
     /** 注入已存在的 canvas（阅读器全局覆盖层 / 小黑板路径）。 */

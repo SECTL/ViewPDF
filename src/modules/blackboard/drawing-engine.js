@@ -529,7 +529,10 @@ export class DrawingEngine {
     refresh_eraser_hint_size() {
         if (!this._eraser_hint) return;
         const size = window.DRAW_CONFIG?.eraserSize || 15;
-        this.cached_draw_line_width = size;
+        // 与 _start_stroke 保持同一单位（内容坐标）：_update_eraser_hint_position
+        // 会乘回 scale 得到屏幕直径。直接写屏幕单位的 size，会让缩放态下改预设后
+        // 提示圈变成实际擦除直径的 scale 倍（起笔会重算缓存，擦除宽度本身不受影响）。
+        this.cached_draw_line_width = size / this._fetch_safe_scale();
         this._eraser_hint.style.width = size + 'px';
         this._eraser_hint.style.height = size + 'px';
     }
