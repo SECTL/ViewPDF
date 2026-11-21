@@ -15,18 +15,18 @@ name = "viewstage_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.4", features = [] }
+tauri-build = { version = "2.7", features = [] }
 # build.rs 要解析同目录的 build-info.json。它同时也是下面的普通依赖 ——
 # 两处都要写，Cargo 不共享依赖，build script 与主 crate 各自解析自己的。
 serde_json = "1"
 
 [dependencies]
 # devtools 特性不给 release 开：debug 构建自带 devtools，无需显式开启
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2.7"
+tauri-plugin-fs = "2.7"
+tauri-plugin-dialog = "2.8"
+tauri-plugin-single-instance = "2.5"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 once_cell = "1"
 serde = { version = "1", features = ["derive"] }
