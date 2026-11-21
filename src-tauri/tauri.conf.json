@@ -10,8 +10,8 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "width": 1280,
-        "height": 720,
+        "width": 1100,
+        "height": 640,
         "minWidth": 800,
         "minHeight": 600,
         "decorations": true,

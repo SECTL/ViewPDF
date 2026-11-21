@@ -2658,6 +2658,19 @@ async function main_toggle_fullscreen() {
     // 读当前态再置反，而不是无脑置 true：全屏还能被系统途径退出
     // （Win+↑、任务栏右键、其它窗口的「全屏」菜单），按钮必须能把它关回去。
     const current = await main_fetch_fullscreen();
+    // Windows 上从「最大化」直接进全屏会留下任务栏高度的黑边：最大化窗口的
+    // 恢复区域是工作区（排除了任务栏），setFullscreen 沿用这块区域就不会铺满
+    // 整屏。进全屏前先还原为普通窗口，退出后由用户自行决定是否再最大化。
+    // 用能力检测而非裸调用：测试里的极简 mock 只提供 setFullscreen/isFullscreen。
+    if (!current) {
+        try {
+            const win = getCurrentWindow();
+            if (typeof win.isMaximized === 'function' && await win.isMaximized()
+                && typeof win.unmaximize === 'function') {
+                await win.unmaximize();
+            }
+        } catch (_) { /* 还原失败不阻断全屏切换 */ }
+    }
     try {
         await getCurrentWindow().setFullscreen(!current);
         return !current;

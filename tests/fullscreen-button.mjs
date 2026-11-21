@@ -407,6 +407,33 @@ const run = async () => {
     eq('  且不抛（控制台安静）', r.e, undefined);
   }
   {
+    // 最大化状态下进全屏必须先 unmaximize：否则 Windows 上任务栏那条
+    // 区域会留成黑边（最大化窗口的恢复区是工作区，不是整屏）。
+    const calls = [];
+    const win = {
+      __TAURI__: { window: { getCurrentWindow: () => ({
+        setFullscreen: async (v) => { calls.push('setFullscreen:' + v); },
+        isFullscreen: async () => false,
+        isMaximized: async () => true,
+        unmaximize: async () => { calls.push('unmaximize'); },
+      }) } },
+    };
+    const r = await settle(mkMain(win).toggle.call(null));
+    eq('最大化 → 进全屏成功', r.v, true);
+    eqArr('先还原再 setFullscreen（顺序不能反）', calls, ['unmaximize', 'setFullscreen:true']);
+
+    calls.length = 0;
+    win.__TAURI__.window.getCurrentWindow = () => ({
+      setFullscreen: async (v) => { calls.push('setFullscreen:' + v); },
+      isFullscreen: async () => true,
+      isMaximized: async () => true,
+      unmaximize: async () => { calls.push('unmaximize'); },
+    });
+    const r2 = await settle(mkMain(win).toggle.call(null));
+    eq('退出全屏仍只发 false', r2.v, false);
+    eqArr('退出时不还原最大化（不动用户窗口布局）', calls, ['setFullscreen:false']);
+  }
+  {
     // ⚠️ 下面一律写成 `(await settle(...)).v` 而不是 `await settle(...).v` ——
     // 成员访问的优先级高于 await，`await f(x).v` 实际是 `await (f(x).v)`，
     // 于是比的是 undefined，全绿而什么都没验。

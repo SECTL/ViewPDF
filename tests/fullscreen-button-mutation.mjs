@@ -270,6 +270,18 @@ const MUTATIONS = [
     to: `        await getCurrentWindow().setFullscreen(true);`,
   },
   {
+    // 最大化直进全屏会留任务栏黑边；删掉这段守卫后测试必须变红。
+    label: '进全屏前不再还原最大化（任务栏黑边回归）',
+    expect: '先还原再 setFullscreen',
+    file: MAIN, orig: ORIG[MAIN],
+    from: `    if (!current) {
+        try {
+            const win = getCurrentWindow();`,
+    to: `    if (false) {
+        try {
+            const win = getCurrentWindow();`,
+  },
+  {
     // 权限缺失 → reject。若把 catch 去掉，异常一路冒到 click 处理器，
     // 图标不动、控制台一条未捕获的 promise rejection。
     label: 'setFullscreen 失败时不回传未改变的状态（图标说谎）',

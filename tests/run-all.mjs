@@ -34,6 +34,7 @@ const GROUPS = {
     'oobe-skip-check.mjs',
     'telemetry-heartbeat.mjs',
     'system-font-fallback.mjs',
+    'window-state.mjs',
     'update-resolve.mjs',
     'stroke-width-scale.mjs',
     'blackboard-stroke-shift.mjs',

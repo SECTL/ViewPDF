@@ -57,6 +57,75 @@ impl AppPaths {
     }
 }
 
+/// 主窗口的持久化几何状态。4K + 300% 缩放下默认窗口高度会压到任务栏，
+/// 用户最大化后下次启动却回落到默认尺寸——关闭时记住最大化/全屏与最后
+/// 尺寸位置，启动时回放，避免反复手动最大化。
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+struct WindowState {
+    #[serde(default)] maximized: bool,
+    #[serde(default)] fullscreen: bool,
+    #[serde(default)] width: u32,
+    #[serde(default)] height: u32,
+    #[serde(default)] x: i32,
+    #[serde(default)] y: i32,
+}
+
+fn window_state_load(path: &std::path::Path) -> WindowState {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<WindowState>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn window_state_save(path: &std::path::Path, window: &tauri::WebviewWindow) {
+    let size = window.outer_size().ok();
+    let pos = window.outer_position().ok();
+    let state = WindowState {
+        maximized: window.is_maximized().unwrap_or(false),
+        fullscreen: window.is_fullscreen().unwrap_or(false),
+        width: size.map(|s| s.width).unwrap_or(0),
+        height: size.map(|s| s.height).unwrap_or(0),
+        x: pos.map(|p| p.x).unwrap_or(0),
+        y: pos.map(|p| p.y).unwrap_or(0),
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&state) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                log::warn!("保存窗口状态失败: {}", e);
+            }
+        }
+        Err(e) => log::warn!("序列化窗口状态失败: {}", e),
+    }
+}
+
+fn window_state_restore(path: &std::path::Path, window: &tauri::WebviewWindow) {
+    let state = window_state_load(path);
+    // 全屏优先：若上次退出时是全屏，先回放全屏；失败再尝试最大化。
+    if state.fullscreen && window.set_fullscreen(true).is_ok() {
+        return;
+    }
+    if state.maximized && window.maximize().is_ok() {
+        return;
+    }
+    // 普通状态才恢复尺寸/位置。尺寸过小说明文件不可信，直接用配置默认值。
+    if state.width >= 800 && state.height >= 600 {
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: state.width,
+            height: state.height,
+        }));
+        // 缩放比例或显示器变化后旧坐标可能落在屏幕外，只在看起来合理时恢复。
+        if state.x.abs() < 100_000 && state.y.abs() < 100_000 {
+            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: state.x,
+                y: state.y,
+            }));
+        }
+    }
+}
+
 /// Tauri IPC 命令：获取应用缓存目录，不存在则创建
 #[tauri::command]
 fn dir_fetch_cache(app: tauri::AppHandle) -> Result<String, String> {
@@ -3724,6 +3793,7 @@ pub fn app_init_run() {
                 }
             };
             let config_path = config_dir.join("config.json");
+            let window_state_path = config_dir.join("window-state.json");
             
             let is_first_run = !config_path.exists();
             
@@ -3759,6 +3829,10 @@ pub fn app_init_run() {
                     let _ = main_win.hide();
                 }
             } else {
+                // 回放上次窗口状态：4K/高缩放下用户必须最大化才能避开任务栏，
+                // 不记住的话每次启动都要重新点一次。
+                window_state_restore(&window_state_path, &window);
+
                 let args: Vec<String> = std::env::args().collect();
                 println!("启动参数: {:?}", args);
                 
@@ -3803,6 +3877,18 @@ pub fn app_init_run() {
         })
         // 主窗口关闭拦截：先让前端保存批注/阅读位置，保存完成由 app_confirm_close 放行
         .on_window_event(|window, event| {
+            // 退出前记住窗口几何：最大化/全屏/最后尺寸位置。
+            // 只在主窗口上记录，OOBE 等临时窗口不参与。
+            if window.label() == "main"
+                && matches!(event,
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed)
+            {
+                if let Ok(config_dir) = window.app_handle().path().app_config_dir() {
+                    if let Some(w) = window.app_handle().get_webview_window("main") {
+                        window_state_save(&config_dir.join("window-state.json"), &w);
+                    }
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;
