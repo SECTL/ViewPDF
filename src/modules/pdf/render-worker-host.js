@@ -172,7 +172,7 @@ export class PdfRenderWorkerHost {
         if (!this.available) {
             return Promise.reject(new Error('render worker unavailable'));
         }
-        return new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             const reqId = ++this._req_id;
             const item = { reqId, pageNum, cssW, dpr, is_prerender, rotation };
 
@@ -239,6 +239,12 @@ export class PdfRenderWorkerHost {
             else this._queue.unshift(item);
             this._drain();
         });
+        // 取消（RenderingCancelledException）属预期路径：调用方可能因 seq 过期、
+        // 页面卸载而不再 await 本 promise（force 取消发生在 _drain 派发之前）。
+        // 先挂 noop catch 把 rejection 标记为已处理，消除 "Uncaught (in promise)"；
+        // 真正 await 的地方不受影响，仍会收到 rejection 并按取消语义处理。
+        promise.catch(() => {});
+        return promise;
     }
 
     _drain() {
