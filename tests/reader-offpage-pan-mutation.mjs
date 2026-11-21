@@ -16,6 +16,12 @@ const tmpSrc = path.join(tmpDir, 'document_reader.js');
 // label 必须是在 harness 输出里能逐字看到的断言名，否则「抓到了」是自欺欺人
 const MUTATIONS = [
   {
+    label: '起手不快进延后运动（收尾落在笔画进行中）',
+    expect: '起手前快进所有延后运动',
+    from: '            this._dr_snap_deferred_motion();',
+    to: '            this._dr_cancel_momentum();',
+  },
+  {
     label: '删掉页面外的平移分支（退回旧行为）',
     expect: '[comment] 页面外起手进入拖拽',
     from: `            if (!target) {

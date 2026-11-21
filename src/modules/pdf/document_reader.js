@@ -423,6 +423,7 @@ class DocumentReaderManager {
         this._dr_momentum_raf = null;
         this._dr_momentum_last_ts = null;   // 上一惯性帧时间戳（帧率无关衰减用）
         this._dr_momentum_vis_t = 0;        // 上次惯性期刷新可见性的时刻
+        this._dr_momentum_final_id = null;  // 延后的惯性收尾（idle 回调），起笔前必须快进
         this._dr_gesture_vx = 0;
         this._dr_gesture_vy = 0;
 
@@ -5686,7 +5687,9 @@ class DocumentReaderManager {
         // ====== 输入事件（绘制、手掌擦除、拖拽平移） ======
         input.on('inputDown', async (ev) => {
             if (!this.is_open) return;
-            this._dr_cancel_momentum();
+            // 快进并取消所有延后的惯性收尾 / transform 排队，否则起笔后画布
+            // 还在动，笔迹按旧 rect 折算后整体错位，且重活压在书写帧上卡顿。
+            this._dr_snap_deferred_motion();
 
             // 起笔即收纳笔工具面板（选色框/橡皮框）：
             // pointerdown 被 preventDefault 后不产生兼容 mousedown，
@@ -8112,6 +8115,36 @@ class DocumentReaderManager {
         }
     }
 
+    /**
+     * 起笔前把所有「延后到未来」的视图运动一次性收敛到终态。
+     *
+     * 惯性收尾刻意延后到 requestIdleCallback（最迟 500ms），避免末帧做重活；
+     * 但用户在这之前落笔，_dr_apply_scale() 就会在笔画进行中重新钳制位置、
+     * 写 transform、清覆盖层并刷新瓦片 —— 笔迹坐标按起笔时的 rect 折算，
+     * 画布一动就整体错位，那次重活又正好压在书写帧上（表现为顿挫）。
+     * 同理 transform 的 rAF 排队若晚于起笔落地，会把画布写回旧位置。
+     * 这里无条件取消两类延后回调并把当前状态立即写入 DOM；与小黑板的
+     * _bb_snap_smooth_transform 同口径。
+     */
+    _dr_snap_deferred_motion() {
+        this._dr_cancel_momentum();
+        if (this._dr_momentum_final_id !== null) {
+            if (window.cancelIdleCallback) window.cancelIdleCallback(this._dr_momentum_final_id);
+            this._dr_momentum_final_id = null;
+            // 收尾中的位置钳制现在就做；瓦片/可见性重活不在起笔帧里做。
+            this._dr_update_move_bound();
+            this._dr_update_canvas_position();
+        }
+        if (this._dr_transform_raf_id !== null) {
+            cancelAnimationFrame(this._dr_transform_raf_id);
+            this._dr_transform_raf_id = null;
+            this._dr_pending_transform = null;
+        }
+        this.dr_cached_inv_scale = 1 / (this.dr_scale || 1);
+        this._dr_sync_transform(true);
+        this.batch_draw?.overlay?.invalidate_transform();
+    }
+
     _dr_start_momentum() {
         if (window.DRAW_CONFIG && !window.DRAW_CONFIG.momentumEnabled) return;
         // 双指（缩放/平移）手势松手不触发惯性，仅单指拖拽允许惯性滑行
@@ -8194,6 +8227,7 @@ class DocumentReaderManager {
             this._dr_momentum_raf = null;
             // 延迟重量操作到浏览器空闲时，避免最后一帧 jank
             const doFinal = () => {
+                this._dr_momentum_final_id = null;
                 this._dr_apply_scale();
                 this._dr_schedule_disable_smooth_transform();
                 // _dr_apply_scale 内部已按新几何重算边界并刷可见性；只有仍在
@@ -8201,7 +8235,7 @@ class DocumentReaderManager {
                 if (this._dr_is_zooming) this._check_page_visibility();
             };
             if (window.requestIdleCallback) {
-                window.requestIdleCallback(doFinal, { timeout: 500 });
+                this._dr_momentum_final_id = window.requestIdleCallback(doFinal, { timeout: 500 }) ?? null;
             } else {
                 doFinal();
             }

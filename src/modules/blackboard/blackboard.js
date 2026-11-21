@@ -276,7 +276,13 @@ class BlackboardManager {
         this.bb_state.canvas_y = Math.max(mb.min_y - eps, Math.min(mb.max_y + eps, this.bb_state.canvas_y));
     }
 
-    _sync_bb_transform() {
+    /**
+     * @param {boolean} [skipHeavy] - 惯性滑行帧专用：只更新脏检查基准与 DOM transform，
+     *   不在逐帧里做瓦片 DPR 调度与脏块刷新。那两件事在收尾的
+     *   _sync_bb_transform_smooth() 里各做一次即可；每帧调用只会cancel/reschedule
+     *   同一批任务，既无收益又把重活压在滑行帧上造成顿挫。
+     */
+    _sync_bb_transform(skipHeavy = false) {
         const s = this.bb_state;
         const lt = s.last_transform;
         if (lt.x === s.canvas_x && lt.y === s.canvas_y && lt.scale === s.scale) return;
@@ -293,8 +299,8 @@ class BlackboardManager {
         }
         this.bb_wrapper.style.transform = 'translate3d(' + s.canvas_x + 'px, ' + s.canvas_y + 'px, 0) scale(' + s.scale + ')';
 
-        // 缩放进行中跳过 tile 更新，由缩放结束后批量刷新
-        if (s.is_zooming) return;
+        // 缩放进行中 / 惯性逐帧：跳过 tile 更新，由收尾路径批量刷新
+        if (s.is_zooming || skipHeavy) return;
 
         if (this.tile_renderer) {
             this.tile_renderer.update_visible_tile_dpr(s.scale, false, true);
@@ -520,7 +526,8 @@ class BlackboardManager {
             vy = 0;
         }
 
-        this._sync_bb_transform();
+        // 惯性逐帧只做合成层位移；瓦片/脏块重活交给收尾的 _sync_bb_transform_smooth
+        this._sync_bb_transform(true);
 
         if (Math.abs(vx) > 0.5 || Math.abs(vy) > 0.5) {
             this._momentum_raf = requestAnimationFrame(() => this._momentum_tick());

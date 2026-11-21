@@ -41,6 +41,18 @@ const M = [
     to: '        /* mutated: no fast-forward */',
   },
   {
+    label: '惯性逐帧又做瓦片/脏块重活（滑行卡顿）',
+    expect: '轻量帧不做瓦片 DPR 调度',
+    from: '        if (s.is_zooming || skipHeavy) return;',
+    to: '        if (s.is_zooming) return;',
+  },
+  {
+    label: '惯性 tick 又用重量同步',
+    expect: '惯性 tick 用的是轻量帧',
+    from: '        this._sync_bb_transform(true);',
+    to: '        this._sync_bb_transform();',
+  },
+  {
     label: '死变量 _bb_last_transform 回归',
     expect: '_bb_last_transform 已彻底移除',
     from: '        this._bb_transform_raf_id = null;\n        // 拖拽脏检查统一用',

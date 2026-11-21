@@ -120,8 +120,9 @@ function build({ draw_mode = 'comment', active_page_index = 0 } = {}) {
     _dr_tile_init_queue: new Set(),
     batch_draw: { _tileRenderer: 'stale' },
     page_manager: { pages_list: mkPages(), switched: [], switch_page(i) { this.switched.push(i); } },
-    counts: { cancel_momentum: 0, on_page_visible: 0, indicator: 0, sync_buttons: 0, start_stroke: 0, ensure_tiles: 0, eraser_hint: 0 },
+    counts: { cancel_momentum: 0, snap_deferred: 0, on_page_visible: 0, indicator: 0, sync_buttons: 0, start_stroke: 0, ensure_tiles: 0, eraser_hint: 0 },
     _dr_cancel_momentum() { this.counts.cancel_momentum++; },
+    _dr_snap_deferred_motion() { this.counts.snap_deferred++; },
     // 连续移动窗口由 _dr_mark_render_gesture 续期，拖拽分支会间接触发它；
     // 这里只需给出字段本身，门控判据就读它
     _dr_mount_block_until: 0,
@@ -176,6 +177,11 @@ const run = async () => {
     eq(`[${mode}] 页面外起手进入拖拽`, s.dr_is_dragging, true);
     eq(`[${mode}] 页面外起手不起笔`, s.is_drawing, false);
   }
+
+  // 起笔前必须快进延后运动：否则延后的 _dr_apply_scale 落在笔画进行中
+  const sn = build();
+  await run1('snap', down(sn, offPage()));
+  eq('起手前快进所有延后运动', sn.counts.snap_deferred, 1);
 
   // 默认模式就是 comment —— 单独点出来：只在 move 下生效等于没修
   const def = build();

@@ -21,7 +21,7 @@ function ok(label, got) { eq(label, !!got, true); }
 // 从真实源码抠出方法体，保留 this 语义
 const methods = {};
 for (const name of ['_dr_update_move_bound', '_dr_update_canvas_position',
-  '_dr_start_momentum', '_dr_momentum_tick']) {
+  '_dr_start_momentum', '_dr_momentum_tick', '_dr_snap_deferred_motion']) {
   const m = new RegExp('(?:^|\\n)\\s*' + name + '\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n    \\}').exec(SRC);
   if (!m) { console.error('FAIL  未找到方法 ' + name); process.exit(1); }
   methods[name] = new Function(m[1]);
@@ -57,6 +57,11 @@ const build = (opts = {}) => {
     _dr_mb_dom_cache: null, _dr_mb_dom_time: 0, _dr_mb_dom_dirty: true,
     _dr_last_transform: { x: 0, y: 0, scale: 1 },
     _dr_momentum_raf: null, _dr_momentum_last_ts: null, _dr_momentum_vis_t: 0,
+    _dr_momentum_final_id: null,
+    _dr_transform_raf_id: null, _dr_pending_transform: null,
+    dr_cached_inv_scale: 1,
+    overlay_inv: 0,
+    batch_draw: { overlay: { invalidate_transform() { self.overlay_inv++; } } },
     _dr_gesture_vx: 0, _dr_gesture_vy: 0,
     _dr_multi_touch_active: false, _dr_last_move_time: null,
     _dr_is_zooming: false,
@@ -105,6 +110,7 @@ const bindClock = (c) => {
   globalThis.cancelAnimationFrame = (id) => c.rafs.delete(id);
   globalThis.requestIdleCallback = (cb) => { c.idle = cb; };
   globalThis.window.requestIdleCallback = (cb) => { c.idle = cb; };
+  globalThis.window.cancelIdleCallback = (id) => { c.cancelIdle = id; };
 };
 
 // ========== 4. 惯性开始即停预渲染泵 ===========
@@ -265,6 +271,33 @@ const fling = (mutate) => {
   eq('收尾只应用一次缩放/几何', self.scale_applies, 1);
   eq('非缩放态下收尾不额外再扫一轮可见性', self.vis_calls - vEnd, 1);
 }
+
+// ========== 6b. 起笔前快进所有延后运动（否则笔迹错位 + 卡顿）============
+{
+  const c = fling();
+  const self = c.self;
+  while (c.rafs.size > 0) { const cb = [...c.rafs.values()][0]; c.rafs.clear(); tick(16.7); cb(); }
+  // 收尾已排 idle，再挂一个 transform 排队帧——两者都可能晚于起笔落地
+  self._dr_momentum_final_id = 77;
+  self._dr_transform_raf_id = 99;
+  self._dr_pending_transform = { x: 123, y: 456, scale: 1 };
+  self.dr_scale = 2;
+  const t0 = self.transforms;
+  self._dr_snap_deferred_motion();
+
+  eq('取消延后的 idle 收尾', self._dr_momentum_final_id, null);
+  eq('  真的调用了 cancelIdleCallback', c.cancelIdle, 77);
+  eq('丢弃排队的 transform rAF', self._dr_transform_raf_id, null);
+  eq('  排队数据也清空', self._dr_pending_transform, null);
+  ok('立即把当前状态写进 DOM', self.transforms > t0);
+  eq('倒数缩放同步到当前比例', self.dr_cached_inv_scale, 0.5);
+  ok('覆盖层变换缓存失效（下一帧重新对齐）', self.overlay_inv > 0);
+  eq('收尾任务不再执行（起笔帧没有重活）', self.scale_applies, 0);
+}
+
+// ========== 6c. 起笔入口确实调用了快进 ===========
+ok('inputDown 接线：调用了 _dr_snap_deferred_motion',
+  /this\._dr_snap_deferred_motion\(\);/.test(SRC));
 
 // ========== 7. 边界钳制语义未变（改了缓存不等于改了语义）============
 {

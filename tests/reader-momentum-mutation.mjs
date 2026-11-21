@@ -39,6 +39,30 @@ const M = [
     from: '                this._dr_momentum_vis_t = now;\n                this._check_page_visibility();',
     to: '                this._dr_momentum_vis_t = now;',
   },
+  {
+    label: '起笔前不取消延后的 idle 收尾（收尾落在笔画进行中）',
+    expect: '真的调用了 cancelIdleCallback',
+    from: '            if (window.cancelIdleCallback) window.cancelIdleCallback(this._dr_momentum_final_id);',
+    to: '            /* 忘了取消 idle 收尾 */',
+  },
+  {
+    label: '起笔前不失效覆盖层变换（预览仍按旧锚点折算）',
+    expect: '覆盖层变换缓存失效',
+    from: '        this.dr_cached_inv_scale = 1 / (this.dr_scale || 1);\n        this._dr_sync_transform(true);\n        this.batch_draw?.overlay?.invalidate_transform();',
+    to: '        this.dr_cached_inv_scale = 1 / (this.dr_scale || 1);\n        this._dr_sync_transform(true);\n        /* 忘了失效覆盖层 */',
+  },
+  {
+    label: '起笔前不同步倒数缩放（笔迹宽度/坐标用旧比例）',
+    expect: '倒数缩放同步到当前比例',
+    from: '        this.dr_cached_inv_scale = 1 / (this.dr_scale || 1);',
+    to: '        /* 忘了同步倒数缩放 */',
+  },
+  {
+    label: '起笔入口不快进延后运动（只取消惯性 rAF）',
+    expect: 'inputDown 接线',
+    from: '            this._dr_snap_deferred_motion();',
+    to: '            this._dr_cancel_momentum();',
+  },
 ];
 
 let pass = 0, fail = 0;

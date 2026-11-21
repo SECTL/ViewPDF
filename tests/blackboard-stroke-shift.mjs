@@ -301,6 +301,42 @@ async function runAsync() {
       src2.page_manager.pages_list[0].undo_list[0], 'KEEP');
   }
 
+  // ===== 惯性逐帧不把瓦片/脏块重活压在滑行帧上 =====
+  {
+    const sync = extractMethod(BB, '_sync_bb_transform', ['skipHeavy'], {
+      window: { ResolutionController: null },
+    });
+    const mk = () => {
+      const calls = { tile: 0, dirty: 0 };
+      const s = {
+        bb_wrapper: { style: {} },
+        tile_renderer: { update_visible_tile_dpr() { calls.tile++; } },
+        bb_state: {
+          canvas_x: 10, canvas_y: 20, scale: 2, is_zooming: false,
+          last_transform: { x: 0, y: 0, scale: 1 },
+        },
+        _bb_schedule_dirty_refresh() { calls.dirty++; },
+      };
+      return { s, calls };
+    };
+
+    const light = mk();
+    sync.call(light.s, true);
+    eq('轻量帧仍更新 DOM transform', light.s.bb_wrapper.style.transform,
+      'translate3d(10px, 20px, 0) scale(2)');
+    eq('轻量帧同步脏检查基准', light.s.bb_state.last_transform.y, 20);
+    eq('轻量帧不做瓦片 DPR 调度', light.calls.tile, 0);
+    eq('轻量帧不排脏块刷新', light.calls.dirty, 0);
+
+    const full = mk();
+    sync.call(full.s, false);
+    eq('正常帧仍做瓦片 DPR 调度', full.calls.tile, 1);
+    eq('正常帧仍排脏块刷新', full.calls.dirty, 1);
+
+    ok('惯性 tick 用的是轻量帧',
+      /this\._sync_bb_transform\(true\);/.test(stripComments(BB)));
+  }
+
   console.log('\n==== ' + pass + ' passed, ' + fail + ' failed ====');
   if (fail) process.exitCode = 1;
 }
