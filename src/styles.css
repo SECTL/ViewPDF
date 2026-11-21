@@ -1,5 +1,8 @@
+@layer reset, base, theme, components, utilities;
+
 /* ===== 设计令牌 ===== */
 :root {
+    color-scheme: dark;
     --color-canvas: #1a1a1a;
     --color-canvas-gradient-start: #1a1a1a;
     --color-canvas-gradient-end: #2a2a2a;
@@ -17,6 +20,13 @@
     --color-success: #10b981;
     --color-warning: #f59e0b;
     --color-error: #ef4444;
+    --color-muted-2: #a3a3a3;
+    --color-muted-3: #8a8a8a;
+    --color-brand-accent-rgb: 59 130 246;
+    --color-error-rgb: 239 68 68;
+    --color-badge-star: #f1c40f;
+    --blackboard-bg: #111;
+    --blackboard-canvas-bg: #1a1a1a;
     
     --rounded-xs: 4px;
     --rounded-sm: 6px;
@@ -34,7 +44,7 @@
     --spacing-xxl: 48px;
     /* 标题栏高度——全站唯一真值。凡是要「避开标题栏」的定位都必须引用它：
        .document-reader-panel（阅读器面板 top）、.dr-page-sidebar（页面侧边栏）。
-       之前这三处各写各的（40px / 10px / calc(100vh - 80px)），侧边栏挂在 body 上
+       之前这三处各写各的（40px / 10px / calc(100dvh - 80px)），侧边栏挂在 body 上
        按视口定位，于是从 10px 处起画 —— 直接压在标题栏上。 */
     --app-titlebar-h: 40px;
     
@@ -50,36 +60,70 @@
     --btn-height-lg: 48px;
     
     --scrollbar-track: rgba(255, 255, 255, 0.05);
-    --scrollbar-thumb: rgba(255, 255, 255, 0.2);
-    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+    --scrollbar-thumb: #6e6e6e;
+    --scrollbar-thumb-hover: #858585;
 }
 
-/* ===== 全局重置 ===== */
-* {
+/* ===== 全局重置（限定到 body 及其后代；避免全局 * 选择器） ===== */
+:where(body, body *) {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
-    user-select: none;
-    -webkit-user-select: none;
-    -moz-user-select: none;
-    -ms-user-select: none;
-    scrollbar-width: thin;
+    scrollbar-width: auto;
     scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-*::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+@supports not (scrollbar-color: auto) {
+    :where(body, body *) {
+        scrollbar-width: auto;
+    }
+    *::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+    }
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    *::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: 2px;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+        background: var(--scrollbar-thumb-hover);
+    }
 }
-*::-webkit-scrollbar-track {
-    background: transparent;
+
+/* 内容文本始终可选中；仅控件 / 画布保留 user-select:none */
+.doc-reader-text-layer span,
+.doc-reader-text-layer span *,
+.error-message,
+.release-notes,
+.release-notes *,
+.sp-setting-label,
+.sp-setting-hint,
+.sp-update-text,
+.sp-update-channel-hint,
+.sp-release-notes,
+.sp-release-notes *,
+.sp-model-description,
+.sp-model-description *,
+.sp-update-build-info,
+#cacheSize {
+    user-select: text;
+    -webkit-user-select: text;
 }
-*::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 2px;
-}
-*::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover);
+
+/* 屏幕阅读器专用文本（index.html / oobe.js 共用） */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
 }
 
 /* ===== 基础布局 ===== */
@@ -89,6 +133,7 @@ html, body {
 }
 
 body {
+    font-size: 1rem;
     font-family: var(--font-body);
     background-color: var(--color-canvas);
     background-image: linear-gradient(135deg, var(--color-canvas-gradient-start) 0%, var(--color-canvas-gradient-end) 100%);
@@ -148,7 +193,7 @@ body {
 }
 
 .titlebar-brand-name {
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 600;
     color: var(--color-ink);
     letter-spacing: -0.01em;
@@ -293,7 +338,7 @@ body {
 }
 
 .sidebar-section-title {
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 600;
     color: var(--color-muted);
     padding: 0 10px 8px;
@@ -312,7 +357,7 @@ body {
     border: none;
     border-radius: var(--rounded-sm);
     color: var(--color-muted);
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, filter 0.12s ease;
@@ -373,7 +418,7 @@ body {
 
 .search-field:focus-within {
     border-color: var(--color-brand-accent);
-    box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+    box-shadow: 0 0 0 2px rgb(var(--color-brand-accent-rgb) / 0.15);
     background: var(--color-canvas);
 }
 
@@ -396,7 +441,7 @@ body {
     display: flex; align-items: center; justify-content: center;
     border: none; background: transparent;
     color: var(--color-muted);
-    font-size: 14px; cursor: pointer;
+    font-size: 0.875rem; cursor: pointer;
     border-radius: 50%;
     opacity: 0;
 }
@@ -458,7 +503,7 @@ body {
 .dropdown-trigger:hover { border-color: var(--color-muted); }
 .dropdown-trigger.open {
     border-color: var(--color-brand-accent);
-    box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+    box-shadow: 0 0 0 2px rgb(var(--color-brand-accent-rgb) / 0.15);
 }
 
 .dropdown-arrow {
@@ -545,7 +590,7 @@ body {
     display: flex; align-items: center; justify-content: center;
     background: transparent; border: none;
     color: var(--color-muted);
-    font-size: 14px; cursor: pointer;
+    font-size: 0.875rem; cursor: pointer;
     transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, filter 0.12s ease;
     font-family: inherit;
 }
@@ -585,7 +630,7 @@ body {
 }
 
 .empty-state-sub {
-    font-size: 13px;
+    font-size: 0.8125rem;
     color: var(--color-muted);
     max-width: 300px;
     line-height: 1.5;
@@ -719,7 +764,7 @@ body {
     overflow-x: auto;
     overflow-y: hidden;
     /* 滚动条常驻占位、默认透明，悬停仅变色（避免 none↔thin 切换引起布局抖动） */
-    scrollbar-width: thin;
+    scrollbar-width: auto;
     scrollbar-color: transparent transparent;
 }
 
@@ -727,22 +772,21 @@ body {
     scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
 }
 
-.titlebar-tabs::-webkit-scrollbar {
-    height: 4px;
-}
-
-.titlebar-tabs::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.titlebar-tabs::-webkit-scrollbar-thumb {
-    background: transparent;
-    border-radius: 2px;
-    transition: background 0.15s ease;
-}
-
-.titlebar-tabs:hover::-webkit-scrollbar-thumb {
-    background: rgba(128, 128, 128, 0.35);
+@supports not (scrollbar-color: auto) {
+    .titlebar-tabs::-webkit-scrollbar {
+        height: 4px;
+    }
+    .titlebar-tabs::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .titlebar-tabs::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 2px;
+        transition: background 0.15s ease;
+    }
+    .titlebar-tabs:hover::-webkit-scrollbar-thumb {
+        background: rgba(128, 128, 128, 0.35);
+    }
 }
 
 /* 溢出时的两侧渐隐提示（由 JS 按滚动位置切换 fade-left / fade-right） */
@@ -772,7 +816,7 @@ body {
     border-radius: var(--rounded-md);
     background: transparent;
     color: var(--color-muted);
-    font-size: 12px;
+    font-size: 0.75rem;
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
@@ -904,7 +948,7 @@ body {
     background: transparent;
     text-align: left;
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--color-ink, #222);
     border-radius: 5px;
     cursor: pointer;
@@ -927,7 +971,7 @@ body {
     border-radius: 999px;
     background: rgba(30, 30, 32, 0.88);
     color: #fff;
-    font-size: 12px;
+    font-size: 0.75rem;
     line-height: 1.4;
     white-space: nowrap;
     overflow: hidden;
@@ -957,7 +1001,7 @@ body {
 }
 
 .dr-reader-confirm {
-    width: min(400px, calc(100vw - 48px));
+    width: min(400px, calc(100dvw - 48px));
     padding: var(--spacing-lg);
     border-radius: var(--rounded-lg);
     background: var(--color-surface-elevated);
@@ -973,7 +1017,7 @@ body {
 }
 
 .dr-reader-confirm-message {
-    font-size: 13px;
+    font-size: 0.8125rem;
     line-height: 1.6;
     color: var(--color-muted);
     margin-bottom: var(--spacing-lg);
@@ -995,7 +1039,7 @@ body {
     border-radius: var(--rounded-pill);
     background: transparent;
     color: var(--color-ink);
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-family: var(--font-body);
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease;
@@ -1065,21 +1109,20 @@ body {
     padding: 8px 16px 16px;
 }
 
-.file-area::-webkit-scrollbar {
-    width: 6px;
-}
-
-.file-area::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.file-area::-webkit-scrollbar-thumb {
-    background: var(--color-hairline);
-    border-radius: var(--rounded-sm);
-}
-
-.file-area::-webkit-scrollbar-thumb:hover {
-    background: var(--color-muted);
+@supports not (scrollbar-color: auto) {
+    .file-area::-webkit-scrollbar {
+        width: 6px;
+    }
+    .file-area::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .file-area::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: var(--rounded-sm);
+    }
+    .file-area::-webkit-scrollbar-thumb:hover {
+        background: var(--scrollbar-thumb-hover);
+    }
 }
 
 /* 时间分组 */
@@ -1096,11 +1139,9 @@ body {
     align-items: center;
     gap: 8px;
     padding: 8px 12px 4px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 600;
-    color: var(--color-muted);
-    opacity: 0.6;
-    letter-spacing: 0.3px;
+    color: var(--color-muted-2);
     text-transform: uppercase;
 }
 
@@ -1113,7 +1154,7 @@ body {
 
 .file-time-count {
     font-weight: 400;
-    opacity: 0.5;
+    color: var(--color-muted-3);
     font-size: 10px;
 }
 
@@ -1130,7 +1171,7 @@ body {
     width: calc(100% - 16px);
     text-align: left;
     color: var(--color-ink);
-    font-size: 13px;
+    font-size: 0.8125rem;
     border-radius: var(--rounded-sm);
 }
 
@@ -1157,8 +1198,8 @@ body {
 
 .file-type-icon.type-pdf { background: #fff; }
 .file-type-icon.type-doc { background: #fff; }
-.file-type-icon.type-xls { background: #10b981; }
-.file-type-icon.type-ppt { background: #f59e0b; }
+.file-type-icon.type-xls { background: var(--color-success); }
+.file-type-icon.type-ppt { background: var(--color-warning); }
 .file-type-icon.type-image { background: #8b5cf6; }
 .file-type-icon.type-mindmap { background: #8b5cf6; }
 .file-type-icon.type-other { background: #6b7280; }
@@ -1175,7 +1216,7 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 500;
     color: var(--color-ink);
     overflow: hidden;
@@ -1193,8 +1234,7 @@ body {
 .file-ext-badge {
     font-size: 9px;
     font-weight: 500;
-    color: var(--color-muted);
-    opacity: 0.5;
+    color: var(--color-muted-3);
     flex-shrink: 0;
     text-transform: uppercase;
 }
@@ -1207,8 +1247,8 @@ body {
 }
 
 .file-marker.star {
-    color: #f1c40f;
-    font-size: 12px;
+    color: var(--color-badge-star);
+    font-size: 0.75rem;
 }
 
 .file-marker.shared {
@@ -1221,18 +1261,16 @@ body {
 }
 
 .file-marker.attachment {
-    color: var(--color-muted);
-    font-size: 11px;
-    opacity: 0.5;
+    color: var(--color-muted-3);
+    font-size: 0.6875rem;
 }
 
 .file-row-meta {
     display: grid;
     grid-template-columns: minmax(60px, auto) minmax(80px, auto) minmax(64px, auto);
     gap: 8px;
-    font-size: 12px;
-    color: var(--color-muted);
-    opacity: 0.7;
+    font-size: 0.75rem;
+    color: var(--color-muted-2);
     line-height: 1.3;
     flex-shrink: 0;
     margin-left: auto;
@@ -1281,7 +1319,7 @@ body {
     border-radius: var(--rounded-sm, 4px);
     color: var(--color-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 0.75rem;
     transition: background-color 0.1s ease, border-color 0.1s ease, color 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease, transform 0.1s ease, filter 0.1s ease;
     opacity: 0.4;
 }
@@ -1294,7 +1332,7 @@ body {
 
 .row-action.starred {
     opacity: 1;
-    color: #f1c40f;
+    color: var(--color-badge-star);
 }
 
 /* 空状态 */
@@ -1329,13 +1367,12 @@ body {
 .file-list-empty-title {
     font-size: 15px;
     font-weight: 500;
-    color: var(--color-body, var(--color-ink));
-    opacity: 0.6;
+    color: var(--color-muted-2);
 }
 
 .file-list-empty-sub {
-    font-size: 13px;
-    opacity: 0.4;
+    font-size: 0.8125rem;
+    color: var(--color-muted-3);
     max-width: 280px;
     text-align: center;
     line-height: 1.5;
@@ -1343,16 +1380,18 @@ body {
 
 
 
-/* ===== 阅读器工具栏 ===== */
-.dr-toolbar {
-    position: fixed !important;
-    bottom: 10px !important;
-    right: 10px !important;
-    left: auto !important;
-    transform: none !important;
-    z-index: 100 !important;
-    justify-content: flex-end !important;
-    padding: 0 !important;
+/* ===== 阅读器工具栏（utilities 层覆盖主题 .toolbar 的定位） ===== */
+@layer utilities {
+    .dr-toolbar {
+        position: fixed;
+        bottom: 10px;
+        right: 10px;
+        left: auto;
+        transform: none;
+        z-index: 100;
+        justify-content: flex-end;
+        padding: 0;
+    }
 }
 
 .dr-toolbar .toolbar-dr-group {
@@ -1464,7 +1503,7 @@ body {
     z-index: 9;
     border: 2px solid var(--color-error);
     border-radius: 0;
-    background-color: rgba(239, 68, 68, 0.4);
+    background-color: rgb(var(--color-error-rgb) / 0.4);
     pointer-events: none;
     display: none;
     transform-origin: center center;
@@ -1505,7 +1544,7 @@ body {
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--color-muted);
     pointer-events: none;
     white-space: nowrap;
@@ -1624,7 +1663,7 @@ body {
 
 .loading-message {
     color: var(--color-ink);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 500;
 }
 
@@ -1633,8 +1672,8 @@ body {
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.7);
     display: flex;
     justify-content: center;
@@ -1680,7 +1719,7 @@ body {
 
 .error-message {
     color: var(--color-muted);
-    font-size: 14px;
+    font-size: 0.875rem;
     line-height: 1.6;
     margin-bottom: 20px;
     white-space: pre-wrap;
@@ -1699,7 +1738,7 @@ body {
 
 .recovery-item {
     padding: 6px 8px;
-    font-size: 14px;
+    font-size: 0.875rem;
     color: var(--color-muted);
     border-left: 3px solid var(--color-primary, #4a9eff);
     margin-bottom: 4px;
@@ -1719,7 +1758,7 @@ body {
     padding: 10px var(--spacing-lg);
     border: none;
     border-radius: var(--rounded-md);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -1755,7 +1794,7 @@ body {
     color: var(--color-on-primary);
     border: none;
     border-radius: var(--rounded-md);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.15s ease;
@@ -1788,7 +1827,7 @@ body {
     color: var(--color-ink);
     border: 1px solid var(--color-hairline);
     border-radius: var(--rounded-md);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -1857,7 +1896,7 @@ body {
     color: var(--color-ink);
     border: none;
     border-radius: 0;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
     transition: opacity 0.15s ease;
@@ -1877,7 +1916,7 @@ body {
 .btn-sm {
     height: var(--btn-height-sm);
     padding: var(--spacing-xs) var(--spacing-sm);
-    font-size: 13px;
+    font-size: 0.8125rem;
 }
 
 .btn-lg {
@@ -1913,11 +1952,11 @@ body {
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-md);
     height: var(--btn-height-sm);
-    background: rgba(59, 130, 246, 0.2);
+    background: rgb(var(--color-brand-accent-rgb) / 0.2);
     color: var(--color-brand-accent);
-    border: 1px solid rgba(59, 130, 246, 0.3);
+    border: 1px solid rgb(var(--color-brand-accent-rgb) / 0.3);
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -1925,8 +1964,8 @@ body {
 }
 
 .btn-action:hover {
-    background: rgba(59, 130, 246, 0.3);
-    border-color: rgba(59, 130, 246, 0.4);
+    background: rgb(var(--color-brand-accent-rgb) / 0.3);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.4);
 }
 
 .btn-action:disabled {
@@ -1942,11 +1981,11 @@ body {
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-md);
     height: var(--btn-height-sm);
-    background: rgba(239, 68, 68, 0.2);
+    background: rgb(var(--color-error-rgb) / 0.2);
     color: var(--color-error);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    border: 1px solid rgb(var(--color-error-rgb) / 0.3);
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -1954,8 +1993,8 @@ body {
 }
 
 .btn-reset:hover {
-    background: rgba(239, 68, 68, 0.3);
-    border-color: rgba(239, 68, 68, 0.4);
+    background: rgb(var(--color-error-rgb) / 0.3);
+    border-color: rgb(var(--color-error-rgb) / 0.4);
 }
 
 .btn-back {
@@ -1990,7 +2029,7 @@ body {
     color: var(--color-on-primary);
     border: none;
     border-radius: var(--rounded-md);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.15s ease;
@@ -2033,7 +2072,7 @@ body {
     color: var(--color-ink);
     border: 1px solid transparent;
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -2045,8 +2084,8 @@ body {
 }
 
 .sidebar-btn.active {
-    background: rgba(59, 130, 246, 0.2);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: rgb(var(--color-brand-accent-rgb) / 0.2);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.3);
     color: var(--color-brand-accent);
 }
 
@@ -2083,15 +2122,15 @@ body {
     color: var(--color-ink);
     border: 1px solid var(--color-hairline);
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
 }
 
 .btn-clear-cache:hover {
-    background: rgba(239, 68, 68, 0.2);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.2);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
     color: var(--color-error);
 }
 
@@ -2104,7 +2143,7 @@ body {
     color: var(--color-body);
     border: none;
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -2117,7 +2156,7 @@ body {
 }
 
 .link-item .link-icon {
-    font-size: 14px;
+    font-size: 0.875rem;
 }
 
 /* ===== 模态框按钮 ===== */
@@ -2129,7 +2168,7 @@ body {
     padding: var(--spacing-xs) var(--spacing-md);
     height: var(--btn-height-sm);
     border-radius: var(--rounded-md);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, filter 0.15s ease;
@@ -2298,7 +2337,7 @@ body {
 }
 
 .doc-reader-text-layer ::selection {
-    background: rgba(59, 130, 246, 0.35);
+    background: rgb(var(--color-brand-accent-rgb) / 0.35);
 }
 
 .doc-reader-page-placeholder {
@@ -2369,7 +2408,7 @@ body {
     min-width: 56px;
     min-height: 48px;
     padding: 0 12px;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     color: var(--color-body);
     user-select: none;
@@ -2384,7 +2423,7 @@ body {
     border-radius: 4px;
     background: var(--color-surface, #333);
     color: var(--color-body, #eee);
-    font-size: 14px;
+    font-size: 0.875rem;
     text-align: center;
     outline: none;
     padding: 0 4px;
@@ -2402,8 +2441,8 @@ body {
 
 /* 文档阅读器页面侧边栏
  *
- * 高度用 top + bottom 锚定，不再写 calc(100vh - N)：
- * 本元素挂在 body 上（与工具栏同级），此前 top:10px + height:calc(100vh - 80px)
+ * 高度用 top + bottom 锚定，不再写 calc(100dvh - N)：
+ * 本元素挂在 body 上（与工具栏同级），此前 top:10px + height:calc(100dvh - 80px)
  * 是按「侧边栏从视口顶部开始画」算的，于是上沿压进标题栏（0~40px），
  * 下沿又多算了一截把 80px 当成上下留白之和 —— 两个数各自都对，加起来是错的。
  *
@@ -2457,7 +2496,7 @@ body {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     color: var(--color-ink);
     padding: var(--spacing-xs) var(--spacing-sm);
@@ -2528,7 +2567,7 @@ body {
     border-radius: var(--rounded-sm);
     background: transparent;
     color: var(--color-ink);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-family: var(--font-body);
     text-align: left;
     cursor: pointer;
@@ -2599,7 +2638,7 @@ body {
 
 .dr-page-sidebar-item.active {
     border-color: var(--color-brand-accent);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 0 2px rgb(var(--color-brand-accent-rgb) / 0.3);
 }
 
 .dr-page-sidebar-thumb {
@@ -2658,10 +2697,87 @@ body {
     transform: translateX(-50%);
     background: var(--color-primary);
     color: var(--color-on-primary);
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 500;
     padding: 2px 8px;
     border-radius: var(--rounded-xs);
     white-space: nowrap;
 }
 
+
+/* ===== 高对比度 / 强制颜色偏好 ===== */
+@media (prefers-contrast: more) {
+    :root {
+        --scrollbar-thumb: #000;
+        --scrollbar-thumb-hover: #000;
+        --scrollbar-track: #fff;
+    }
+}
+
+@media (forced-colors: active) {
+    :root {
+        --color-canvas: Canvas;
+        --color-canvas-gradient-start: Canvas;
+        --color-canvas-gradient-end: Canvas;
+        --color-surface-card: Canvas;
+        --color-surface-strong: Canvas;
+        --color-surface-elevated: Canvas;
+        --color-hairline: CanvasText;
+        --color-hairline-soft: CanvasText;
+        --color-ink: CanvasText;
+        --color-body: CanvasText;
+        --color-muted: GrayText;
+        --color-muted-2: CanvasText;
+        --color-muted-3: GrayText;
+        --color-primary: ButtonText;
+        --color-primary-active: Highlight;
+        --color-primary-active-strong: Highlight;
+        --color-on-primary: Canvas;
+        --color-brand-accent: Highlight;
+        --color-error: CanvasText;
+        --color-success: CanvasText;
+        --color-warning: CanvasText;
+        --scrollbar-thumb: CanvasText;
+        --scrollbar-thumb-hover: Highlight;
+        --scrollbar-track: Canvas;
+    }
+    .search-field,
+    .dropdown-trigger,
+    .dr-reader-confirm-btn,
+    .sp-modal-dialog,
+    .sidebar,
+    .toolbar,
+    .file-row,
+    .titlebar-tab,
+    .sp-btn-base,
+    .sp-btn-primary,
+    .sp-btn-secondary,
+    .sp-btn-action,
+    .sp-btn-danger,
+    .sp-option-btn,
+    .sp-setting-item,
+    .card {
+        border-color: CanvasText;
+        background: Canvas;
+        color: CanvasText;
+        box-shadow: none;
+    }
+    button,
+    .toolbar-btn,
+    .row-action,
+    .toggle-switch,
+    .sp-toggle-switch {
+        border-color: CanvasText;
+        color: ButtonText;
+        background: ButtonFace;
+        box-shadow: none;
+    }
+    :is(.active, .selected, :checked):is(.titlebar-tab, .file-row, .sp-option-btn, .card) {
+        border-color: Highlight;
+        color: Highlight;
+    }
+    :focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: 2px;
+    }
+}

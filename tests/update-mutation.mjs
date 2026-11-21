@@ -393,8 +393,8 @@ const MUTATIONS = [
       '<div class="sp-content">\n                        <div class="sp-prerelease-banner" id="prereleaseBanner" style="display:none;"><span class="sp-prerelease-banner-label" data-i18n="settings.prereleaseWarning">此版本可能会不稳定，请不要在正式环境中使用！！！</span><span class="sp-prerelease-banner-tag" id="prereleaseBannerTag"></span></div>\n                        <div class="sp-page" id="pageApp">',
       '<div class="sp-content">\n                        <div class="sp-page" id="pageApp">',
     ], [
-      '<button class="sidebar-item" id="btnTheme"><span class="sp-btn-icon"><img data-icon="theme-icon" width="16" height="16"></span><span class="btn-text">主题</span></button>',
-      '<button class="sidebar-item" id="btnTheme"><span class="sp-btn-icon"><img data-icon="theme-icon" width="16" height="16"></span><span class="btn-text">主题</span></button>\n                            <div class="sp-prerelease-banner" id="prereleaseBanner" style="display:none;"><span class="sp-prerelease-banner-label" data-i18n="settings.prereleaseWarning">此版本可能会不稳定，请不要在正式环境中使用！！！</span><span class="sp-prerelease-banner-tag" id="prereleaseBannerTag"></span></div>',
+      '<button class="sidebar-item" id="btnTheme"><span class="sp-btn-icon"><img data-icon="theme-icon" width="16" height="16" alt=""></span><span class="btn-text">主题</span></button>',
+      '<button class="sidebar-item" id="btnTheme"><span class="sp-btn-icon"><img data-icon="theme-icon" width="16" height="16" alt=""></span><span class="btn-text">主题</span></button>\n                            <div class="sp-prerelease-banner" id="prereleaseBanner" style="display:none;"><span class="sp-prerelease-banner-label" data-i18n="settings.prereleaseWarning">此版本可能会不稳定，请不要在正式环境中使用！！！</span><span class="sp-prerelease-banner-tag" id="prereleaseBannerTag"></span></div>',
     ]],
     expect: '横幅在 .sp-content 内',
   },

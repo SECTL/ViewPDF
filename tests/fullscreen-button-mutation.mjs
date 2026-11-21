@@ -464,7 +464,7 @@ const MUTATIONS = [
     label: '面板里删掉开关（设置页找不到这一项）',
     expect: 'settings-panel 里 fullscreenButtonToggle 恰好一处',
     file: PANEL, orig: ORIG[PANEL],
-    from: `                            <div class="sp-setting-item"><span class="sp-setting-label" data-i18n="settings.showFullscreenButton">显示全屏按钮</span><label class="sp-toggle-switch"><input type="checkbox" id="fullscreenButtonToggle" checked><span class="sp-toggle-slider"></span></label></div>
+    from: `                            <div class="sp-setting-item"><label class="sp-setting-label" for="fullscreenButtonToggle" data-i18n="settings.showFullscreenButton">显示全屏按钮</label><label class="sp-toggle-switch"><input type="checkbox" switch id="fullscreenButtonToggle" checked><span class="sp-toggle-slider"></span></label></div>
 `,
     to: ``,
   },
@@ -474,8 +474,8 @@ const MUTATIONS = [
     label: '开关漏了 data-i18n（界面显示 settings.showFullscreenButton）',
     expect: '同一 setting-item 带 data-i18n="settings.showFullscreenButton"',
     file: PANEL, orig: ORIG[PANEL],
-    from: `<span class="sp-setting-label" data-i18n="settings.showFullscreenButton">显示全屏按钮</span>`,
-    to: `<span class="sp-setting-label">显示全屏按钮</span>`,
+    from: `<label class="sp-setting-label" for="fullscreenButtonToggle" data-i18n="settings.showFullscreenButton">显示全屏按钮</label>`,
+    to: `<label class="sp-setting-label" for="fullscreenButtonToggle">显示全屏按钮</label>`,
   },
   {
     label: '面板里出现第二个同名开关（勾一个另一个跟着动）',

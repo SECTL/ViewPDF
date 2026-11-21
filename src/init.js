@@ -312,10 +312,28 @@ function main_setup_events() {
     const filterSortDrop = document.getElementById('filterSortDrop');
     let openDropdown = null;
     
+    // 关闭单个下拉栏：原生 popover（顶层）状态、.open 类与 aria-expanded 必须同步。
+    // 旧 WebView 没有 showPopover/hidePopover 时退化为纯 .open 类切换。
+    function hideDropdown(dropEl) {
+        if (!dropEl) return;
+        const trigger = dropEl.querySelector('.dropdown-trigger');
+        const menu = dropEl.querySelector('.dropdown-menu');
+        // 只对 :popover-open 的元素调用 hidePopover：对未打开的元素调用会抛 InvalidStateError。
+        // matches/选择器在旧 WebView 可能缺失或不支持，统一用 try/catch 兜底。
+        try {
+            if (menu && typeof menu.hidePopover === 'function' &&
+                (!menu.matches || menu.matches(':popover-open'))) {
+                menu.hidePopover();
+            }
+        } catch (_) { /* 非 popover 或已关闭，忽略 */ }
+        trigger?.classList.remove('open');
+        menu?.classList.remove('open');
+        trigger?.setAttribute('aria-expanded', 'false');
+    }
+
     function closeAllDropdowns() {
         if (openDropdown) {
-            openDropdown.querySelector('.dropdown-trigger').classList.remove('open');
-            openDropdown.querySelector('.dropdown-menu').classList.remove('open');
+            hideDropdown(openDropdown);
             openDropdown = null;
         }
     }
@@ -329,29 +347,93 @@ function main_setup_events() {
         
         trigger.addEventListener('click', (e) => {
             e.stopPropagation();
+            // 阻止 popovertarget 的原生默认切换：否则原生 toggle 会与下面显式的
+            // showPopover/hidePopover 相互抵消（开→立刻被关、关→又弹出）。
+            e.preventDefault();
             const wasOpen = trigger.classList.contains('open');
             closeAllDropdowns();
             if (!wasOpen) {
                 trigger.classList.add('open');
                 menu.classList.add('open');
+                // 原生 popover 进入顶层；不支持时保留 .open 类作为唯一可见性来源。
+                try {
+                    if (typeof menu.showPopover === 'function' &&
+                        (!menu.matches || !menu.matches(':popover-open'))) {
+                        menu.showPopover();
+                    }
+                } catch (_) { /* 非 popover 或已打开，忽略 */ }
+                trigger.setAttribute('aria-expanded', 'true');
                 openDropdown = dropEl;
             }
         });
+
+        // 原生 popover 可被 Escape / 点击外部自行关闭（light dismiss）。
+        // 此时必须把 .open 类、aria-expanded 与 openDropdown 一起收回，
+        // 否则下一次点击会因 wasOpen 误判为“已打开”而只做清理、不再展开。
+        menu.addEventListener('toggle', () => {
+            let isOpen = false;
+            try {
+                isOpen = typeof menu.matches === 'function'
+                    ? menu.matches(':popover-open')
+                    : menu.classList.contains('open');
+            } catch (_) {
+                isOpen = menu.classList.contains('open');
+            }
+            if (isOpen) {
+                trigger.classList.add('open');
+                menu.classList.add('open');
+                trigger.setAttribute('aria-expanded', 'true');
+            } else {
+                trigger.classList.remove('open');
+                menu.classList.remove('open');
+                trigger.setAttribute('aria-expanded', 'false');
+                if (openDropdown === dropEl) openDropdown = null;
+            }
+        });
         
+        // 选中路径抽出来给 click 与键盘 Enter/Space 共用，避免两条路径行为漂移。
+        function selectOption(opt) {
+            const value = opt.dataset.value;
+            // 更新选中状态（.selected 与 aria-selected 同步）
+            options.forEach(o => {
+                o.classList.remove('selected');
+                o.setAttribute('aria-selected', 'false');
+            });
+            opt.classList.add('selected');
+            opt.setAttribute('aria-selected', 'true');
+            // 更新 trigger 显示
+            trigger.dataset.value = value;
+            label.textContent = opt.textContent.replace('✓', '').trim();
+            // 关闭菜单：原生 popover 与 .open 类一起收起，否则只靠 CSS 隐藏
+            // 会让 popover 仍停留在顶层，挡住后续交互。
+            closeAllDropdowns();
+            // 触发筛选
+            apply_toolbar_filters();
+        }
+
         options.forEach(opt => {
             opt.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const value = opt.dataset.value;
-                // 更新选中状态
-                options.forEach(o => o.classList.remove('selected'));
-                opt.classList.add('selected');
-                // 更新 trigger 显示
-                trigger.dataset.value = value;
-                label.textContent = opt.textContent.replace('✓', '').trim();
-                // 关闭菜单
-                closeAllDropdowns();
-                // 触发筛选
-                apply_toolbar_filters();
+                selectOption(opt);
+            });
+            // <div role="option" tabindex="0"> 不会因 Enter/Space 自动派发 click，
+            // 必须手动接管，否则键盘用户能聚焦却无法选中。
+            opt.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectOption(opt);
+                    return;
+                }
+                // 顺带支持上下键在选项间移动焦点（不选中、不关闭菜单）。
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    const idx = Array.prototype.indexOf.call(options, opt);
+                    const next = e.key === 'ArrowDown'
+                        ? Math.min(idx + 1, options.length - 1)
+                        : Math.max(idx - 1, 0);
+                    options[next]?.focus();
+                }
             });
         });
     }
@@ -532,9 +614,9 @@ function format_access_time(time) {
     }
     if (diff < 2 * oneDay) return '昨天 ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     if (d.getFullYear() === now.getFullYear()) {
-        return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     }
-    return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate();
+    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
 }
 
 function norm_file_entry(f) {
@@ -547,7 +629,7 @@ function norm_file_entry(f) {
 window.main_render_recent_files = (files) => {
     const dom = window.dom;
     if (!dom.recentFileList) return;
-    dom.recentFileList.innerHTML = '';
+    dom.recentFileList.replaceChildren();
 
     if (!files || files.length === 0) {
         return;
@@ -556,13 +638,20 @@ window.main_render_recent_files = (files) => {
     const entries = files.map(norm_file_entry);
     const fragment = document.createDocumentFragment();
 
-    // 按时间分组
-    const groups = {};
-    for (const e of entries) {
-        const label = time_group_label(e.time);
-        if (!groups[label]) groups[label] = [];
-        groups[label].push(e);
-    }
+    // 按时间分组：Object.groupBy 在旧 WebView 中不可用，按能力检测回退到累加器。
+    // Object.groupBy 返回无原型对象，Object.assign 归一化，消除下游原型假设差异。
+    const grouped = (typeof Object.groupBy === 'function')
+        ? Object.groupBy(entries, (e) => time_group_label(e.time))
+        : (() => {
+            const acc = {};
+            for (const e of entries) {
+                const label = time_group_label(e.time);
+                if (!acc[label]) acc[label] = [];
+                acc[label].push(e);
+            }
+            return acc;
+        })();
+    const groups = Object.assign({}, grouped);
     const groupOrder = ['今天', '昨天', '本周', '本月', '更早'];
 
     for (const label of groupOrder) {

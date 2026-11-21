@@ -999,10 +999,12 @@ function main_setup_pdf_file_open() {
         // 事件丢了最多延迟一个周期，不会漏发。
         if (settings.telemetryEnabled !== undefined) {
             import('./modules/telemetry/telemetry.js').then(m => {
-                if (settings.telemetryEnabled === false) {
-                    m.telemetry_stop();
-                } else {
+                // 与 telemetry_is_enabled 的 opt-in 默认保持一致：只有显式 true 才启动，
+                // 缺省/未配置视为关闭，关开关时仍立即清定时器。
+                if (settings.telemetryEnabled === true) {
                     m.telemetryInit();
+                } else {
+                    m.telemetry_stop();
                 }
             }).catch(err => {
                 console.warn('[telemetry] 开关变更处理失败:', err);
@@ -1855,7 +1857,7 @@ function main_show_pen_control_panel(triggerBtn, mode) {
 
     // 尺寸按钮同理：首次构建，之后切换 active
     if (!sizeContainer.children.length || sizeContainer._lastMode !== mode) {
-        sizeContainer.innerHTML = '';
+        sizeContainer.replaceChildren();
         sizeContainer._lastMode = mode;
         const presets = mode === 'eraser' ? DRAW_CONFIG.eraserSizePresets : DRAW_CONFIG.penSizePresets;
         presets.forEach((size) => {
@@ -2157,7 +2159,7 @@ function main_update_tabs() {
     const fileList = state.fileList || [];
     const isReaderOpen = window.documentReaderManager?.is_open === true;
 
-    tabsContainer.innerHTML = '';
+    tabsContainer.replaceChildren();
 
     const settingsPanel = document.getElementById('settingsPanel');
     const settingsVisible = settingsPanel && settingsPanel.style.display === 'flex';
@@ -3167,33 +3169,41 @@ function main_show_error_dialog(title, message, retryCallback = null) {
  * 刻意不提供点空白关闭/取消：用户此刻的意图就是关闭应用，只需决定存不存。
  */
 function main_show_close_confirm_dialog() {
-    return new Promise((resolve) => {
-        const t = (key, fallback) => window.i18n?.format_translate?.(key) || fallback;
-        const existing = document.getElementById('closeConfirmDialog');
-        if (existing) existing.remove();
+    const t = (key, fallback) => window.i18n?.format_translate?.(key) || fallback;
+    const existing = document.getElementById('closeConfirmDialog');
+    if (existing) existing.remove();
 
-        const dialog = document.createElement('div');
-        dialog.id = 'closeConfirmDialog';
-        dialog.className = 'error-dialog-overlay';
-        dialog.innerHTML = `
-            <div class="error-dialog">
-                <div class="error-title">${t('closeDialog.title', '关闭应用')}</div>
-                <div class="error-message">${t('closeDialog.message', '是否保存本次批注笔迹，下次启动时恢复？')}</div>
-                <div class="error-buttons">
-                    <button class="error-btn error-btn-retry" id="closeConfirmSave">${t('closeDialog.save', '保存并关闭')}</button>
-                    <button class="error-btn error-btn-close" id="closeConfirmDiscard">${t('closeDialog.discard', '不保存关闭')}</button>
-                </div>
+    const dialog = document.createElement('div');
+    dialog.id = 'closeConfirmDialog';
+    dialog.className = 'error-dialog-overlay';
+    dialog.innerHTML = `
+        <div class="error-dialog">
+            <div class="error-title">${t('closeDialog.title', '关闭应用')}</div>
+            <div class="error-message">${t('closeDialog.message', '是否保存本次批注笔迹，下次启动时恢复？')}</div>
+            <div class="error-buttons">
+                <button class="error-btn error-btn-retry" id="closeConfirmSave">${t('closeDialog.save', '保存并关闭')}</button>
+                <button class="error-btn error-btn-close" id="closeConfirmDiscard">${t('closeDialog.discard', '不保存关闭')}</button>
             </div>
-        `;
-        document.body.appendChild(dialog);
+        </div>
+    `;
+    document.body.appendChild(dialog);
 
-        const done = (choice) => {
-            dialog.remove();
-            resolve(choice);
-        };
-        document.getElementById('closeConfirmSave')?.addEventListener('click', () => done('save'));
-        document.getElementById('closeConfirmDiscard')?.addEventListener('click', () => done('discard'));
-    });
+    // Promise.withResolvers 在旧 WebView 中不可用，按能力检测回退到经典构造式。
+    // resolve 由下方点击事件在 executor 之外调用；done 幂等（重复 remove/结算无副作用）。
+    let promise, resolve;
+    if (typeof Promise.withResolvers === 'function') {
+        ({ promise, resolve } = Promise.withResolvers());
+    } else {
+        promise = new Promise((res) => { resolve = res; });
+    }
+
+    const done = (choice) => {
+        dialog.remove();
+        resolve(choice);
+    };
+    document.getElementById('closeConfirmSave')?.addEventListener('click', () => done('save'));
+    document.getElementById('closeConfirmDiscard')?.addEventListener('click', () => done('discard'));
+    return promise;
 }
 window.main_show_close_confirm_dialog = main_show_close_confirm_dialog;
 

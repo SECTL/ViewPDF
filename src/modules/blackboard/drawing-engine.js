@@ -65,6 +65,9 @@ export class DrawingEngine {
         this._eraser_hint = null;
         this._eraser_hint_raf_id = null;
         this._eraser_hint_pending_pos = null;
+        // 提示定位基准 rect：一次擦除笔画内不变，show/hide 时失效。
+        // 逐帧只读一次且在写样式之前读，避免 read→write 交替触发强制同步布局。
+        this._eraser_hint_rect_cache = null;
     }
 
     /**
@@ -478,6 +481,12 @@ export class DrawingEngine {
 
     _show_eraser_hint() {
         if (!this._eraser_hint) return;
+        // 定位基准固定为包含块原点；逐帧位移改走合成层 transform（不触发布局）。
+        // left/top 仅在提示首次显示时写一次，热路径里不再逐帧改写。
+        this._eraser_hint.style.left = '0px';
+        this._eraser_hint.style.top = '0px';
+        // 新笔画开始：定位 rect 缓存作废，下一帧重新读取一次。
+        this._eraser_hint_rect_cache = null;
         this._eraser_hint.classList.add('active');
     }
 
@@ -489,6 +498,7 @@ export class DrawingEngine {
             this._eraser_hint_raf_id = null;
         }
         this._eraser_hint_pending_pos = null;
+        this._eraser_hint_rect_cache = null;
     }
 
     _update_eraser_hint_position(clientX, clientY) {
@@ -503,22 +513,32 @@ export class DrawingEngine {
             const { clientX, clientY } = this._eraser_hint_pending_pos;
             this._eraser_hint_pending_pos = null;
 
+            // ===== 读阶段：所有 DOM 读取必须在任何样式写入之前完成 =====
             const scale = this._fetch_safe_scale();
             const eraser_size = (this.cached_draw_line_width
                 || window.DRAW_CONFIG?.eraserSize || 15) * scale;
-            this._eraser_hint.style.width = eraser_size + 'px';
-            this._eraser_hint.style.height = eraser_size + 'px';
 
-            const rect = this.coord.get_eraser_hint_rect
-                ? this.coord.get_eraser_hint_rect()
-                : this._get_canvas_rect();
+            // 定位 rect 在一次擦除笔画内不变（show/hide 时失效），整段拖拽只读一次。
+            // 关键：先读 rect 再写 width/height —— 反过来会为「刚写进去的宽高」
+            // 触发一次强制同步布局（Forced Synchronous Layout），每帧一次卡顿。
+            if (!this._eraser_hint_rect_cache) {
+                this._eraser_hint_rect_cache = this.coord.get_eraser_hint_rect
+                    ? this.coord.get_eraser_hint_rect()
+                    : this._get_canvas_rect();
+            }
+            const rect = this._eraser_hint_rect_cache;
             if (!rect) return;
 
             const x = clientX - rect.left;
             const y = clientY - rect.top;
-            this._eraser_hint.style.left = `${x}px`;
-            this._eraser_hint.style.top = `${y}px`;
-            this._eraser_hint.style.transform = 'translate(-50%, -50%)';
+
+            // ===== 写阶段：全部集中在读之后，位移走合成层 transform =====
+            // left/top 保持在 show 时写下的 0；translate3d 承担逐帧位移（GPU 合成，
+            // 不触发布局/重绘），末尾的 translate(-50%,-50%) 仍让圆圈居中于指针。
+            const hint = this._eraser_hint;
+            hint.style.width = eraser_size + 'px';
+            hint.style.height = eraser_size + 'px';
+            hint.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`;
         });
     }
 
@@ -551,6 +571,7 @@ export class DrawingEngine {
         }
         this._eraser_hint = null;
         this._eraser_hint_pending_pos = null;
+        this._eraser_hint_rect_cache = null;
         // 覆盖层像素释放 + DOM 摘除统一走 OverlayManager.destroy；
         // 直接置 null 只是丢引用，backing store 要等 GC，长会话反复开关会驻留显存
         this.batch_draw?.overlay?.destroy();

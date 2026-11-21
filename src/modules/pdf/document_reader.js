@@ -294,6 +294,9 @@ class DocumentReaderManager {
         this._eraser_hint = null;
         this._eraser_hint_raf_id = null;
         this._eraser_hint_pending_pos = null;
+        // 橡皮擦提示定位基准 rect：一次擦除笔画内不变，show/hide 与几何变化时失效。
+        // 热路径里所有 DOM 读取都排在样式写入之前，避免强制同步布局。
+        this._eraser_hint_rect_cache = null;
         this.savedDrawMode = null;
         this._was_camera_open_before = false;
         this._last_loaded_index = -1;
@@ -4982,6 +4985,8 @@ class DocumentReaderManager {
                 this._resize_light_raf = null;
                 if (!this.is_open) return;
                 this._cached_container_rect = null;
+                // 包含块几何变了 → 橡皮擦提示的基准 rect 缓存作废，下一帧重新读取
+                this._eraser_hint_rect_cache = null;
                 if (this._page_positions) this._page_positions.stale = true;
                 // 容器尺寸变了 → 移动边界几何（cw/vw/vh）随之失效。
                 // 此处是直接写 stale 而非走 _invalidate_page_positions，故单独置脏。
@@ -6751,6 +6756,7 @@ class DocumentReaderManager {
         this._eraser_hint.style.width = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         this._eraser_hint.style.height = (window.DRAW_CONFIG?.eraserSize || 15) + 'px';
         this._scroll_container.appendChild(this._eraser_hint);
+        this._eraser_hint_rect_cache = null;
     }
 
     _show_eraser_hint() {
@@ -6758,8 +6764,14 @@ class DocumentReaderManager {
         // 提示圆圈是屏幕像素，实际擦除直径 = 内容尺寸 × 当前缩放，
         // 必须乘 scale 才能与真实擦除范围一致
         const eraser_size = (window.DRAW_CONFIG?.eraserSize || 15) * (this.dr_scale || 1);
+        // 定位基准固定为包含块原点；逐帧位移改走合成层 transform（不触发布局）。
+        // left/top 仅在提示首次显示时写一次，热路径里不再逐帧改写。
+        this._eraser_hint.style.left = '0px';
+        this._eraser_hint.style.top = '0px';
         this._eraser_hint.style.width = eraser_size + 'px';
         this._eraser_hint.style.height = eraser_size + 'px';
+        // 新笔画开始：定位 rect 缓存作废，下一帧重新读取一次。
+        this._eraser_hint_rect_cache = null;
         this._eraser_hint.classList.add('active');
     }
 
@@ -6771,6 +6783,7 @@ class DocumentReaderManager {
             this._eraser_hint_raf_id = null;
         }
         this._eraser_hint_pending_pos = null;
+        this._eraser_hint_rect_cache = null;
     }
 
     _update_eraser_hint_position(clientX, clientY) {
@@ -6784,35 +6797,46 @@ class DocumentReaderManager {
             const pos = this._eraser_hint_pending_pos;
             this._eraser_hint_pending_pos = null;
 
+            // ===== 读阶段：所有 DOM 读取必须在任何样式写入之前完成 =====
             // 尺寸：内容尺寸 × 当前缩放（与实际擦除直径一致）
             const eraser_size = (this.cached_draw_line_width || window.DRAW_CONFIG?.eraserSize || 15)
                 * (this.dr_scale || 1);
-            this._eraser_hint.style.width = eraser_size + 'px';
-            this._eraser_hint.style.height = eraser_size + 'px';
 
             // 定位：以提示元素的真实包含块（offsetParent，即面板）为基准。
             // 之前减容器矩形，但容器无 position、不构成包含块，
-            // 容器在面板内的 padding 会造成恒定 ~16px 偏移
-            const op = this._eraser_hint.offsetParent;
-            let x, y;
-            if (op) {
-                const opr = op.getBoundingClientRect();
-                x = pos.clientX - opr.left;
-                y = pos.clientY - opr.top;
-            } else if (this._scroll_container) {
-                if (!this._cached_container_rect) {
-                    const cr = this._scroll_container.getBoundingClientRect();
-                    const wr = this._zoom_wrapper?.getBoundingClientRect();
-                    this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
+            // 容器在面板内的 padding 会造成恒定 ~16px 偏移。
+            // 基准 rect 在一次擦除笔画内不变（show/hide 与几何变化时失效），
+            // 整段拖拽只读一次；关键是先读再写 width/height，否则每帧都会为
+            // 刚写进去的宽高触发一次强制同步布局（Forced Synchronous Layout）。
+            if (!this._eraser_hint_rect_cache) {
+                const op = this._eraser_hint.offsetParent;
+                if (op) {
+                    const opr = op.getBoundingClientRect();
+                    this._eraser_hint_rect_cache = { left: opr.left, top: opr.top };
+                } else if (this._scroll_container) {
+                    if (!this._cached_container_rect) {
+                        const cr = this._scroll_container.getBoundingClientRect();
+                        const wr = this._zoom_wrapper?.getBoundingClientRect();
+                        this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
+                    }
+                    this._eraser_hint_rect_cache = {
+                        left: this._cached_container_rect.left,
+                        top: this._cached_container_rect.top
+                    };
                 }
-                x = pos.clientX - this._cached_container_rect.left;
-                y = pos.clientY - this._cached_container_rect.top;
-            } else {
-                return;
             }
-            this._eraser_hint.style.left = x + 'px';
-            this._eraser_hint.style.top = y + 'px';
-            this._eraser_hint.style.transform = 'translate(-50%, -50%)';
+            const base = this._eraser_hint_rect_cache;
+            if (!base) return;
+            const x = pos.clientX - base.left;
+            const y = pos.clientY - base.top;
+
+            // ===== 写阶段：全部集中在读之后，位移走合成层 transform =====
+            // left/top 保持在 show 时写下的 0；translate3d 承担逐帧位移（GPU 合成，
+            // 不触发布局/重绘），末尾的 translate(-50%,-50%) 仍让圆圈居中于指针。
+            const hint = this._eraser_hint;
+            hint.style.width = eraser_size + 'px';
+            hint.style.height = eraser_size + 'px';
+            hint.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`;
         });
     }
 

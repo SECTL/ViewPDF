@@ -76,6 +76,12 @@ export function splitCityDistrict(cityName) {
  *
  * ⚠️ 这仍会把用户 IP 交给第三方。但地区统计的**权威来源是服务端按来源 IP 解析**
  * （见接口文档），这里只是服务端解析失败时的兼底；且已缓存 30 天。
+ *
+ * 🔒 同意边界：本函数（及 getGeo）只有一条调用链 —— telemetry-api.js 的
+ * reportOnline/buildOnlineBody，二者在调用 getGeo 之前都先 await telemetry_is_enabled()。
+ * 不要在别处直接调用本函数，否则等于绕过用户同意、把 IP 发给第三方。
+ * 这里不反向 import telemetry_is_enabled：telemetry-api.js 已经 import 了本模块，
+ * 静态回引会形成循环依赖（前置同意闸放在 api 层调用点即可）。
  */
 export async function fetchGeo() {
     try {
@@ -85,6 +91,9 @@ export async function fetchGeo() {
             return null;
         }
 
+        // 🔒 隐私敏感点：这一发会把用户的公网 IP 交给第三方 freeipapi.com。
+        // 到达这里的唯一合法路径是 telemetry-api.js 中已通过 telemetry_is_enabled()
+        // 的 reportOnline()/buildOnlineBody()。新增调用方必须先确认用户同意。
         const result = await invoke('telemetry_http_get', {
             url: GEO_API_URL
         });

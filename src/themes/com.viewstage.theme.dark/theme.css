@@ -1,5 +1,6 @@
 /* ===== 设计令牌 ===== */
 :root {
+    color-scheme: only dark;
     --color-canvas: #1a1a1a;
     --color-canvas-gradient-start: #1a1a1a;
     --color-canvas-gradient-end: #2a2a2a;
@@ -20,6 +21,21 @@
     --color-success: #10b981;
     --color-warning: #f59e0b;
     --color-error: #ef4444;
+    --color-muted-2: #a3a3a3;
+    --color-muted-3: #8a8a8a;
+    --color-brand-accent-rgb: 59 130 246;
+    --color-error-rgb: 239 68 68;
+    --color-badge-star: #f1c40f;
+    --blackboard-bg: #111;
+    --blackboard-canvas-bg: #1a1a1a;
+    --color-primary-active-strong: #d4d4d4;
+    --color-danger-bg: rgb(var(--color-error-rgb) / 0.1);
+    --color-danger-hover: #dc2626;
+    --color-danger-active: #b91c1c;
+    --switch-track: #313033;
+    --switch-track-active: #3a4b39;
+    --switch-thumb: #aeaaae;
+    --switch-active: #84da89;
     --color-badge-orange: #fb923c;
     --color-badge-pink: #ec4899;
     --color-badge-violet: #8b5cf6;
@@ -53,8 +69,8 @@
     --btn-height-lg: 48px;
     
     --scrollbar-track: rgba(255, 255, 255, 0.05);
-    --scrollbar-thumb: rgba(255, 255, 255, 0.2);
-    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+    --scrollbar-thumb: #6e6e6e;
+    --scrollbar-thumb-hover: #858585;
     --icon-filter: invert(1);
 }
 
@@ -96,7 +112,7 @@ body {
 }
 
 .btn-primary:active {
-    background: #d4d4d4;
+    background: var(--color-primary-active-strong);
 }
 
 .btn-primary:disabled {
@@ -221,8 +237,8 @@ body {
 }
 
 .btn-danger:hover {
-    background: #dc2626;
-    border-color: #dc2626;
+    background: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
 }
 
 .btn-success {
@@ -243,9 +259,9 @@ body {
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-md);
     height: var(--btn-height-sm);
-    background: rgba(59, 130, 246, 0.15);
+    background: rgb(var(--color-brand-accent-rgb) / 0.15);
     color: var(--color-brand-accent);
-    border: 1px solid rgba(59, 130, 246, 0.3);
+    border: 1px solid rgb(var(--color-brand-accent-rgb) / 0.3);
     border-radius: var(--rounded-md);
     font-size: 12px;
     font-weight: 500;
@@ -255,8 +271,8 @@ body {
 }
 
 .btn-action:hover {
-    background: rgba(59, 130, 246, 0.25);
-    border-color: rgba(59, 130, 246, 0.5);
+    background: rgb(var(--color-brand-accent-rgb) / 0.25);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.5);
 }
 
 .btn-action:disabled {
@@ -272,9 +288,9 @@ body {
     gap: var(--spacing-xs);
     padding: var(--spacing-xs) var(--spacing-md);
     height: var(--btn-height-sm);
-    background: rgba(239, 68, 68, 0.15);
+    background: rgb(var(--color-error-rgb) / 0.15);
     color: var(--color-error);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    border: 1px solid rgb(var(--color-error-rgb) / 0.3);
     border-radius: var(--rounded-md);
     font-size: 12px;
     font-weight: 500;
@@ -284,8 +300,8 @@ body {
 }
 
 .btn-reset:hover {
-    background: rgba(239, 68, 68, 0.25);
-    border-color: rgba(239, 68, 68, 0.5);
+    background: rgb(var(--color-error-rgb) / 0.25);
+    border-color: rgb(var(--color-error-rgb) / 0.5);
 }
 
 .btn-back {
@@ -375,8 +391,8 @@ body {
 }
 
 .sidebar-btn.active {
-    background: rgba(59, 130, 246, 0.15);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: rgb(var(--color-brand-accent-rgb) / 0.15);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.3);
     color: var(--color-brand-accent);
 }
 
@@ -421,8 +437,8 @@ body {
 }
 
 .btn-clear-cache:hover {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.15);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
     color: var(--color-error);
 }
 
@@ -482,7 +498,7 @@ body {
 }
 
 .modal-btn-confirm:hover {
-    background: #dc2626;
+    background: var(--color-danger-hover);
 }
 
 /* ===== 开关 ===== */
@@ -532,18 +548,20 @@ body {
     transform: translateX(20px);
 }
 
-/* ===== 工具栏 ===== */
-.toolbar {
-    position: absolute;
-    bottom: 10px;
-    left: 0;
-    right: 0;
-    padding: 0 10px;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    z-index: 50;
-    pointer-events: none;
+/* ===== 工具栏（theme 层；styles.css 的 utilities 层可覆盖定位） ===== */
+@layer theme {
+    .toolbar {
+        position: absolute;
+        bottom: 10px;
+        left: 0;
+        right: 0;
+        padding: 0 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        z-index: 50;
+        pointer-events: none;
+    }
 }
 
 .toolbar-left,
@@ -649,7 +667,7 @@ body {
 .toolbar-btn img {
     width: 18px;
     height: 18px;
-    filter: invert(1) !important;
+    filter: var(--icon-filter);
 }
 
 .toolbar-btn:disabled {
@@ -689,8 +707,8 @@ body {
     flex: none;
     transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, filter 0.2s ease;
     width: 270px;
-    height: calc(100vh - 80px);
-    max-height: calc(100vh - 80px);
+    height: calc(100dvh - var(--app-titlebar-h) - 20px);
+    max-height: calc(100dvh - var(--app-titlebar-h) - 20px);
     overflow-y: auto;
     position: absolute;
     right: 10px;
@@ -795,7 +813,7 @@ body {
 
 .sidebar-image-item.active {
     border-color: var(--color-brand-accent);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 0 2px rgb(var(--color-brand-accent-rgb) / 0.3);
 }
 
 .sidebar-thumbnail {
@@ -856,7 +874,7 @@ body {
 }
 
 .sidebar-import-btn img {
-    filter: invert(1) !important;
+    filter: var(--icon-filter);
 }
 
 .sidebar-import-btn:hover {
@@ -903,7 +921,7 @@ body {
     flex-shrink: 0;
     width: 16px;
     height: 16px;
-    filter: invert(1) !important;
+    filter: var(--icon-filter);
 }
 
 .sidebar-folder-item:hover {
@@ -1132,8 +1150,7 @@ body {
 
 .settings-slider-row .slider-label {
     font-size: 10px;
-    color: var(--color-muted);
-    opacity: 0.7;
+    color: var(--color-muted-3);
 }
 
 .settings-slider-row .slider-icons {
@@ -1163,7 +1180,7 @@ body {
     width: 36px;
     text-align: center;
     font-variant-numeric: tabular-nums;
-    background: rgba(59,130,246,0.12);
+    background: rgb(var(--color-brand-accent-rgb) / 0.12);
     padding: 2px 6px;
     border-radius: var(--rounded-sm);
     line-height: 1;
@@ -1441,7 +1458,7 @@ body {
 }
 
 .menu-item img {
-    filter: invert(1) !important;
+    filter: var(--icon-filter);
 }
 
 /* ===== 加载/颜色/错误覆盖 ===== */
@@ -1586,7 +1603,7 @@ body {
 
 /* ===== 设置面板 - 主题覆盖 ===== */
 .sp-btn-icon img {
-    filter: invert(1) !important;
+    filter: var(--icon-filter);
 }
 
 /* ===== 页面标题 ===== */
@@ -1813,36 +1830,36 @@ body {
 }
 
 .btn-action {
-    background: rgba(59, 130, 246, 0.15);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: rgb(var(--color-brand-accent-rgb) / 0.15);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.3);
     color: var(--color-brand-accent);
 }
 
 .btn-action:hover {
-    background: rgba(59, 130, 246, 0.25);
-    border-color: rgba(59, 130, 246, 0.5);
+    background: rgb(var(--color-brand-accent-rgb) / 0.25);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.5);
 }
 
 .btn-action.delete {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.15);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
     color: var(--color-error);
 }
 
 .btn-action.delete:hover {
-    background: rgba(239, 68, 68, 0.25);
-    border-color: rgba(239, 68, 68, 0.5);
+    background: rgb(var(--color-error-rgb) / 0.25);
+    border-color: rgb(var(--color-error-rgb) / 0.5);
 }
 
 .btn-reset {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.15);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
     color: var(--color-error);
 }
 
 .btn-reset:hover {
-    background: rgba(239, 68, 68, 0.25);
-    border-color: rgba(239, 68, 68, 0.5);
+    background: rgb(var(--color-error-rgb) / 0.25);
+    border-color: rgb(var(--color-error-rgb) / 0.5);
 }
 
 .btn-clear-cache {
@@ -1852,8 +1869,8 @@ body {
 }
 
 .btn-clear-cache:hover {
-    background: rgba(239, 68, 68, 0.15);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.15);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
     color: var(--color-error);
 }
 
@@ -1880,14 +1897,14 @@ body {
 }
 
 .modal-btn-confirm {
-    background: rgba(239, 68, 68, 0.2);
-    border-color: rgba(239, 68, 68, 0.35);
+    background: rgb(var(--color-error-rgb) / 0.2);
+    border-color: rgb(var(--color-error-rgb) / 0.35);
     color: var(--color-error);
 }
 
 .modal-btn-confirm:hover {
-    background: rgba(239, 68, 68, 0.3);
-    border-color: rgba(239, 68, 68, 0.55);
+    background: rgb(var(--color-error-rgb) / 0.3);
+    border-color: rgb(var(--color-error-rgb) / 0.55);
 }
 
 .color-picker-btn {
@@ -1930,8 +1947,8 @@ body {
 }
 
 .sidebar-btn.active {
-    background: rgba(59, 130, 246, 0.15);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: rgb(var(--color-brand-accent-rgb) / 0.15);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.3);
 }
 
 .select-options {
@@ -1944,7 +1961,7 @@ body {
 }
 
 .select-option.selected {
-    background: rgba(59, 130, 246, 0.15);
+    background: rgb(var(--color-brand-accent-rgb) / 0.15);
 }
 
 .modal-dialog {
@@ -2013,8 +2030,8 @@ body {
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
     pointer-events: none;
     z-index: 0;
     opacity: 0;
@@ -2033,4 +2050,52 @@ body {
     opacity: 0.6;
     will-change: transform;
     transform: translateZ(0);
+}
+
+/* ===== 高对比度 / 强制颜色偏好 ===== */
+@media (prefers-contrast: more) {
+    :root {
+        --scrollbar-thumb: #fff;
+        --scrollbar-thumb-hover: #fff;
+        --scrollbar-track: #000;
+    }
+}
+@media (forced-colors: active) {
+    :root {
+        --color-canvas: Canvas;
+        --color-canvas-gradient-start: Canvas;
+        --color-canvas-gradient-end: Canvas;
+        --color-surface-card: Canvas;
+        --color-surface-soft: Canvas;
+        --color-surface-strong: Canvas;
+        --color-surface-elevated: Canvas;
+        --color-hairline: CanvasText;
+        --color-hairline-soft: CanvasText;
+        --color-ink: CanvasText;
+        --color-body: CanvasText;
+        --color-muted: GrayText;
+        --color-muted-soft: GrayText;
+        --color-primary: ButtonText;
+        --color-primary-active: Highlight;
+        --color-on-primary: Canvas;
+        --color-brand-accent: Highlight;
+        --color-error: CanvasText;
+        --scrollbar-thumb: CanvasText;
+        --scrollbar-track: Canvas;
+    }
+    .toolbar,
+    .sidebar,
+    .file-row,
+    .search-field,
+    .dropdown-trigger,
+    .dr-reader-confirm-btn,
+    .sp-modal-dialog,
+    .sp-btn-icon,
+    button {
+        border-color: CanvasText;
+        background: Canvas;
+        color: CanvasText;
+        box-shadow: none;
+    }
+    :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }

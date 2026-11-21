@@ -182,9 +182,17 @@ const _history_pending_queue = [];
  */
 export function history_execute_command(command, needRedraw = true) {
     if (history_state.is_executing) {
-        return new Promise((resolve, reject) => {
-            _history_pending_queue.push({ command, needRedraw, resolve, reject });
-        });
+        // Promise.withResolvers 在旧 WebView 中不可用，按能力检测回退到经典构造式。
+        // resolve/reject 由 _history_run_command 出队后在 executor 之外调用，
+        // 队列顺序与结算行为保持不变。
+        let promise, resolve, reject;
+        if (typeof Promise.withResolvers === 'function') {
+            ({ promise, resolve, reject } = Promise.withResolvers());
+        } else {
+            promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        }
+        _history_pending_queue.push({ command, needRedraw, resolve, reject });
+        return promise;
     }
     return _history_run_command(command, needRedraw);
 }

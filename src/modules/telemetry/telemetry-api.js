@@ -24,7 +24,9 @@ export async function telemetry_is_enabled() {
         const invoke = window.__TAURI__?.core?.invoke;
         if (!invoke) return false;
         const result = await invoke('settings_fetch_all');
-        return result?.settings?.telemetryEnabled !== false;
+        // 隐私默认：只有用户显式开启才上报。缺省/未配置一律视为关闭，
+        // 避免从未碰过开关的用户在升级后被动加入遥测。
+        return result?.settings?.telemetryEnabled === true;
     } catch (e) {
         console.warn('[telemetry] failed to fetch settings, treat as disabled:', e);
         return false;
@@ -69,10 +71,17 @@ async function telemetry_post(endpoint, body) {
  *
  * 服务端只按来源 IP 解析地区，客户端自报的四个地区字段仅在解析失败时兜底，
  * 且会被归一化 —— 所以这里允许缺省成「未知」，不要自己造地名。
- * `ip_address` 同理：私网地址服务端会忽略并改用请求头里的公网地址，
- * 传空串比传 `127.0.0.1` 诚实。
+ *
+ * 不再上报 `ip_address`：服务端本来就用请求头里的公网地址，客户端传它纯属冗余
+ * 且直接暴露用户 IP。区级 `district` 同理属过度采集，保留键但固定为「未知」。
+ *
+ * 隐私：getGeo() 会带用户 IP 访问第三方 freeipapi.com，触碰它之前必须先确认同意。
  */
 export async function reportOnline() {
+    // 隐私前置闸：getGeo() 会经 telemetry_http_get 向第三方 freeipapi.com 发出
+    // 带用户 IP 的请求。必须在调用它之前就确认用户同意，否则「关闭遥测」
+    // 仍然泄露 IP。telemetry_post 里那道判据保留作最后兜底。
+    if (!(await telemetry_is_enabled())) return null;
     try {
         const body = await buildOnlineBody();
         if (!body) return null;
@@ -89,18 +98,28 @@ export async function reportOnline() {
 }
 
 async function buildOnlineBody() {
-    const [installId, geo] = await Promise.all([getInstallUUID(), getGeo()]);
+    // 第二道前置闸，贴着 getGeo() 调用点：buildOnlineBody 也可能被单独调用，
+    // 不能只靠 reportOnline 那一层。顺序要紧 —— 必须在 Promise.all（含 getGeo）之前。
+    if (!(await telemetry_is_enabled())) return null;
+
+    const [installId, geo, deviceType] = await Promise.all([
+        getInstallUUID(),
+        getGeo(),
+        getDeviceType()
+    ]);
     if (!installId) return null;
 
     return {
         platform_id: SECTL_CLIENT_ID,
         device_uuid: installId,
-        device_type: getDeviceType(),
-        ip_address: geo?.ip || '',
+        device_type: deviceType,
+        // ip_address 不再上报：服务端按来源 IP 解析地区，客户端传它纯属冗余。
         country: geo?.country_name || '未知',
         province: geo?.region || '未知',
         city: geo?.city || '未知',
-        district: geo?.district || geo?.city || '未知'
+        // district 比 city 更细，属过度采集。服务端要求该键为非空字符串，
+        // 所以保留键但固定为「未知」，不把第三方返回的细粒度区名交出去。
+        district: '未知'
     };
 }
 

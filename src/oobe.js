@@ -193,7 +193,7 @@ function el(tag, attrs = {}, ...children) {
 // ==================== Render ====================
 function render() {
   const app = document.getElementById('app');
-  app.innerHTML = '';
+  app.replaceChildren();
   app.append(renderShell());
   renderPanels();
   updateUI();
@@ -244,6 +244,7 @@ function renderStepContent(stepIndex, direction) {
   else if (stepIndex === STEP.toolbarText) setupToolbarText();
   else if (stepIndex === STEP.complete) setupComplete();
   else if (stepIndex === STEP.installing) setupInstalling();
+  applySwitchRoles();
 }
 
 function updateUI() {
@@ -279,7 +280,7 @@ function renderNav() {
   nav.innerHTML = html`
     <div class="nav-left"></div>
     <div class="nav-right">
-      <button class="btn btn-primary" id="btnNext">${isImport ? _t('oobe.importSkip') : _t('common.next')} →</button>
+      <button class="btn btn-primary" id="btnNext" type="button">${isImport ? _t('oobe.importSkip') : _t('common.next')} →</button>
     </div>
   `;
 
@@ -309,16 +310,16 @@ function doTransition(target) {
 
 function validateStep(step) {
   if (step === STEP.language) {
-    const sel = $('#languageSelect .lang-item.selected');
-    if (!sel) return false;
+    const sel = document.getElementById('languageSelect');
+    if (!sel || !sel.value) return false;
   }
   return true;
 }
 
 function gatherStepData(step) {
   if (step === STEP.language) {
-    const sel = $('#languageSelect .lang-item.selected');
-    if (sel) state.language = sel.dataset.value;
+    const sel = document.getElementById('languageSelect');
+    if (sel && sel.value) state.language = sel.value;
   }
   if (step === STEP.theme) {
     const panel = document.querySelector(`[data-step="${STEP.theme}"]`);
@@ -363,7 +364,8 @@ const STEP_TPL = [
     <div class="step-icon">${ICONS.globe}</div>
     <div class="step-title">${_t('oobe.selectLanguage')}</div>
     <div class="step-subtitle">${_t('oobe.selectLanguageDesc')}</div>
-    <div class="lang-list" id="languageSelect">
+    <label class="visually-hidden" for="languageSelect">${_t('oobe.selectLanguage')}</label>
+    <select class="lang-list lang-select" id="languageSelect" aria-label="${_t('oobe.selectLanguage')}">
       ${[
         { v: 'zh-CN', label: '简体中文' },
         { v: 'zh-TW', label: '繁體中文' },
@@ -375,29 +377,28 @@ const STEP_TPL = [
         { v: 'es-ES', label: 'Español' },
         { v: 'ru-RU', label: 'Русский' },
       ].map(o => html`
-        <div class="lang-item ${o.v === state.language ? 'selected' : ''}" data-value="${o.v}">
-          <span class="lang-label">${o.label}</span>
-          <span class="lang-check">${ICONS.checkmark}</span>
-        </div>
+        <option value="${o.v}"${o.v === state.language ? ' selected' : ''}>${o.label}</option>
       `).join('')}
-    </div>
+    </select>
   `,
   // 1 — Theme
   () => html`
     <div class="step-icon">${ICONS.paintBrush}</div>
     <div class="step-title">${_t('oobe.selectTheme')}</div>
     <div class="step-subtitle">${_t('oobe.selectThemeDesc')}</div>
-    <div class="card-grid">
+    <fieldset class="card-grid" id="themeChoices">
+      <legend class="visually-hidden">${_t('oobe.selectTheme')}</legend>
       ${[
         { v: 'com.viewstage.theme.dark', label: _t('settings.themeDark'), icon: ICONS.weatherMoon },
         { v: 'com.viewstage.theme.simplify', label: _t('settings.themeSimplify'), icon: ICONS.weatherSunny },
       ].map(o => html`
-        <div class="card ${o.v === state.theme ? 'selected' : ''}" data-theme="${o.v}">
-          <div class="card-icon">${o.icon}</div>
-          <div class="card-title">${o.label}</div>
-        </div>
+        <label class="card${o.v === state.theme ? ' selected' : ''}" data-theme="${o.v}">
+          <input type="radio" name="theme" class="theme-radio" id="theme-${o.v}" value="${o.v}"${o.v === state.theme ? ' checked' : ''}>
+          <span class="card-icon">${o.icon}</span>
+          <span class="card-title">${o.label}</span>
+        </label>
       `).join('')}
-    </div>
+    </fieldset>
   `,
   // 2 — Import Config
   () => html`
@@ -405,7 +406,7 @@ const STEP_TPL = [
     <div class="step-title">${_t('oobe.importConfig')}</div>
     <div class="step-subtitle">${_t('oobe.importConfigDesc')}</div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:16px">
-      <button class="btn btn-primary" id="importConfigBtn">${_t('oobe.importConfigBtn')}</button>
+      <button class="btn btn-primary" id="importConfigBtn" type="button">${_t('oobe.importConfigBtn')}</button>
       <div id="importStatus" class="import-status"></div>
     </div>
   `,
@@ -418,8 +419,8 @@ const STEP_TPL = [
       <div class="setting-row-label">${_t('settings.frameRateMode')}</div>
       <div class="sp-option-group" id="frameRateModeGroup" data-active="${state.frameRateMode}">
         ${['low', 'adaptive', 'high'].map(v => html`
-          <button class="sp-option-btn${state.frameRateMode === v ? ' sp-active' : ''}" data-value="${v}">
-            ${_t('settings.frameRate' + v.charAt(0).toUpperCase() + v.slice(1))}
+          <button class="sp-option-btn${state.frameRateMode === v ? ' sp-active' : ''}" type="button" data-value="${v}" aria-pressed="${state.frameRateMode === v ? 'true' : 'false'}">
+            ${_t('settings.frameRate' + v.charAt(0).toUpperCase() + v.slice(1))}<span class="sp-check" aria-hidden="true">${state.frameRateMode === v ? '✓' : ''}</span>
           </button>
         `).join('')}
       </div>
@@ -432,8 +433,8 @@ const STEP_TPL = [
       <div class="setting-row-label">${_t('settings.renderPerfTier')}</div>
       <div class="sp-option-group" id="renderPerfTierGroupOobe" data-active="${state.renderPerfTier}">
         ${['low', 'balanced', 'high'].map(v => html`
-          <button class="sp-option-btn${state.renderPerfTier === v ? ' sp-active' : ''}" data-value="${v}">
-            ${_t('settings.renderPerfTier' + v.charAt(0).toUpperCase() + v.slice(1))}
+          <button class="sp-option-btn${state.renderPerfTier === v ? ' sp-active' : ''}" type="button" data-value="${v}" aria-pressed="${state.renderPerfTier === v ? 'true' : 'false'}">
+            ${_t('settings.renderPerfTier' + v.charAt(0).toUpperCase() + v.slice(1))}<span class="sp-check" aria-hidden="true">${state.renderPerfTier === v ? '✓' : ''}</span>
           </button>
         `).join('')}
       </div>
@@ -446,21 +447,21 @@ const STEP_TPL = [
     <div class="step-subtitle">${_t('oobe.drawingSettingsDesc')}</div>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">${_t('settings.dynamicResolution')}</div>
-        <div class="toggle-desc">${_t('settings.dynamicResolutionHint')}</div>
+        <div class="toggle-label" id="dynamicDprLabel">${_t('settings.dynamicResolution')}</div>
+        <div class="toggle-desc" id="dynamicDprHint">${_t('settings.dynamicResolutionHint')}</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="dynamicDprToggle" ${state.dynamicDprEnabled ? 'checked' : ''}>
+        <input type="checkbox" class="toggle-input" switch id="dynamicDprToggle" aria-labelledby="dynamicDprLabel" aria-describedby="dynamicDprHint" ${state.dynamicDprEnabled ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">${_t('settings.blackboardEnabled')}</div>
-        <div class="toggle-desc">${_t('settings.blackboardEnabledHint')}</div>
+        <div class="toggle-label" id="blackboardEnabledLabel">${_t('settings.blackboardEnabled')}</div>
+        <div class="toggle-desc" id="blackboardEnabledHint">${_t('settings.blackboardEnabledHint')}</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="blackboardEnabledToggle" ${state.blackboardEnabled ? 'checked' : ''}>
+        <input type="checkbox" class="toggle-input" switch id="blackboardEnabledToggle" aria-labelledby="blackboardEnabledLabel" aria-describedby="blackboardEnabledHint" ${state.blackboardEnabled ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
@@ -469,8 +470,8 @@ const STEP_TPL = [
       <div class="setting-row-label">${_t('settings.penEffect')}</div>
       <div class="sp-option-group" id="penEffectGroup" data-active="${state.penEffectMode}">
         ${['off', 'limited', 'full'].map(v => html`
-          <button class="sp-option-btn${state.penEffectMode === v ? ' sp-active' : ''}" data-value="${v}">
-            ${_t('settings.penEffect' + v.charAt(0).toUpperCase() + v.slice(1))}
+          <button class="sp-option-btn${state.penEffectMode === v ? ' sp-active' : ''}" type="button" data-value="${v}" aria-pressed="${state.penEffectMode === v ? 'true' : 'false'}">
+            ${_t('settings.penEffect' + v.charAt(0).toUpperCase() + v.slice(1))}<span class="sp-check" aria-hidden="true">${state.penEffectMode === v ? '✓' : ''}</span>
           </button>
         `).join('')}
       </div>
@@ -489,7 +490,7 @@ const STEP_TPL = [
           <div class="app-row-desc">${_t('settings.pdfDefaultOpen')}</div>
         </div>
         <span id="pdfDefaultStatus" class="app-status"></span>
-        <button class="btn btn-ghost" id="btnSetPdf">${_t('settings.setDefault')}</button>
+        <button class="btn btn-ghost" id="btnSetPdf" type="button">${_t('settings.setDefault')}</button>
       </div>
       <div class="app-row">
         <span class="app-row-icon"></span>
@@ -498,17 +499,17 @@ const STEP_TPL = [
           <div class="app-row-desc">${_t('settings.wordDefaultOpen')}</div>
         </div>
         <span id="wordDefaultStatus" class="app-status"></span>
-        <button class="btn btn-ghost" id="btnSetWord">${_t('settings.setDefault')}</button>
+        <button class="btn btn-ghost" id="btnSetWord" type="button">${_t('settings.setDefault')}</button>
       </div>
     </div>
     <div class="divider"></div>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">${_t('settings.restoreLastDoc')}</div>
-        <div class="toggle-desc">${_t('settings.restoreLastDocHint')}</div>
+        <div class="toggle-label" id="restoreLastDocLabel">${_t('settings.restoreLastDoc')}</div>
+        <div class="toggle-desc" id="restoreLastDocHint">${_t('settings.restoreLastDocHint')}</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="restoreLastDocToggle" ${state.restoreLastDoc ? 'checked' : ''}>
+        <input type="checkbox" class="toggle-input" switch id="restoreLastDocToggle" aria-labelledby="restoreLastDocLabel" aria-describedby="restoreLastDocHint" ${state.restoreLastDoc ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
@@ -521,8 +522,8 @@ const STEP_TPL = [
     <div class="update-banner" id="updateBanner" style="display:none"></div>
     <div class="release-notes" id="updateNotes" style="display:none"></div>
     <div class="update-actions" id="updateActions">
-      <button class="btn btn-primary" id="btnUpdateDownload" style="display:none">${_t('oobe.updateNow')}</button>
-      <button class="btn btn-ghost" id="btnUpdateSkip" style="display:none">${_t('oobe.updateLater')}</button>
+      <button class="btn btn-primary" id="btnUpdateDownload" type="button" style="display:none">${_t('oobe.updateNow')}</button>
+      <button class="btn btn-ghost" id="btnUpdateSkip" type="button" style="display:none">${_t('oobe.updateLater')}</button>
     </div>
     <div class="update-progress" id="updateProgress" style="display:none">
       <div class="progress-bar"><div class="progress-fill" id="updateProgressBar"></div></div>
@@ -533,7 +534,7 @@ const STEP_TPL = [
       <div class="update-text">${_t('oobe.checkingUpdate')}</div>
     </div>
     <div class="update-skip-row">
-      <button class="btn btn-ghost" id="btnUpdateSkipCheck">${_t('oobe.updateSkipCheck')}</button>
+      <button class="btn btn-ghost" id="btnUpdateSkipCheck" type="button">${_t('oobe.updateSkipCheck')}</button>
     </div>
   `,
   // 7 — Title Bar
@@ -543,11 +544,11 @@ const STEP_TPL = [
     <div class="step-subtitle">${_t('oobe.titleBarDesc')}</div>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">${_t('settings.macosTitleBar')}</div>
-        <div class="toggle-desc">${_t('settings.macosTitleBarHint')}</div>
+        <div class="toggle-label" id="macosTitleBarLabel">${_t('settings.macosTitleBar')}</div>
+        <div class="toggle-desc" id="macosTitleBarHint">${_t('settings.macosTitleBarHint')}</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="macosTitleBarToggle" ${state.macosTitleBar ? 'checked' : ''}>
+        <input type="checkbox" class="toggle-input" switch id="macosTitleBarToggle" aria-labelledby="macosTitleBarLabel" aria-describedby="macosTitleBarHint" ${state.macosTitleBar ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
@@ -559,11 +560,11 @@ const STEP_TPL = [
     <div class="step-subtitle">${_t('oobe.toolbarTextDesc')}</div>
     <div class="toggle-row">
       <div>
-        <div class="toggle-label">${_t('settings.toolbarText')}</div>
-        <div class="toggle-desc">${_t('settings.toolbarTextHint')}</div>
+        <div class="toggle-label" id="toolbarTextLabel">${_t('settings.toolbarText')}</div>
+        <div class="toggle-desc" id="toolbarTextHint">${_t('settings.toolbarTextHint')}</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="toolbarTextToggle" ${state.showToolbarText ? 'checked' : ''}>
+        <input type="checkbox" class="toggle-input" switch id="toolbarTextToggle" aria-labelledby="toolbarTextLabel" aria-describedby="toolbarTextHint" ${state.showToolbarText ? 'checked' : ''}>
         <span class="toggle-slider"></span>
       </label>
     </div>
@@ -574,7 +575,7 @@ const STEP_TPL = [
     <div class="step-title">${_t('oobe.setupComplete')}</div>
     <div class="step-subtitle">${_t('oobe.configSaved')}</div>
     <div style="margin-top:16px">
-      <button class="btn btn-success" id="btnFinishStep">${_t('oobe.restartApp')}</button>
+      <button class="btn btn-success" id="btnFinishStep" type="button">${_t('oobe.restartApp')}</button>
     </div>
   `,
   // 10 — Installing
@@ -588,22 +589,23 @@ const STEP_TPL = [
 
 // ==================== Step Setup Functions ====================
 function setupLanguage() {
-  const grid = document.getElementById('languageSelect');
-  if (!grid) return;
-  grid.addEventListener('click', async (e) => {
-    const item = e.target.closest('.lang-item');
-    if (!item) return;
-    const locale = item.dataset.value;
+  const select = document.getElementById('languageSelect');
+  if (!select) return;
+  select.addEventListener('change', async () => {
+    const locale = select.value;
     if (window.i18n && locale !== state.language) {
       state.language = locale;
-      const scrollTop = grid.scrollTop;
+      const scrollTop = select.scrollTop;
       await window.i18n.load_messages(locale);
       window.i18n.render_page_texts();
       localStorage.setItem('language', locale);
       document.documentElement.lang = locale;
-      renderStepContent(0);
-      const newGrid = document.getElementById('languageSelect');
-      if (newGrid) newGrid.scrollTop = scrollTop;
+      renderStepContent(STEP.language);
+      const newSelect = document.getElementById('languageSelect');
+      if (newSelect) {
+        newSelect.value = locale;
+        newSelect.scrollTop = scrollTop;
+      }
     }
   });
 }
@@ -613,14 +615,16 @@ function setupTheme() {
   if (!panel) return;
   const grid = panel.querySelector('.card-grid');
   if (!grid) return;
-  grid.addEventListener('click', async (e) => {
-    const card = e.target.closest('.card');
-    if (!card) return;
+  grid.addEventListener('change', async (e) => {
+    const radio = e.target.closest('input[name="theme"]');
+    if (!radio || !radio.checked) return;
+    const card = radio.closest('.card');
     $$('.card', grid).forEach(c => c.classList.remove('selected'));
-    card.classList.add('selected');
-    const themeId = card.dataset.theme;
-    if (themeId && window.ThemeManager) {
-      state.theme = themeId;
+    if (card) card.classList.add('selected');
+    const themeId = radio.value;
+    if (!themeId) return;
+    state.theme = themeId;
+    if (window.ThemeManager) {
       await window.ThemeManager.theme_update_active(themeId);
     }
   });
@@ -646,21 +650,32 @@ function setupImportConfig() {
   document.getElementById('importConfigBtn')?.addEventListener('click', importConfig);
 }
 
+/**
+ * 选项组的「选中」一次写全三处：视觉类、无障碍状态、以及非颜色的 ✓ 记号。
+ * 只翻 .sp-active 会让色弱用户看不出当前档位，aria-pressed 也不会跟随。
+ */
+function _setSpActive(group, value) {
+  group.querySelectorAll('.sp-option-btn').forEach((btn) => {
+    const on = btn.dataset.value === value;
+    btn.classList.toggle('sp-active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const check = btn.querySelector('.sp-check');
+    if (check) check.textContent = on ? '✓' : '';
+  });
+}
+
 function setupPerformance() {
   const frGroup = document.getElementById('frameRateModeGroup');
   if (frGroup) {
     frGroup.dataset.active = state.frameRateMode;
-    frGroup.querySelectorAll('.sp-option-btn').forEach(btn => {
-      if (btn.dataset.value === state.frameRateMode) btn.classList.add('sp-active');
-    });
+    _setSpActive(frGroup, state.frameRateMode);
     frGroup.addEventListener('click', (e) => {
       const btn = e.target.closest('.sp-option-btn');
       if (!btn) return;
       const mode = btn.dataset.value;
       state.frameRateMode = mode;
       frGroup.dataset.active = mode;
-      frGroup.querySelectorAll('.sp-option-btn').forEach(b => b.classList.remove('sp-active'));
-      btn.classList.add('sp-active');
+      _setSpActive(frGroup, mode);
     });
   }
 
@@ -670,9 +685,7 @@ function setupPerformance() {
     const setTier = (tier) => {
       state.renderPerfTier = tier;
       tierGroup.dataset.active = tier;
-      tierGroup.querySelectorAll('.sp-option-btn').forEach(b => {
-        b.classList.toggle('sp-active', b.dataset.value === tier);
-      });
+      _setSpActive(tierGroup, tier);
     };
     tierGroup.addEventListener('click', (e) => {
       const btn = e.target.closest('.sp-option-btn');
@@ -698,17 +711,14 @@ function setupDrawing() {
   const penGroup = document.getElementById('penEffectGroup');
   if (penGroup) {
     penGroup.dataset.active = state.penEffectMode;
-    penGroup.querySelectorAll('.sp-option-btn').forEach(btn => {
-      if (btn.dataset.value === state.penEffectMode) btn.classList.add('sp-active');
-    });
+    _setSpActive(penGroup, state.penEffectMode);
     penGroup.addEventListener('click', (e) => {
       const btn = e.target.closest('.sp-option-btn');
       if (!btn) return;
       const mode = btn.dataset.value;
       state.penEffectMode = mode;
       penGroup.dataset.active = mode;
-      penGroup.querySelectorAll('.sp-option-btn').forEach(b => b.classList.remove('sp-active'));
-      btn.classList.add('sp-active');
+      _setSpActive(penGroup, mode);
     });
   }
   document.getElementById('dynamicDprToggle')?.addEventListener('change', (e) => {
@@ -819,6 +829,110 @@ function skipUpdateCheck() {
   doTransition(STEP.titleBar, 'forward');
 }
 
+// ==================== Release notes sanitizing ====================
+// 分发 API 返回的 release_notes 是不可信远程内容。renderMarkdownSimple 虽然转义了
+// 文本，但产出的 HTML 仍必须过白名单才能进 DOM —— 绝不把它的返回值直接塞进 innerHTML。
+const RELEASE_NOTES_ELEMENTS = ['H3', 'H4', 'P', 'UL', 'OL', 'LI', 'STRONG', 'CODE', 'A', 'BR', 'EM'];
+const RELEASE_NOTES_ATTRS = ['href', 'title', 'target', 'rel', 'class'];
+
+/**
+ * 收敛到白名单，返回可安全赋给 innerHTML 的字符串。
+ * 优先浏览器原生 Sanitizer（在游离节点上跑），其次 DOMPurify，最后 DOMParser 手工过滤。
+ * 任何一档抛错都继续往下走，绝不回退成原文。
+ */
+function sanitize_html(html) {
+  const src = typeof html === 'string' ? html : '';
+  if (!src) return '';
+
+  if (typeof Sanitizer !== 'undefined' && typeof Element !== 'undefined'
+      && typeof Element.prototype.setHTML === 'function') {
+    try {
+      const holder = document.createElement('div');
+      holder.setHTML(src, {
+        sanitizer: new Sanitizer({
+          elements: RELEASE_NOTES_ELEMENTS,
+          attributes: RELEASE_NOTES_ATTRS,
+        }),
+      });
+      return holder.innerHTML;
+    } catch (_) { /* 实现不支持该配置，走下一档 */ }
+  }
+
+  if (typeof window !== 'undefined' && window.DOMPurify?.sanitize) {
+    try {
+      return window.DOMPurify.sanitize(src, {
+        ALLOWED_TAGS: RELEASE_NOTES_ELEMENTS.map(t => t.toLowerCase()),
+        ALLOWED_ATTR: RELEASE_NOTES_ATTRS,
+      });
+    } catch (_) { /* 同上 */ }
+  }
+
+  try {
+    const allowed = new Set(RELEASE_NOTES_ELEMENTS);
+    const attrs = new Set(RELEASE_NOTES_ATTRS);
+    // 这些标签即使拆掉也绝不能留下其文本内容
+    const dropTree = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'SVG', 'MATH', 'TEMPLATE']);
+    const parsed = new DOMParser().parseFromString(src, 'text/html');
+    const out = document.createElement('div');
+    const copy = (from, to) => {
+      for (const node of Array.from(from.childNodes)) {
+        if (node.nodeType === 3) {
+          to.appendChild(document.createTextNode(node.nodeValue || ''));
+          continue;
+        }
+        if (node.nodeType !== 1) continue;
+        const tag = node.nodeName.toUpperCase();
+        if (dropTree.has(tag)) continue;
+        if (!allowed.has(tag)) { copy(node, to); continue; }  // 拆掉未知标签，保留文字
+        const safe = document.createElement(tag);
+        for (const attr of Array.from(node.attributes)) {
+          const name = attr.name.toLowerCase();
+          if (name.startsWith('on') || !attrs.has(name)) continue;
+          if (name === 'href') {
+            // 先去掉控制字符，避免 `java\nscript:` 之类绕过协议判断
+            const url = attr.value.trim().replace(/[\u0000-\u001F\u007F]/g, '');
+            if (!/^(https?:\/\/|mailto:|#|\/(?!\/))/i.test(url)) continue;
+            safe.setAttribute('href', url);
+          } else if (name === 'class') {
+            // 渲染器只用到 changelog-empty，其余类名不照单全收
+            const keep = attr.value.split(/\s+/).filter(c => c === 'changelog-empty');
+            if (keep.length) safe.setAttribute('class', keep.join(' '));
+          } else if (name === 'target') {
+            if (attr.value === '_blank') safe.setAttribute('target', '_blank');
+          } else {
+            safe.setAttribute(name, attr.value);
+          }
+        }
+        copy(node, safe);
+        to.appendChild(safe);
+      }
+    };
+    copy(parsed.body, out);
+    return out.innerHTML;
+  } catch (_) {
+    // 最后一层：整段按文本显示，宁可没格式也不执行远程内容
+    const text = document.createElement('div');
+    text.textContent = src;
+    return text.innerHTML;
+  }
+}
+
+/** 落地时优先用原生 setHTML(sanitizer)，不支持才退回 innerHTML = 已净化字符串。 */
+function setSanitizedHTML(target, html) {
+  if (typeof target.setHTML === 'function' && typeof Sanitizer !== 'undefined') {
+    try {
+      target.setHTML(html, {
+        sanitizer: new Sanitizer({
+          elements: RELEASE_NOTES_ELEMENTS,
+          attributes: RELEASE_NOTES_ATTRS,
+        }),
+      });
+      return;
+    } catch (_) { /* 落到 innerHTML + sanitize_html */ }
+  }
+  target.innerHTML = sanitize_html(html);
+}
+
 async function showUpdateResult(result) {
   if (state.updateSkipRequested) return;   // 用户已跳过，别把结果画回上一个面板
   const statusEl = document.getElementById('updateStatus');
@@ -834,7 +948,7 @@ async function showUpdateResult(result) {
     bannerEl.className = 'update-banner banner-error';
     bannerEl.textContent = _t('oobe.updateCheckFailed');
     bannerEl.style.display = '';
-    statusEl.innerHTML = '';
+    statusEl.replaceChildren();
     const notesEl = document.getElementById('updateNotes');
     if (notesEl) notesEl.style.display = 'none';
     _updateTimeout = setTimeout(() => doTransition(STEP.titleBar, 'forward'), 2000);
@@ -855,12 +969,12 @@ async function showUpdateResult(result) {
   }
 
   if (result.has_update) {
-    statusEl.innerHTML = '';
+    statusEl.replaceChildren();
     bannerEl.style.display = 'none';
     const notesEl = document.getElementById('updateNotes');
     if (notesEl) {
       if (result.release_notes) {
-        notesEl.innerHTML = renderMarkdownSimple(result.release_notes);
+        setSanitizedHTML(notesEl, renderMarkdownSimple(result.release_notes));
         notesEl.style.display = '';
       } else {
         notesEl.style.display = 'none';
@@ -911,7 +1025,7 @@ async function showUpdateResult(result) {
       }
     });
   } else {
-    statusEl.innerHTML = '';
+    statusEl.replaceChildren();
     bannerEl.className = 'update-banner banner-latest';
     bannerEl.textContent = _t('oobe.updateUpToDate');
     bannerEl.style.display = '';
@@ -946,7 +1060,7 @@ async function _checkForUpdate() {
     if (state.updateSkipRequested) return;
     state.updateChecked = true;
     state.updateResult = null;
-    if (statusEl) statusEl.innerHTML = '';
+    if (statusEl) statusEl.replaceChildren();
     const bannerEl = document.getElementById('updateBanner');
     if (bannerEl) {
       bannerEl.className = 'update-banner banner-error';
@@ -1150,6 +1264,14 @@ function mergeSettings() {
 }
 
 // ==================== Init ====================
+/** input[switch] 在老 WebView 里没有原生语义，补 role="switch" 让读屏软件认出开关。 */
+function applySwitchRoles() {
+  if (typeof HTMLInputElement === 'undefined' || 'switch' in HTMLInputElement.prototype) return;
+  $$('input.toggle-input[type="checkbox"]').forEach((input) => {
+    if (!input.hasAttribute('role')) input.setAttribute('role', 'switch');
+  });
+}
+
 async function init() {
   if (window.i18n) {
     await window.i18n.init_start();

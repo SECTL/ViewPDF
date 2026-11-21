@@ -45,28 +45,64 @@ async function developer_options_init() {
 }
 
 function _tk(key) { return window.i18n?.format_translate(key) ?? key; }
-function devClearSelectOpts(select) {
-    const opts = select.querySelector('.sp-select-options') || document.querySelector('body > .sp-select-options[id="' + select.querySelector('.sp-select-options')?.id + '"]');
-    if (opts && opts.parentNode !== select) {
-        select.appendChild(opts);
+
+/**
+ * 纯 DOM 构造器：所有文本只能经 textContent / value 写入。
+ * 动态值（配置值、i18n 文案）永不拼进 HTML 字符串后交给浏览器解析。
+ */
+function _devEl(tag, cfg, children) {
+    const node = document.createElement(tag);
+    const c = cfg || {};
+    if (c.id !== undefined) node.id = c.id;
+    if (c.className !== undefined) node.className = c.className;
+    if (c.text !== undefined) node.textContent = c.text;
+    if (c.for !== undefined) node.htmlFor = c.for;
+    if (c.style !== undefined) node.style.cssText = c.style;
+    if (c.attrs) {
+        for (const k of Object.keys(c.attrs)) {
+            const v = c.attrs[k];
+            if (v === true) node.setAttribute(k, '');
+            else if (v !== false && v !== null && v !== undefined) node.setAttribute(k, String(v));
+        }
     }
-    if (opts) {
-        opts.classList.remove('sp-up');
-        opts.style.position = '';
-        opts.style.left = '';
-        opts.style.top = '';
-        opts.style.bottom = '';
-        opts.style.minWidth = '';
-        opts.style.opacity = '';
-        opts.style.visibility = '';
-        opts.style.transform = '';
+    if (children) {
+        for (const child of children) {
+            if (child === null || child === undefined) continue;
+            node.appendChild(typeof child === 'object' ? child : document.createTextNode(String(child)));
+        }
     }
+    return node;
+}
+
+/** 原生 <select>：键盘与读屏可直接使用，选项与当前值都来自 JS 数据而非模板串。 */
+function _devNativeSelect(id, presets, currentValue, currentLabel, parseFn) {
+    const select = _devEl('select', { id: id, className: 'sp-select-native' });
+    let matched = false;
+    presets.forEach(p => {
+        const opt = _devEl('option', { text: p.label });
+        opt.value = p.value;
+        if (parseFn(p.value) === currentValue) {
+            opt.selected = true;
+            matched = true;
+        }
+        select.appendChild(opt);
+    });
+    // 当前值不在预设表里时补一个选项，保持和旧自定义下拉一致的显示
+    if (!matched) {
+        const opt = _devEl('option', { text: currentLabel });
+        opt.value = String(currentValue);
+        opt.selected = true;
+        select.appendChild(opt);
+    }
+    return select;
 }
 
 function developer_options_show_main(currentWidthRatio, currentMaxScale, devModeEnabled, currentFrameDelta, currentTailDuration, ellipseStrokeEnabled) {
     const page = document.getElementById('pageDevOptions');
     if (!page) return;
     const devModeOn = devModeEnabled !== false;
+    // 事件回调单独取 invoke：它不在 developer_options_init 的词法作用域内
+    const invoke = window.__TAURI__?.core?.invoke;
 
     const _presetDefault = _tk('developer.presetDefault');
     const _presetDisabled = _tk('developer.presetDisabled');
@@ -111,64 +147,95 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
 
     const currentTailDurationVal = currentTailDuration ?? 30;
 
-    page.innerHTML = `
-        <h2 class="sp-page-title">${_tk('developer.title')}</h2>
-        <div class="sp-setting-item" style="border-bottom-color:var(--color-hairline, rgba(255,255,255,0.08));">
-            <span class="sp-setting-label">${_tk('developer.devMode')}</span>
-            <label class="sp-toggle-switch">
-                <input type="checkbox" id="devModeToggle"${devModeOn ? ' checked' : ''}>
-                <span class="sp-toggle-slider"></span>
-            </label>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.widthRatio')}</span>
-            <div class="sp-custom-select" id="devWidthRatioSelect">
-                <div class="sp-select-selected" id="devWidthRatioSelected">${currentWidthLabel}</div>
-                <div class="sp-select-options" id="devWidthRatioOptions">
-                    ${widthPresets.map(p => `
-                        <div class="sp-select-option${parseFloat(p.value) === currentWidthRatio ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
-                    `).join('')}
-                </div>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.maxScale')}</span>
-            <div class="sp-custom-select" id="devMaxScaleSelect">
-                <div class="sp-select-selected" id="devMaxScaleSelected">${currentScaleLabel}</div>
-                <div class="sp-select-options" id="devMaxScaleOptions">
-                    ${scalePresets.map(p => `
-                        <div class="sp-select-option${parseInt(p.value) === currentMaxScale ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
-                    `).join('')}
-                </div>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.frameDelta')}</span>
-            <div class="sp-custom-select" id="devFrameDeltaSelect">
-                <div class="sp-select-selected" id="devFrameDeltaSelected">${currentFrameDeltaLabel}</div>
-                <div class="sp-select-options" id="devFrameDeltaOptions">
-                    ${frameDeltaPresets.map(p => `
-                        <div class="sp-select-option${parseInt(p.value) === currentFrameDelta ? ' sp-selected' : ''}" data-value="${p.value}">${p.label}</div>
-                    `).join('')}
-                </div>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.tailDuration')}</span>
-            <div style="display:flex;align-items:center;gap:6px;">
-                <input type="number" id="devTailDurationInput" class="sp-dev-number-input" value="${currentTailDurationVal}" min="0" max="500" step="1">
-                <span style="font-size:12px;color:var(--color-muted, #888);">ms</span>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.docDetection')}</span>
-            <span id="devGoDetection" style="cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;">→</span>
-        </div>
-    `;
+    // 开发者模式复选框：原生 switch 布尔属性 + 旧浏览器 ARIA 回退
+    const devModeToggle = _devEl('input', { id: 'devModeToggle', attrs: { type: 'checkbox' } });
+    devModeToggle.setAttribute('switch', '');
+    if (devModeOn) devModeToggle.checked = true;
+    if (typeof HTMLInputElement !== 'undefined' && !('switch' in HTMLInputElement.prototype)) {
+        devModeToggle.setAttribute('role', 'switch');
+    }
+
+    // 一次性构造整页结构；不经 HTML 字符串解析
+    page.replaceChildren(
+        _devEl('h2', { className: 'sp-page-title', text: _tk('developer.title') }),
+
+        _devEl('div', {
+            className: 'sp-setting-item',
+            style: 'border-bottom-color:var(--color-hairline, rgba(255,255,255,0.08));'
+        }, [
+            _devEl('label', {
+                className: 'sp-setting-label',
+                for: 'devModeToggle',
+                text: _tk('developer.devMode')
+            }),
+            _devEl('label', { className: 'sp-toggle-switch' }, [
+                devModeToggle,
+                _devEl('span', { className: 'sp-toggle-slider' })
+            ])
+        ]),
+
+        _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('label', {
+                className: 'sp-setting-label',
+                for: 'devWidthRatioSelect',
+                text: _tk('developer.widthRatio')
+            }),
+            _devNativeSelect('devWidthRatioSelect', widthPresets, currentWidthRatio, currentWidthLabel, v => parseFloat(v))
+        ]),
+
+        _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('label', {
+                className: 'sp-setting-label',
+                for: 'devMaxScaleSelect',
+                text: _tk('developer.maxScale')
+            }),
+            _devNativeSelect('devMaxScaleSelect', scalePresets, currentMaxScale, currentScaleLabel, v => parseInt(v, 10))
+        ]),
+
+        _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('label', {
+                className: 'sp-setting-label',
+                for: 'devFrameDeltaSelect',
+                text: _tk('developer.frameDelta')
+            }),
+            _devNativeSelect('devFrameDeltaSelect', frameDeltaPresets, currentFrameDelta, currentFrameDeltaLabel, v => parseInt(v, 10))
+        ]),
+
+        _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('label', {
+                className: 'sp-setting-label',
+                for: 'devTailDurationInput',
+                text: _tk('developer.tailDuration')
+            }),
+            _devEl('div', { style: 'display:flex;align-items:center;gap:6px;' }, [
+                _devEl('input', {
+                    id: 'devTailDurationInput',
+                    className: 'sp-dev-number-input',
+                    attrs: {
+                        type: 'number',
+                        value: currentTailDurationVal,
+                        min: '0',
+                        max: '500',
+                        step: '1'
+                    }
+                }),
+                _devEl('span', { style: 'font-size:12px;color:var(--color-muted, #888);', text: 'ms' })
+            ])
+        ]),
+
+        _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('span', { className: 'sp-setting-label', text: _tk('developer.docDetection') }),
+            _devEl('span', {
+                id: 'devGoDetection',
+                style: 'cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;',
+                text: '→'
+            })
+        ])
+    );
 
     document.getElementById('devGoDetection')?.addEventListener('click', developer_options_show_detection);
 
-    // 初始化下拉框（复用 modules/settings/settings.js 的统一逻辑）
+    // 初始化设置面板里的其它自定义下拉框（开发者选项自身已改用原生 select）
     if (typeof window.settings_init_all_selects === 'function') {
         window.settings_init_all_selects();
     }
@@ -191,84 +258,48 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
     // 宽度比例选择器
     (function setup_width_ratio_select() {
         const select = document.getElementById('devWidthRatioSelect');
-        const selected = document.getElementById('devWidthRatioSelected');
-        const options = document.querySelectorAll('#devWidthRatioOptions .sp-select-option');
-
-        if (!select || !selected) return;
-
-        options.forEach(opt => {
-            opt.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const v = parseFloat(opt.dataset.value);
-                selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('sp-selected'));
-                opt.classList.add('sp-selected');
-                select.classList.remove('sp-open');
-                devClearSelectOpts(select);
-
-                if (window.DRAW_CONFIG) {
-                    window.DRAW_CONFIG.penMinWidthRatio = v;
-                }
-                if (invoke) {
-                    invoke('settings_save_all', { settings: { penMinWidthRatio: v, developerMode: true } });
-                }
-            });
+        if (!select) return;
+        select.addEventListener('change', () => {
+            const v = parseFloat(select.value);
+            if (isNaN(v)) return;
+            if (window.DRAW_CONFIG) {
+                window.DRAW_CONFIG.penMinWidthRatio = v;
+            }
+            if (invoke) {
+                invoke('settings_save_all', { settings: { penMinWidthRatio: v, developerMode: true } });
+            }
         });
     })();
 
     // 最大缩放选择器
     (function setup_max_scale_select() {
         const select = document.getElementById('devMaxScaleSelect');
-        const selected = document.getElementById('devMaxScaleSelected');
-        const options = document.querySelectorAll('#devMaxScaleOptions .sp-select-option');
-
-        if (!select || !selected) return;
-
-        options.forEach(opt => {
-            opt.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const v = parseInt(opt.dataset.value);
-                selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('sp-selected'));
-                opt.classList.add('sp-selected');
-                select.classList.remove('sp-open');
-                devClearSelectOpts(select);
-
-                if (window.DRAW_CONFIG) {
-                    window.DRAW_CONFIG.maxScaleImage = v;
-                }
-                if (invoke) {
-                    invoke('settings_save_all', { settings: { maxScaleImage: v, developerMode: true } });
-                }
-            });
+        if (!select) return;
+        select.addEventListener('change', () => {
+            const v = parseInt(select.value, 10);
+            if (isNaN(v)) return;
+            if (window.DRAW_CONFIG) {
+                window.DRAW_CONFIG.maxScaleImage = v;
+            }
+            if (invoke) {
+                invoke('settings_save_all', { settings: { maxScaleImage: v, developerMode: true } });
+            }
         });
     })();
 
     // 单帧手势位移上限选择器
     (function setup_frame_delta_select() {
         const select = document.getElementById('devFrameDeltaSelect');
-        const selected = document.getElementById('devFrameDeltaSelected');
-        const options = document.querySelectorAll('#devFrameDeltaOptions .sp-select-option');
-
-        if (!select || !selected) return;
-
-        options.forEach(opt => {
-            opt.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const v = parseInt(opt.dataset.value);
-                selected.textContent = opt.textContent;
-                options.forEach(o => o.classList.remove('sp-selected'));
-                opt.classList.add('sp-selected');
-                select.classList.remove('sp-open');
-                devClearSelectOpts(select);
-
-                if (window.DRAW_CONFIG) {
-                    window.DRAW_CONFIG.gestureFrameDelta = v;
-                }
-                if (invoke) {
-                    invoke('settings_save_all', { settings: { gestureFrameDelta: v, developerMode: true } });
-                }
-            });
+        if (!select) return;
+        select.addEventListener('change', () => {
+            const v = parseInt(select.value, 10);
+            if (isNaN(v)) return;
+            if (window.DRAW_CONFIG) {
+                window.DRAW_CONFIG.gestureFrameDelta = v;
+            }
+            if (invoke) {
+                invoke('settings_save_all', { settings: { gestureFrameDelta: v, developerMode: true } });
+            }
         });
     })();
 
@@ -328,33 +359,39 @@ function developer_options_show_detection() {
     const page = document.getElementById('pageDevOptions');
     if (!page) return;
 
-    page.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
-            <span id="devBackToMain" style="cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;">${_tk('developer.backToMain')}</span>
-            <h2 class="sp-page-title" style="margin:0;">${_tk('developer.detectionTitle')}</h2>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.detectMsOffice')}</span>
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span id="devWordStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="sp-btn-action" data-check="word">${_tk('developer.docDetection')}</button>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.detectWps')}</span>
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span id="devWpsStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="sp-btn-action" data-check="wps">${_tk('developer.docDetection')}</button>
-            </div>
-        </div>
-        <div class="sp-setting-item">
-            <span class="sp-setting-label">${_tk('developer.detectLibreOffice')}</span>
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span id="devLibreStatus" style="font-size:13px;color:var(--color-muted, #888);">${_tk('developer.notDetected')}</span>
-                <button class="sp-btn-action" data-check="libreoffice">${_tk('developer.docDetection')}</button>
-            </div>
-        </div>
-    `;
+    const notDetected = _tk('developer.notDetected');
+    const detectLabel = _tk('developer.docDetection');
+    const rows = [
+        { label: _tk('developer.detectMsOffice'), id: 'devWordStatus', check: 'word' },
+        { label: _tk('developer.detectWps'), id: 'devWpsStatus', check: 'wps' },
+        { label: _tk('developer.detectLibreOffice'), id: 'devLibreStatus', check: 'libreoffice' }
+    ];
+
+    page.replaceChildren(
+        _devEl('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:16px;' }, [
+            _devEl('span', {
+                id: 'devBackToMain',
+                style: 'cursor:pointer;font-size:18px;color:var(--color-muted, #888);padding:4px;',
+                text: _tk('developer.backToMain')
+            }),
+            _devEl('h2', { className: 'sp-page-title', style: 'margin:0;', text: _tk('developer.detectionTitle') })
+        ]),
+        ...rows.map(r => _devEl('div', { className: 'sp-setting-item' }, [
+            _devEl('span', { className: 'sp-setting-label', text: r.label }),
+            _devEl('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+                _devEl('span', {
+                    id: r.id,
+                    style: 'font-size:13px;color:var(--color-muted, #888);',
+                    text: notDetected
+                }),
+                _devEl('button', {
+                    className: 'sp-btn-action',
+                    attrs: { 'data-check': r.check },
+                    text: detectLabel
+                })
+            ])
+        ]))
+    );
 
     document.getElementById('devBackToMain')?.addEventListener('click', developer_options_init);
 

@@ -1,3 +1,5 @@
+@layer reset, base, theme, components, utilities;
+
 /* ===== 设置面板样式（原 src/settings.css，已整体内联；全局选择器已限定到 #settingsPanel）===== */
 /* ===== 通用重置（:where 保持零特异性，级联行为与原全局选择器一致，仅作用范围限于面板） ===== */
 :where(#settingsPanel, #settingsPanel *) {
@@ -6,32 +8,51 @@
     box-sizing: border-box;
 }
 
-:where(#settingsPanel) *::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
-}
-:where(#settingsPanel) *::-webkit-scrollbar-track {
-    background: transparent;
-}
-:where(#settingsPanel) *::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb, rgba(255, 255, 255, 0.15));
-    border-radius: 2px;
-}
-:where(#settingsPanel) *::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover, rgba(255, 255, 255, 0.3));
-}
 :where(#settingsPanel, #settingsPanel *) {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb, rgba(255, 255, 255, 0.15)) transparent;
+    scrollbar-width: auto;
+    scrollbar-color: var(--scrollbar-thumb, #6e6e6e) var(--scrollbar-track, transparent);
+}
+
+@supports not (scrollbar-color: auto) {
+    :where(#settingsPanel, #settingsPanel *) {
+        scrollbar-width: auto;
+    }
+    :where(#settingsPanel) *::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+    }
+    :where(#settingsPanel) *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    :where(#settingsPanel) *::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb, #6e6e6e);
+        border-radius: 4px;
+    }
+    :where(#settingsPanel) *::-webkit-scrollbar-thumb:hover {
+        background: var(--scrollbar-thumb-hover, #858585);
+    }
+}
+
+/* 内容文本可选中；按钮 / 开关 / 导航仍是 chrome */
+:where(#settingsPanel) button,
+:where(#settingsPanel) .sidebar-item,
+:where(#settingsPanel) .sp-option-group,
+:where(#settingsPanel) .sp-toggle-switch,
+:where(#settingsPanel) .sp-switch,
+:where(#settingsPanel) .sp-custom-select {
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 /* ===== 基础样式 ===== */
-#settingsPanel {
-    font-family: var(--font-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif);
-    background-color: var(--color-canvas, #2d2d2d);
-    color: var(--color-ink, #ffffff);
-    overflow: hidden;
-    user-select: none;
+@layer base {
+    #settingsPanel {
+        font-family: var(--font-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif);
+        background-color: var(--color-canvas, #2d2d2d);
+        color: var(--color-ink, #ffffff);
+        overflow: hidden;
+        container-type: inline-size;
+    }
 }
 
 :where(#settingsPanel) button {
@@ -104,8 +125,8 @@
 }
 
 .sp-btn-primary:active {
-    background: #d4d4d4;
-    border-color: #d4d4d4;
+    background: var(--color-primary-active-strong);
+    border-color: var(--color-primary-active-strong);
 }
 
 .sp-btn-secondary {
@@ -157,16 +178,16 @@
 }
 
 .sp-btn-action.delete {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgb(var(--color-error-rgb) / 0.1);
     color: var(--color-error);
 }
 
 .sp-btn-action.delete:hover {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgb(var(--color-error-rgb) / 0.15);
 }
 
 .sp-btn-action.delete:active {
-    background: rgba(239, 68, 68, 0.2);
+    background: rgb(var(--color-error-rgb) / 0.2);
 }
 
 .sp-btn-danger {
@@ -176,13 +197,13 @@
 }
 
 .sp-btn-danger:hover {
-    background: #dc2626;
-    border-color: #dc2626;
+    background: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
 }
 
 .sp-btn-danger:active {
-    background: #b91c1c;
-    border-color: #b91c1c;
+    background: var(--color-danger-active);
+    border-color: var(--color-danger-active);
 }
 
 .sp-btn-ghost {
@@ -234,8 +255,8 @@
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
     pointer-events: none;
     z-index: 0;
     opacity: 0;
@@ -404,12 +425,12 @@
 }
 
 .sp-btn-clear-cache:hover {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgb(var(--color-error-rgb) / 0.1);
     color: var(--color-error);
 }
 
 .sp-btn-clear-cache:active {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgb(var(--color-error-rgb) / 0.15);
 }
 
 /* ===== 设置页面 ===== */
@@ -430,18 +451,20 @@
     padding-top: 60px;
 }
 
-#settingsPanel {
-    opacity: 1 !important;
-    visibility: visible !important;
-    pointer-events: auto !important;
-    z-index: 15 !important;
-    background: var(--color-canvas) !important;
-    border: none !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    gap: 0 !important;
-    padding: 0 !important;
-    min-width: auto !important;
+@layer utilities {
+    #settingsPanel {
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto;
+        z-index: 15;
+        background: var(--color-canvas);
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        gap: 0;
+        padding: 0;
+        min-width: auto;
+    }
 }
 
 #pageAbout.sp-active {
@@ -916,7 +939,7 @@
 }
 
 .sp-color-picker-btn:active {
-    background: #d4d4d4;
+    background: var(--color-primary-active-strong);
 }
 
 .sp-color-picker-btn-cancel {
@@ -1080,7 +1103,7 @@
 }
 
 .sp-select-option.sp-selected {
-    background: rgba(59, 130, 246, 0.2);
+    background: rgb(var(--color-brand-accent-rgb) / 0.2);
     color: var(--color-brand-accent, #4a9eff);
 }
 
@@ -1148,7 +1171,7 @@
     padding: 10px 20px;
     height: 40px;
     width: 100%;
-    background: rgba(239, 68, 68, 0.1);
+    background: rgb(var(--color-error-rgb) / 0.1);
     border: none;
     border-radius: var(--rounded-md, 8px);
     color: var(--color-error);
@@ -1159,14 +1182,29 @@
 }
 
 .sp-btn-reset:hover {
-    background: rgba(239, 68, 68, 0.15);
+    background: rgb(var(--color-error-rgb) / 0.15);
 }
 
 .sp-btn-reset:active {
-    background: rgba(239, 68, 68, 0.2);
+    background: rgb(var(--color-error-rgb) / 0.2);
 }
 
 /* ===== 模态框 ===== */
+/* 同时支持 <div>（sp-active 切换）与 <dialog>（showModal()）两种形态 */
+dialog.sp-modal-overlay {
+    margin: 0;
+    max-width: none;
+    max-height: none;
+    border: none;
+    background: transparent;
+    overscroll-behavior: contain;
+}
+dialog.sp-modal-overlay[open] {
+    display: flex;
+}
+dialog.sp-modal-overlay::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
 .sp-modal-overlay {
     position: fixed;
     top: 0;
@@ -1260,8 +1298,8 @@
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.7);
     display: flex;
     justify-content: center;
@@ -1343,8 +1381,8 @@
 }
 
 .sp-settings-dialog-btn:active {
-    background: #d4d4d4;
-    border-color: #d4d4d4;
+    background: var(--color-primary-active-strong);
+    border-color: var(--color-primary-active-strong);
 }
 
 /* ===== 更新页面 (OOBE 风格) ===== */
@@ -2342,8 +2380,8 @@
 }
 
 .sp-switch {
-    --secondary-container: #3a4b39;
-    --primary: #84da89;
+    --secondary-container: var(--switch-track-active, #3a4b39);
+    --primary: var(--switch-active, #84da89);
     font-size: 14px;
     position: relative;
     display: inline-block;
@@ -2365,7 +2403,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: #313033;
+    background-color: var(--switch-track, #313033);
     transition: background-color 0.2s;
     border-radius: 30px;
     width: auto;
@@ -2382,7 +2420,7 @@
     border-radius: 20px;
     left: 0.2em;
     bottom: 0.2em;
-    background-color: #aeaaae;
+    background-color: var(--switch-thumb, #aeaaae);
     transition: transform 0.4s;
 }
 
@@ -2669,22 +2707,22 @@
 
 .sp-theme-card-btn-apply {
     color: var(--color-brand-accent, #3b82f6);
-    border-color: rgba(59, 130, 246, 0.2);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.2);
 }
 
 .sp-theme-card-btn-apply:hover {
-    background: rgba(59, 130, 246, 0.1);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: rgb(var(--color-brand-accent-rgb) / 0.1);
+    border-color: rgb(var(--color-brand-accent-rgb) / 0.3);
 }
 
 .sp-theme-card-btn-delete {
     color: var(--color-error, #ef4444);
-    border-color: rgba(239, 68, 68, 0.2);
+    border-color: rgb(var(--color-error-rgb) / 0.2);
 }
 
 .sp-theme-card-btn-delete:hover {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.3);
+    background: rgb(var(--color-error-rgb) / 0.1);
+    border-color: rgb(var(--color-error-rgb) / 0.3);
 }
 
 .sp-theme-card-name {
@@ -2712,4 +2750,75 @@
 
 .sp-theme-card.sp-selected .sp-theme-card-check {
     opacity: 1;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* 内容文本可选中（设置面板 / OOBE 共用） */
+.sp-setting-label,
+.sp-setting-hint,
+.sp-update-text,
+.sp-update-channel-hint,
+.sp-release-notes,
+.sp-release-notes *,
+.sp-model-description,
+.sp-model-description *,
+.sp-update-build-info,
+#cacheSize {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* OOBE 选项按钮里的勾选提示：固定宽度，出现/消失不抖动 */
+.sp-check {
+    display: inline-block;
+    width: 14px;
+    min-width: 14px;
+    margin-left: 4px;
+    font-size: 11px;
+    line-height: 1;
+    text-align: center;
+    color: var(--color-brand-accent, var(--color-primary));
+    vertical-align: baseline;
+}
+
+/* 主题卡片网格：随容器宽度自适应 */
+@container (max-width: 480px) {
+    .sp-theme-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    }
+}
+
+@media (forced-colors: active) {
+    .sp-modal-dialog,
+    .sp-setting-item,
+    .sp-option-group,
+    .card,
+    .sp-btn-base,
+    .sp-btn-primary,
+    .sp-btn-secondary,
+    .sp-btn-action,
+    .sp-btn-danger,
+    button {
+        border-color: CanvasText;
+        background: Canvas;
+        color: CanvasText;
+        box-shadow: none;
+    }
+    .sp-option-btn[aria-pressed="true"],
+    .sp-option-btn.sp-active {
+        border-color: Highlight;
+        color: Highlight;
+    }
+    :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 }

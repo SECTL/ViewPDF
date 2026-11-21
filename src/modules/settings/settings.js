@@ -32,6 +32,24 @@ export async function init_settings_panel() {
 async function initSettings() {
     await window.i18n?.init_start?.();
 
+    // ==================== 模态框显示 / 隐藏 ====================
+    // 原生 <dialog>.showModal() 是首选；旧版 WebView 没有时退回 sp-active class 切换。
+    // 静态的 #modalOverlay / #restartModal 与运行时创建的确认框共用这一对函数。
+    function settings_show_modal(el) {
+        if (!el) return;
+        if (typeof el.showModal === 'function' && !el.open) {
+            try { el.showModal(); return; } catch (_) { /* 落到 class 切换 */ }
+        }
+        el.classList.add('sp-active');
+    }
+    function settings_hide_modal(el) {
+        if (!el) return;
+        if (typeof el.close === 'function' && el.open) {
+            try { el.close(); return; } catch (_) { /* 落到 class 切换 */ }
+        }
+        el.classList.remove('sp-active');
+    }
+
     // ==================== 自定义弹窗函数 ====================
     function settings_show_dialog(title, message, type = 'info') {
         const existing = document.getElementById('settingsDialog');
@@ -40,21 +58,32 @@ async function initSettings() {
         const dialog = document.createElement('div');
         dialog.id = 'settingsDialog';
         dialog.className = 'sp-settings-dialog-overlay';
-        
+
         const icon = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
-        
-        dialog.innerHTML = `
-            <div class="sp-settings-dialog">
-                <div class="sp-settings-dialog-icon">${icon}</div>
-                <div class="sp-settings-dialog-title">${title}</div>
-                <div class="sp-settings-dialog-message">${message}</div>
-                <button class="sp-settings-dialog-btn" id="settingsDialogClose">${window.i18n?.format_translate('common.confirm') || '确定'}</button>
-            </div>
-        `;
+
+        // 标题/消息来自 IPC 错误对象或用户主题名 —— 一律走 textContent，绝不拼进 HTML。
+        const card = document.createElement('div');
+        card.className = 'sp-settings-dialog';
+        const iconEl = document.createElement('div');
+        iconEl.className = 'sp-settings-dialog-icon';
+        iconEl.textContent = icon;
+        const titleEl = document.createElement('div');
+        titleEl.className = 'sp-settings-dialog-title';
+        titleEl.textContent = title == null ? '' : String(title);
+        const messageEl = document.createElement('div');
+        messageEl.className = 'sp-settings-dialog-message';
+        messageEl.textContent = message == null ? '' : String(message);
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'sp-settings-dialog-btn';
+        closeBtn.id = 'settingsDialogClose';
+        closeBtn.type = 'button';
+        closeBtn.textContent = window.i18n?.format_translate('common.confirm') || '确定';
+
+        card.append(iconEl, titleEl, messageEl, closeBtn);
+        dialog.appendChild(card);
         document.body.appendChild(dialog);
-        
-        const closeBtn = document.getElementById('settingsDialogClose');
-        closeBtn?.addEventListener('click', () => dialog.remove());
+
+        closeBtn.addEventListener('click', () => dialog.remove());
         dialog.addEventListener('click', (e) => {
             if (e.target === dialog) dialog.remove();
         });
@@ -71,29 +100,51 @@ async function initSettings() {
             const existing = document.querySelector('.sp-modal-overlay.sp-confirm-dialog');
             if (existing) existing.remove();
             
-            const overlay = document.createElement('div');
+            const overlay = document.createElement('dialog');
             overlay.className = 'sp-modal-overlay sp-confirm-dialog';
-            overlay.innerHTML = `
-                <div class="sp-modal-dialog">
-                    <div class="sp-modal-title">${title}</div>
-                    <div class="sp-modal-message">${message}</div>
-                    <div class="sp-modal-buttons">
-                        <button class="sp-modal-btn sp-modal-btn-cancel" id="confirmCancel">${window.i18n?.format_translate('common.cancel') || '取消'}</button>
-                        <button class="sp-modal-btn sp-modal-btn-confirm" id="confirmOk">${window.i18n?.format_translate('common.confirm') || '确认'}</button>
-                    </div>
-                </div>
-            `;
+
+            const card = document.createElement('div');
+            card.className = 'sp-modal-dialog';
+            const titleEl = document.createElement('div');
+            titleEl.className = 'sp-modal-title';
+            titleEl.textContent = title == null ? '' : String(title);
+            const messageEl = document.createElement('div');
+            messageEl.className = 'sp-modal-message';
+            messageEl.textContent = message == null ? '' : String(message);
+            const buttons = document.createElement('div');
+            buttons.className = 'sp-modal-buttons';
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'sp-modal-btn sp-modal-btn-cancel';
+            cancelBtn.id = 'confirmCancel';
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = window.i18n?.format_translate('common.cancel') || '取消';
+            const okBtn = document.createElement('button');
+            okBtn.className = 'sp-modal-btn sp-modal-btn-confirm';
+            okBtn.id = 'confirmOk';
+            okBtn.type = 'button';
+            okBtn.textContent = window.i18n?.format_translate('common.confirm') || '确认';
+            buttons.append(cancelBtn, okBtn);
+            card.append(titleEl, messageEl, buttons);
+            overlay.appendChild(card);
             document.body.appendChild(overlay);
-            requestAnimationFrame(() => overlay.classList.add('sp-active'));
-            
+            settings_show_modal(overlay);
+
             const cleanup = (result) => {
-                overlay.classList.remove('sp-active');
-                setTimeout(() => overlay.remove(), 300);
+                settings_hide_modal(overlay);
+                // 等关闭动画结束再移除节点；动画 API 缺失或卡住时最多等 2s。
+                // resolve 的时机保持原样：同步返回，不跟动画走。
+                const animated = overlay.querySelector('.sp-modal-dialog') || overlay;
+                const finished = (animated && typeof animated.getAnimations === 'function')
+                    ? animated.getAnimations().map(a => a.finished) : [];
+                Promise.race([
+                    Promise.allSettled(finished),
+                    new Promise(r => setTimeout(r, 2000)),
+                ]).then(() => overlay.remove());
                 resolve(result);
             };
-            
-            overlay.querySelector('#confirmOk').addEventListener('click', () => cleanup(true));
-            overlay.querySelector('#confirmCancel').addEventListener('click', () => cleanup(false));
+
+            okBtn.addEventListener('click', () => cleanup(true));
+            cancelBtn.addEventListener('click', () => cleanup(false));
             overlay.addEventListener('click', (e) => {
                 if (e.target === overlay) cleanup(false);
             });
@@ -472,7 +523,9 @@ async function initSettings() {
                     blackboardToggle.checked = blackboardEnabled;
                 }
 
-                const telemetryEnabled = settings.telemetryEnabled !== false;
+                // 默认关闭：只有显式开启过（=== true）才回显为开。
+                // 与 telemetry-api.js 的默认判据需保持一致；该文件由遥测 agent 负责。
+                const telemetryEnabled = settings.telemetryEnabled === true;
                 const telemetryToggle = document.getElementById('telemetryToggle');
                 if (telemetryToggle) {
                     telemetryToggle.checked = telemetryEnabled;
@@ -580,10 +633,12 @@ async function initSettings() {
         const grid = document.getElementById('themeGrid');
         if (!grid) return;
 
-        grid.innerHTML = '';
+        grid.replaceChildren();
 
         const builtinNames = ['com.viewstage.theme.dark', 'com.viewstage.theme.simplify'];
         const userThemes = [];
+        // 主题名同时进预览图路径与 IPC 参数：只接受安全文件名字符。
+        const SAFE_THEME_NAME = /^[A-Za-z0-9._-]+$/;
 
         themes.forEach(({ name, display_name, canvas_bg, text_color }) => {
             const card = document.createElement('div');
@@ -592,35 +647,67 @@ async function initSettings() {
 
             const isLight = canvas_bg === '#ffffff' || canvas_bg === '#fff';
             const dotColor = isLight ? '#1a1a1a' : canvas_bg;
+            const bgColor = typeof canvas_bg === 'string' ? canvas_bg : '';
+            const fgColor = typeof text_color === 'string' ? text_color : '';
 
             const isBuiltin = builtinNames.includes(name);
-            const previewImg = isBuiltin
-                ? `<img class="theme-card-preview-img" src="themes/${name}/preview.png" alt="${display_name}" loading="lazy">`
-                : '';
 
-            const fallbackHtml = !previewImg ? `
-                <div class="sp-theme-card-preview-bar" style="background: ${text_color}"></div>
-                <span class="sp-theme-card-preview-text" style="color: ${text_color}">Aa</span>
-                <div class="sp-theme-card-preview-dot" style="background: ${dotColor}"></div>
-            ` : '';
+            const previewBox = document.createElement('div');
+            previewBox.className = 'sp-theme-card-preview';
+            previewBox.style.backgroundColor = bgColor;
 
-            card.innerHTML = `
-                <div class="sp-theme-card-preview" style="background: ${canvas_bg}">
-                    ${previewImg}
-                    ${fallbackHtml}
-                </div>
-                <div class="sp-theme-card-info">
-                    <div class="sp-theme-card-info-main">
-                        <span class="sp-theme-card-name">${display_name}</span>
-                        <span class="sp-theme-card-check">✓</span>
-                    </div>
-                </div>
-                <div class="sp-theme-card-actions">
-                    <button class="sp-theme-card-btn sp-theme-card-btn-apply" data-action="apply">${window.i18n?.format_translate('settings.apply') || '应用'}</button>
-                    ${isBuiltin ? '' : `<button class="sp-theme-card-btn sp-theme-card-btn-delete" data-action="delete">${window.i18n?.format_translate('settings.delete') || '删除'}</button>`}
-                </div>
-            `;
+            if (isBuiltin && SAFE_THEME_NAME.test(name)) {
+                const img = document.createElement('img');
+                img.className = 'theme-card-preview-img';
+                img.src = 'themes/' + name + '/preview.png';
+                img.alt = display_name == null ? '' : String(display_name);
+                img.loading = 'lazy';
+                previewBox.appendChild(img);
+            } else {
+                const bar = document.createElement('div');
+                bar.className = 'sp-theme-card-preview-bar';
+                bar.style.background = fgColor;
+                const text = document.createElement('span');
+                text.className = 'sp-theme-card-preview-text';
+                text.style.color = fgColor;
+                text.textContent = 'Aa';
+                const dot = document.createElement('div');
+                dot.className = 'sp-theme-card-preview-dot';
+                dot.style.background = dotColor;
+                previewBox.append(bar, text, dot);
+            }
 
+            const info = document.createElement('div');
+            info.className = 'sp-theme-card-info';
+            const infoMain = document.createElement('div');
+            infoMain.className = 'sp-theme-card-info-main';
+            const nameEl = document.createElement('span');
+            nameEl.className = 'sp-theme-card-name';
+            nameEl.textContent = display_name == null ? '' : String(display_name);
+            const check = document.createElement('span');
+            check.className = 'sp-theme-card-check';
+            check.textContent = '✓';
+            infoMain.append(nameEl, check);
+            info.appendChild(infoMain);
+
+            const actions = document.createElement('div');
+            actions.className = 'sp-theme-card-actions';
+            const applyBtn = document.createElement('button');
+            applyBtn.className = 'sp-theme-card-btn sp-theme-card-btn-apply';
+            applyBtn.type = 'button';
+            applyBtn.dataset.action = 'apply';
+            applyBtn.textContent = window.i18n?.format_translate('settings.apply') || '应用';
+            actions.appendChild(applyBtn);
+            if (!isBuiltin) {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'sp-theme-card-btn sp-theme-card-btn-delete';
+                deleteBtn.type = 'button';
+                deleteBtn.dataset.action = 'delete';
+                deleteBtn.textContent = window.i18n?.format_translate('settings.delete') || '删除';
+                actions.appendChild(deleteBtn);
+            }
+
+            card.append(previewBox, info, actions);
             grid.appendChild(card);
 
             if (!isBuiltin) {
@@ -633,11 +720,16 @@ async function initSettings() {
             const { invoke } = window.__TAURI__.core;
             userThemes.forEach(({ card, name }) => {
                 invoke('theme_get_preview', { name }).then(b64 => {
-                    if (!b64) return;
+                    if (!b64 || typeof b64 !== 'string' || !b64.startsWith('data:image/')) return;
                     const preview = card.querySelector('.sp-theme-card-preview');
                     if (!preview) return;
                     preview.style.background = '';
-                    preview.innerHTML = `<img class="sp-theme-card-preview-img" src="${b64}" alt="" loading="lazy">`;
+                    const img = document.createElement('img');
+                    img.className = 'sp-theme-card-preview-img';
+                    img.src = b64;
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    preview.replaceChildren(img);
                 }).catch(e => console.warn('加载主题预览失败:', e));
             });
         }
@@ -659,6 +751,8 @@ async function initSettings() {
     function settings_init_all_selects() {
         function closeOneSelect(s) {
             s.classList.remove('sp-open');
+            const selEl = s.querySelector('.sp-select-selected');
+            if (selEl) selEl.setAttribute('aria-expanded', 'false');
             const opts = document.querySelector('body > .sp-select-options[data-owner="' + s.dataset.selectId + '"]');
             if (opts) {
                 opts.style.opacity = '0';
@@ -696,6 +790,7 @@ async function initSettings() {
                     if (s !== select) closeOneSelect(s);
                 });
                 const isOpen = select.classList.toggle('sp-open');
+                selected.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
                 if (opts) {
                     if (isOpen) {
                         const rect = selected.getBoundingClientRect();
@@ -740,13 +835,182 @@ async function initSettings() {
                 }
             });
         });
+
+        // 完整 combobox 语义 + 键盘操作（ARIA 1.2 pattern）。
+        // 这些下拉框用了 portal + 动态 i18n，且 window.settings_init_all_selects
+        // 还被开发者选项复用，所以原地增强而不是换成原生 <select>。
+        document.querySelectorAll('.sp-custom-select').forEach(select => {
+            if (select.dataset.comboboxReady) return;
+            const selected = select.querySelector('.sp-select-selected');
+            const opts = select.querySelector('.sp-select-options');
+            if (!selected || !opts) return;
+            select.dataset.comboboxReady = 'true';
+
+            const optsId = opts.id || ((select.id || 'sel') + 'Options');
+            if (!opts.id) opts.id = optsId;
+            selected.setAttribute('role', 'combobox');
+            selected.setAttribute('tabindex', '0');
+            selected.setAttribute('aria-haspopup', 'listbox');
+            selected.setAttribute('aria-controls', optsId);
+            selected.setAttribute('aria-expanded', 'false');
+            opts.setAttribute('role', 'listbox');
+
+            const label = select.closest('.sp-setting-item')?.querySelector('.sp-setting-label');
+            if (label) {
+                if (!label.id) label.id = (select.id || optsId) + 'Label';
+                selected.setAttribute('aria-labelledby', label.id);
+                opts.setAttribute('aria-labelledby', label.id);
+            }
+
+            const options = Array.from(opts.querySelectorAll('.sp-select-option'));
+            options.forEach((opt, i) => {
+                opt.id = optsId + '-opt-' + i;
+                opt.setAttribute('role', 'option');
+                opt.setAttribute('aria-selected', opt.classList.contains('sp-selected') ? 'true' : 'false');
+            });
+            const syncSelected = () => options.forEach(opt =>
+                opt.setAttribute('aria-selected', opt.classList.contains('sp-selected') ? 'true' : 'false'));
+            opts.addEventListener('click', () => queueMicrotask(syncSelected));
+
+            const selectedIndex = () => {
+                const i = options.findIndex(o => o.classList.contains('sp-selected'));
+                return i >= 0 ? i : 0;
+            };
+            const setActive = (i) => {
+                const opt = options[i];
+                if (!opt) return;
+                selected.setAttribute('aria-activedescendant', opt.id);
+                opt.scrollIntoView?.({ block: 'nearest' });
+            };
+            const open = () => {
+                if (select.classList.contains('sp-open')) return;
+                selected.click();
+                setActive(selectedIndex());
+            };
+            const close = () => {
+                if (!select.classList.contains('sp-open')) return;
+                selected.click();
+                selected.removeAttribute('aria-activedescendant');
+            };
+
+            selected.addEventListener('keydown', (e) => {
+                const isOpen = select.classList.contains('sp-open');
+                switch (e.key) {
+                    case 'ArrowDown':
+                    case 'ArrowUp':
+                        e.preventDefault();
+                        if (!isOpen) { open(); break; }
+                        {
+                            const dir = e.key === 'ArrowDown' ? 1 : -1;
+                            const cur = parseInt(selected.dataset.activeIndex ?? selectedIndex(), 10);
+                            const next = (cur + dir + options.length) % options.length;
+                            selected.dataset.activeIndex = next;
+                            setActive(next);
+                        }
+                        break;
+                    case 'Home':
+                    case 'End':
+                        e.preventDefault();
+                        if (!isOpen) open();
+                        {
+                            const next = e.key === 'Home' ? 0 : options.length - 1;
+                            selected.dataset.activeIndex = next;
+                            setActive(next);
+                        }
+                        break;
+                    case 'Enter':
+                    case ' ':
+                        e.preventDefault();
+                        if (!isOpen) open();
+                        else {
+                            const i = parseInt(selected.dataset.activeIndex ?? selectedIndex(), 10);
+                            options[i]?.click();
+                            close();
+                        }
+                        break;
+                    case 'Escape':
+                        if (isOpen) { e.preventDefault(); close(); }
+                        break;
+                    case 'Tab':
+                        if (isOpen) close();
+                        break;
+                    default:
+                        break;
+                }
+            });
+
+            selected.addEventListener('blur', () => {
+                setTimeout(() => {
+                    const active = document.activeElement;
+                    if (select.classList.contains('sp-open') && !select.contains(active) && !opts.contains(active)) {
+                        close();
+                    }
+                }, 0);
+            });
+        });
     }
     window.settings_init_all_selects = settings_init_all_selects;
     settings_init_all_selects();
 
+    // 选项按钮组 = 单选语义；开关复选框在不支持 switch 属性的 WebView 里补 role。
+    function settings_init_a11y() {
+        if (!('switch' in HTMLInputElement.prototype)) {
+            document.querySelectorAll('input[type="checkbox"][switch]').forEach(el => {
+                if (!el.hasAttribute('role')) el.setAttribute('role', 'switch');
+            });
+        }
+        document.querySelectorAll('.sp-option-group').forEach(group => {
+            if (group.dataset.a11yReady) return;
+            group.dataset.a11yReady = 'true';
+            group.setAttribute('role', 'radiogroup');
+            const label = group.closest('.sp-setting-item')?.querySelector('.sp-setting-label');
+            if (label) {
+                if (!label.id) label.id = (group.id || 'spGroup') + 'Label';
+                group.setAttribute('aria-labelledby', label.id);
+            }
+            const btns = Array.from(group.querySelectorAll('.sp-option-btn'));
+            btns.forEach((btn, i) => {
+                btn.setAttribute('role', 'radio');
+                const on = btn.classList.contains('sp-active');
+                btn.setAttribute('aria-checked', on ? 'true' : 'false');
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+                btn.tabIndex = on ? 0 : -1;
+                btn.addEventListener('keydown', (e) => {
+                    let next = -1;
+                    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % btns.length;
+                    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (i - 1 + btns.length) % btns.length;
+                    else if (e.key === 'Home') next = 0;
+                    else if (e.key === 'End') next = btns.length - 1;
+                    else return;
+                    e.preventDefault();
+                    btns[next].focus();
+                    btns[next].click(); // 复用已有的保存 / 应用处理器
+                });
+            });
+            const sync = () => {
+                const anyActive = btns.some(b => b.classList.contains('sp-active'));
+                btns.forEach(b => {
+                    const on = b.classList.contains('sp-active');
+                    b.setAttribute('aria-checked', on ? 'true' : 'false');
+                    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+                    // 没有回显值时保持全部可达，别让整组退出 Tab 顺序。
+                    b.tabIndex = (!anyActive || on) ? 0 : -1;
+                });
+            };
+            sync();
+            if (typeof MutationObserver !== 'undefined') {
+                const obs = new MutationObserver(sync);
+                btns.forEach(b => obs.observe(b, { attributes: true, attributeFilter: ['class'] }));
+            }
+        });
+    }
+    settings_init_a11y();
+
     // 辅助函数：关闭下拉框并归位 portal 元素
     function closeSelect(selectEl) {
         selectEl.classList.remove('sp-open');
+        const selEl = selectEl.querySelector('.sp-select-selected');
+        if (selEl) selEl.setAttribute('aria-expanded', 'false');
         const opts = selectEl.querySelector('.sp-select-options') || document.querySelector('body > .sp-select-options[data-owner="' + selectEl.dataset.selectId + '"]');
         if (opts && opts.parentNode !== selectEl) {
             selectEl.appendChild(opts);
@@ -787,7 +1051,7 @@ async function initSettings() {
                         window.settings_refresh_perf_tier_hint?.();
                     }
                     const restartModal = document.getElementById('restartModal');
-                    if (restartModal) restartModal.classList.add('sp-active');
+                    if (restartModal) settings_show_modal(restartModal);
                 } else {
                     settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', window.i18n?.format_translate('settings.saveFailedRetry') || '保存设置失败，请重试', 'error');
                 }
@@ -823,7 +1087,7 @@ async function initSettings() {
                 const restartModal = document.getElementById('restartModal');
                 const modalMessage = restartModal?.querySelector('.sp-modal-message');
                 if (modalMessage) modalMessage.textContent = window.i18n?.format_translate('settings.dprChanged') || '画面精度已更改，建议重启应用以确保完全生效。';
-                if (restartModal) restartModal.classList.add('sp-active');
+                if (restartModal) settings_show_modal(restartModal);
             } else {
                 settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', window.i18n?.format_translate('settings.saveFailedRetry') || '保存设置失败，请重试', 'error');
             }
@@ -922,7 +1186,7 @@ async function initSettings() {
     
     function settings_init_color_picker_presets() {
         if (!colorPickerPresets) return;
-        colorPickerPresets.innerHTML = '';
+        colorPickerPresets.replaceChildren();
         PRESET_COLORS.forEach(color => {
             const preset = document.createElement('div');
             preset.className = 'sp-color-picker-preset';
@@ -1473,7 +1737,7 @@ async function initSettings() {
                     modalMessage.textContent = window.i18n?.format_translate('settings.themeChanged') || 'Theme changed, restart to apply.';
                 }
                 if (restartModal) {
-                    restartModal.classList.add('sp-active');
+                    settings_show_modal(restartModal);
                 }
             }
         });
@@ -1628,17 +1892,17 @@ async function initSettings() {
                 modalMessage.textContent = window.i18n?.format_translate('settings.resetWarning') || '确定要重置应用吗？这将删除所有设置并重启应用。';
             }
             modalConfirm.dataset.action = 'reset';
-            modalOverlay.classList.add('sp-active');
+            settings_show_modal(modalOverlay);
         });
         
         modalCancel.addEventListener('click', () => {
-            modalOverlay.classList.remove('sp-active');
+            settings_hide_modal(modalOverlay);
             delete modalConfirm.dataset.action;
         });
         
         modalOverlay.addEventListener('click', (e) => {
             if (e.target === modalOverlay) {
-                modalOverlay.classList.remove('sp-active');
+                settings_hide_modal(modalOverlay);
                 delete modalConfirm.dataset.action;
             }
         });
@@ -1653,7 +1917,7 @@ async function initSettings() {
             } catch (error) {
                 console.error('重置失败:', error);
                 settings_show_dialog(window.i18n?.format_translate('settings.saveFailed') || '保存失败', String(error), 'error');
-                modalOverlay.classList.remove('sp-active');
+                settings_hide_modal(modalOverlay);
             }
         });
     }
@@ -1800,7 +2064,7 @@ async function initSettings() {
             if (modalMessage) {
                 modalMessage.textContent = window.i18n?.format_translate('settings.languageChanged') || '需要重启应用才能生效。';
             }
-            if (restartModal) restartModal.classList.add('sp-active');
+            if (restartModal) settings_show_modal(restartModal);
         });
     }
 
@@ -1834,12 +2098,12 @@ async function initSettings() {
     
     if (restartModal && window.__TAURI__) {
         restartLater.addEventListener('click', () => {
-            restartModal.classList.remove('sp-active');
+            settings_hide_modal(restartModal);
         });
         
         restartModal.addEventListener('click', (e) => {
             if (e.target === restartModal) {
-                restartModal.classList.remove('sp-active');
+                settings_hide_modal(restartModal);
             }
         });
         
@@ -1869,7 +2133,7 @@ async function initSettings() {
     function settings_create_blobs() {
         if (!auroraBg) return;
         
-        auroraBg.innerHTML = '';
+        auroraBg.replaceChildren();
         blobs = [];
         
         const blobCount = 5;
@@ -2044,7 +2308,7 @@ async function initSettings() {
         _upd.banner.style.display = 'none';
         _upd.banner.className = 'sp-update-banner';
         _upd.notes.style.display = 'none';
-        _upd.notes.innerHTML = '';
+        _upd.notes.replaceChildren();
         _upd.progress.style.display = 'none';
         _upd.btnDownload.style.display = 'none';
         _upd.appInfo.style.display = 'none';
@@ -2088,7 +2352,14 @@ async function initSettings() {
         if (_updateChecked) {
             _showUpdateResult(_updateResult);
         } else {
-            _upd.status.innerHTML = '<div class="sp-spinner"></div><div class="sp-update-text">' + (window.i18n?.format_translate('settings.checkingForUpdates') || '检查更新...') + '</div>';
+            // 无确定进度的 <progress> 即 indeterminate，等价于原 .sp-spinner。
+            const spinner = document.createElement('progress');
+            spinner.className = 'sp-spinner';
+            spinner.setAttribute('aria-label', 'Loading');
+            const checkingText = document.createElement('div');
+            checkingText.className = 'sp-update-text';
+            checkingText.textContent = window.i18n?.format_translate('settings.checkingForUpdates') || '检查更新...';
+            _upd.status.replaceChildren(spinner, checkingText);
             _doCheckUpdate();
         }
     }
@@ -2107,7 +2378,7 @@ async function initSettings() {
             console.warn('Update check failed:', err);
             _updateChecked = true;
             _updateResult = null;
-            _upd.status.innerHTML = '';
+            _upd.status.replaceChildren();
             _upd.banner.className = 'update-banner banner-error';
             _upd.banner.textContent = err
                 ? String(err)
@@ -2116,8 +2387,85 @@ async function initSettings() {
         }
     }
 
+    /**
+     * 远端更新说明来自分发 API，属于不可信输入。写进 DOM 前必须过白名单。
+     * 三档引擎、同一份白名单：原生 Sanitizer(setHTML) → DOMPurify → 本地
+     * DOMParser 白名单（无网络、无依赖，自己实现）。绝不把原始字符串塞进 innerHTML。
+     */
+    const CHANGELOG_ELEMENTS = ['H3', 'H4', 'P', 'UL', 'OL', 'LI', 'STRONG', 'CODE', 'A', 'BR', 'EM'];
+    const CHANGELOG_ATTRS = ['href', 'title'];
+
+    function settings_sanitize_fragment(input) {
+        const raw = typeof input === 'string' ? input : '';
+        const doc = new DOMParser().parseFromString(raw, 'text/html');
+        const allowed = new Set(CHANGELOG_ELEMENTS);
+        const frag = document.createDocumentFragment();
+
+        function safeUrl(value) {
+            // 先去掉控制字符（java\nscript: 这类绕过），再走正向白名单。
+            const v = String(value).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+            return /^(?:https?:\/\/|mailto:|\/|\.{1,2}\/|#)/i.test(v);
+        }
+        function copy(from, to) {
+            for (const node of Array.from(from.childNodes)) {
+                if (node.nodeType === 3) {
+                    to.appendChild(document.createTextNode(node.nodeValue));
+                    continue;
+                }
+                if (node.nodeType !== 1) continue; // 注释等一律丢弃
+                const tag = node.tagName.toUpperCase();
+                // 脚本/样式容器连文本一起丢，避免把代码当文案显示。
+                if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' || tag === 'OBJECT') continue;
+                if (allowed.has(tag)) {
+                    const el = document.createElement(tag.toLowerCase());
+                    for (const attr of Array.from(node.attributes)) {
+                        const name = attr.name.toLowerCase();
+                        if (!CHANGELOG_ATTRS.includes(name)) continue; // on*, src, style 全丢
+                        if (name === 'href') {
+                            if (safeUrl(attr.value)) el.setAttribute('href', attr.value);
+                        } else {
+                            el.setAttribute(name, attr.value);
+                        }
+                    }
+                    copy(node, el);
+                    to.appendChild(el);
+                } else {
+                    // 未知包裹元素：丢标签，保留其已净化的文本子节点。
+                    copy(node, to);
+                }
+            }
+        }
+        copy(doc.body, frag);
+        return frag;
+    }
+
+    function sanitize_html(targetEl, html) {
+        if (!targetEl) return;
+        const raw = typeof html === 'string' ? html : '';
+        // (a) 原生 HTML Sanitizer API
+        if (typeof Element !== 'undefined' && typeof Element.prototype.setHTML === 'function' && typeof Sanitizer !== 'undefined') {
+            try {
+                targetEl.setHTML(raw, {
+                    sanitizer: new Sanitizer({ elements: CHANGELOG_ELEMENTS, attributes: CHANGELOG_ATTRS })
+                });
+                return;
+            } catch (_) { /* 当前 WebView 未实现或配置不兼容，继续兜底 */ }
+        }
+        // (b) DOMPurify（若页面恰好引入）
+        if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+            try {
+                const clean = window.DOMPurify.sanitize(raw, { RETURN_TRUSTED_TYPE: false });
+                targetEl.replaceChildren(settings_sanitize_fragment(clean));
+                return;
+            } catch (_) { /* 继续本地兜底 */ }
+        }
+        // (c) 本地 DOMParser 白名单
+        targetEl.replaceChildren(settings_sanitize_fragment(raw));
+    }
+
     // 安全地渲染更新日志：优先用全局 renderMarkdownSimple（index.html 已引入），
     // 若脚本未加载则退化为纯文本转义，避免 ReferenceError 导致整次检查失败。
+    // 输出仍是 HTML 字符串，但最终由 sanitize_html() 净化后才落 DOM。
     function _render_changelog(md) {
         try {
             if (typeof renderMarkdownSimple === 'function') {
@@ -2129,7 +2477,7 @@ async function initSettings() {
     }
 
     function _showUpdateResult(result) {
-        _upd.status.innerHTML = '';
+        _upd.status.replaceChildren();
 
         if (!result) {
             _upd.banner.className = 'update-banner banner-error';
@@ -2153,7 +2501,7 @@ async function initSettings() {
         if (result.has_update) {
             _upd.banner.style.display = 'none';
             if (result.release_notes) {
-                _upd.notes.innerHTML = _render_changelog(result.release_notes);
+                sanitize_html(_upd.notes, _render_changelog(result.release_notes));
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';
@@ -2175,7 +2523,7 @@ async function initSettings() {
             _upd.banner.textContent = window.i18n?.format_translate('settings.alreadyLatest') || '当前已是最新版本';
             _upd.banner.style.display = '';
             if (result.release_notes) {
-                _upd.notes.innerHTML = _render_changelog(result.release_notes);
+                sanitize_html(_upd.notes, _render_changelog(result.release_notes));
                 _upd.notes.style.display = '';
             } else {
                 _upd.notes.style.display = 'none';
@@ -2212,13 +2560,13 @@ async function initSettings() {
         try {
             _upd.btnDownload.style.display = 'none';
             _upd.progress.style.display = '';
-            _upd.progressBar.style.width = '0%';
+            _upd.progressBar.value = 0;
             _upd.progressText.textContent = '0%';
 
             offProgress();
             await onProgress((p) => {
                 if (_downloadCancelled) return;
-                _upd.progressBar.style.width = p + '%';
+                _upd.progressBar.value = p;
                 _upd.progressText.textContent = Math.round(p) + '%';
             });
 

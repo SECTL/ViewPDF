@@ -1,5 +1,5 @@
-/* ===== Reset ===== */
-*, *::before, *::after {
+/* ===== Reset（限定到 #app，避免全局 * 选择器） ===== */
+:where(#app, #app *, #app *::before, #app *::after) {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -22,16 +22,66 @@
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
   --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --color-brand-accent-rgb: 59 130 246;
+  --color-error-rgb: 239 68 68;
+  --color-badge-star: #f1c40f;
+  --color-primary-active-strong: #d4d4d4;
+  --color-danger-bg: rgb(var(--color-error-rgb) / 0.1);
+  --color-danger-hover: #dc2626;
+  --color-danger-active: #b91c1c;
+  --switch-track: #313033;
+  --switch-track-active: #3a4b39;
+  --switch-thumb: #aeaaae;
+  --switch-active: #84da89;
+  --scrollbar-track: #eef1f5;
+  --scrollbar-thumb: #6e6e6e;
+  --scrollbar-thumb-hover: #555555;
 }
 
 body {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--color-bg);
   color: var(--color-text);
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
-  user-select: none;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 屏幕阅读器专用文本（不占据布局空间） */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 内容文本可选中；开关 / 按钮 / 导航保持 chrome */
+.lang-list,
+.release-notes,
+.release-notes *,
+.card-title,
+.toggle-label,
+.toggle-desc,
+.step-title,
+.step-subtitle {
+  user-select: text;
+  -webkit-user-select: text;
+}
+button,
+.toggle-switch,
+.card-grid,
+.sp-option-group,
+.sp-option-btn {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ===== Progress Bar ===== */
@@ -130,7 +180,8 @@ body {
 }
 
 .slide-panel {
-  width: 100vw;
+  container-type: inline-size;
+  width: 100dvw;
   height: 100%;
   flex-shrink: 0;
   display: flex;
@@ -183,6 +234,7 @@ body {
 /* ===== Card Grid ===== */
 .card-grid {
   display: flex;
+  min-inline-size: 0;
   gap: 12px;
   flex-wrap: wrap;
   justify-content: center;
@@ -198,6 +250,8 @@ body {
   max-width: 420px;
   max-height: 240px;
   overflow-y: auto;
+  scrollbar-width: auto;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   border: 2px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 6px;
@@ -373,6 +427,8 @@ body {
   color: var(--color-text-secondary);
   max-height: 180px;
   overflow-y: auto;
+  scrollbar-width: auto;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 .release-notes h3,
@@ -572,6 +628,8 @@ body {
   box-shadow: var(--shadow-md);
   max-height: 180px;
   overflow-y: auto;
+  scrollbar-width: auto;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
@@ -670,7 +728,7 @@ body {
   width: 16px;
   left: 3px;
   bottom: 3px;
-  background: white;
+  background: var(--switch-thumb, var(--color-ink));
   border-radius: 50%;
   transition: transform 0.2s ease;
   box-shadow: 0 1px 2px rgba(0,0,0,0.1);
@@ -863,16 +921,125 @@ body {
   pointer-events: none;
 }
 
-/* ===== Scrollbar ===== */
-::-webkit-scrollbar {
-  width: 4px;
+/* ===== Scrollbar（仅在浏览器不支持标准 scrollbar-color 时回退） ===== */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+/* ===== 原生表单控件（OOBE JS 重构后） ===== */
+fieldset.card-grid {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.card-grid > legend.visually-hidden {
+  float: none;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 2px;
+/* 语言选择器：与旧 .lang-item 视觉语言一致 */
+.lang-list.lang-select {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  max-height: none;
+  min-height: 48px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  accent-color: var(--color-primary);
+}
+.lang-list.lang-select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 主题卡片：label + 原生 radio，保留点击热区 */
+.card {
+  position: relative;
+}
+.theme-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+label.card:has(.theme-radio:checked) {
+  border-color: var(--color-primary);
+}
+.card:has(.theme-radio:focus-visible) {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 选项按钮里的勾选提示（settings.css 也定义了同一套，重复声明保持两窗口一致） */
+.sp-check {
+  display: inline-block;
+  width: 14px;
+  min-width: 14px;
+  margin-left: 4px;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  color: var(--color-brand-accent, var(--color-primary));
+  vertical-align: baseline;
+}
+
+/* 原生开关 checkbox：保持视觉由 .toggle-slider 承担 */
+.toggle-input {
+  accent-color: var(--color-primary);
+}
+.toggle-input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 容器查询：窄窗口下卡片网格收紧 */
+@container (max-width: 480px) {
+  .card-grid {
+    gap: 8px;
+  }
+  .card {
+    min-width: 120px;
+    padding: 14px 16px;
+  }
+}
+
+@media (forced-colors: active) {
+  .card,
+  .btn,
+  .lang-list,
+  .sp-option-btn {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+  button:focus-visible,
+  .toggle-input:focus-visible + .toggle-slider,
+  .card:has(.theme-radio:focus-visible) {
+    outline: 2px solid Highlight;
+  }
 }

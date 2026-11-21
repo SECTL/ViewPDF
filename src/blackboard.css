@@ -7,7 +7,7 @@
     position: fixed;
     inset: 0;
     z-index: 10;
-    background: #111;
+    background: var(--blackboard-bg, #111);
     transform: translateY(-100%);
     transition: transform 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
     overflow: hidden;
@@ -68,7 +68,7 @@
     position: absolute;
     top: 0;
     left: 0;
-    background: #1a1a1a;
+    background: var(--blackboard-canvas-bg, #1a1a1a);
     touch-action: none;
     pointer-events: none;
 }
