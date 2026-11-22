@@ -47,6 +47,17 @@ const GROUPS = {
     'update-resolve.mjs',
     'stroke-width-scale.mjs',
     'blackboard-stroke-shift.mjs',
+    // 严格形式化验证：全 src/ 模块的执行式 harness
+    'large-doc-harness.mjs',             // 伸缩性规格，已从 spec 组转正（39/0）
+    'large-doc-tile-upgrade.mjs',        // 瓦片可见集升级条件（mutation 守卫的执行体）
+    'gesture-tolerance.mjs',
+    'gesture-damper.mjs',
+    'gesture-pinch.mjs',
+    'gesture-drag-tap.mjs',
+    'pen-tessellator.mjs',
+    'history-compactor.mjs',
+    'i18n-locale-invariants.mjs',
+    'module-invariants.mjs',
   ],
   mutation: [
     'perf-tier-mutation.mjs',
@@ -68,6 +79,15 @@ const GROUPS = {
     'flip-prerender-layout-mutation.mjs',
     'display-canvas-pool-mutation.mjs',
     'oobe-skip-check-mutation.mjs',
+    // 严格形式化验证：新增模块的变异测试
+    'large-doc-mutation.mjs',
+    'gesture-tolerance-mutation.mjs',
+    'gesture-damper-mutation.mjs',
+    'gesture-pinch-mutation.mjs',
+    'gesture-drag-tap-mutation.mjs',
+    'pen-tessellator-mutation.mjs',
+    'history-compactor-mutation.mjs',
+    'i18n-locale-invariants-mutation.mjs',
   ],
   sim: [
     'doc-rotation-math-sim.mjs',
@@ -88,7 +108,6 @@ const GROUPS = {
   ],
   spec: [
     // 手写触发：规格/自检查工具，不进默认套件
-    'large-doc-harness.mjs',          // 尚未实现的伸缩性规格，对当前代码 21+ FAIL
     '_strip-mutation-check.mjs',      // 会临时改坏 dpr-harness，跑完恢复
   ],
   legacy: [
