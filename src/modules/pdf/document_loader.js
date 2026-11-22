@@ -123,12 +123,15 @@ export function show_loading_overlay(message) {
     const overlay = document.createElement('div');
     overlay.id = 'loadingOverlay';
     overlay.className = 'loading-overlay';
+    // 骨架用静态模板，动态 message 走 textContent —— 消息可能来自不可信文本
+    // （文件名、解析错误详情），插值进 innerHTML 会开注入口子。
     overlay.innerHTML = `
         <div class="loading-content">
             <div class="loading-spinner"></div>
-            <div class="loading-message" id="loadingMessage">${message}</div>
+            <div class="loading-message" id="loadingMessage"></div>
         </div>
     `;
+    overlay.querySelector('#loadingMessage').textContent = message ?? '';
     document.body.appendChild(overlay);
 }
 
@@ -167,17 +170,23 @@ export function show_error_dialog(title, message, retry_callback = null) {
     const dialog = document.createElement('div');
     dialog.id = 'errorDialog';
     dialog.className = 'error-dialog-overlay';
+    // 同 show_loading_overlay：title/message 可能含不可信文本，
+    // 静态骨架 + textContent 填值，绝不把插值拼进 innerHTML。
     dialog.innerHTML = `
         <div class="error-dialog">
             <div class="error-icon">⚠️</div>
-            <div class="error-title">${title}</div>
-            <div class="error-message">${message}</div>
+            <div class="error-title"></div>
+            <div class="error-message"></div>
             <div class="error-buttons">
-                ${retry_callback ? `<button class="error-btn error-btn-retry" id="errorRetry">${retry_text}</button>` : ''}
-                <button class="error-btn error-btn-close" id="errorClose">${close_text}</button>
+                ${retry_callback ? '<button class="error-btn error-btn-retry" id="errorRetry"></button>' : ''}
+                <button class="error-btn error-btn-close" id="errorClose"></button>
             </div>
         </div>
     `;
+    dialog.querySelector('.error-title').textContent = title ?? '';
+    dialog.querySelector('.error-message').textContent = message ?? '';
+    if (retry_callback) dialog.querySelector('#errorRetry').textContent = retry_text;
+    dialog.querySelector('#errorClose').textContent = close_text;
     document.body.appendChild(dialog);
 
     document.getElementById('errorClose')?.addEventListener('click', () => dialog.remove());

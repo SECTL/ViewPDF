@@ -10,6 +10,10 @@ function escapeHtml(text) {
 /** 链接协议白名单：来源是 GitHub Release body（不可信），堵掉 javascript:/data: 等 */
 function safeHref(url) {
   if (!url) return '#';
+  // 协议相对 URL（//host）不能过：new URL 会拿 base 把它解析成 https，
+  // 浏览器却按当前页面 origin 解释原始字符串，白名单在这里是瞎的。
+  // 同理堵掉反斜杠形式（/\evil.com 在部分浏览器也当协议相对处理）与控制字符。
+  if (/^\s*\/\//.test(url) || /[\\\x00-\x1f]/.test(url)) return '#';
   try {
     const u = new URL(url, 'https://github.com');
     return ['http:', 'https:'].includes(u.protocol) ? url : '#';

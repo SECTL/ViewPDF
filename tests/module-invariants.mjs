@@ -64,6 +64,9 @@ console.log('--- renderMarkdown：渲染结构 + XSS 防护 ---');
   ok('外链固定 noopener noreferrer', evil.includes('rel="noopener noreferrer"') && evil.includes('target="_blank"'));
   eq('data: 协议被拦', safeHref('data:text/html;base64,xxx'), '#');
   eq('空 href → #', safeHref(''), '#');
+  eq('协议相对 URL //host 被拦（浏览器会按页面 origin 解析）', safeHref('//evil.com/x'), '#');
+  eq('带空白的协议相对 URL 被拦', safeHref('  //evil.com'), '#');
+  eq('反斜杠协议相对 /\\evil.com 被拦', safeHref('/\\evil.com'), '#');
   eq('escapeHtml 转义双引号', escapeHtml('a"b'), 'a&quot;b');
 
   const stripped = stripComments(src);
