@@ -1143,6 +1143,12 @@ static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// 6 秒兜底计时器据此让位给对话框专用的 10 分钟长兜底。
 static CLOSE_DIALOG_MODE: AtomicBool = AtomicBool::new(false);
 
+/// 冷启动时通过文件关联传入的文件路径。
+/// 不能靠 setup() 里定时 emit("file-opened")：那一刻前端 WebView 可能还没注册
+/// listener，事件直接丢失（表现为「启动后要再点一次文件才打开」）。改为存到这里，
+/// 前端监听就绪后主动用 app_take_startup_file 拉取。
+static STARTUP_FILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// config.json 读-改-写互斥锁。
 /// `settings_save_all` 与 `cache_validate_auto_clear` / `word_cache_validate_auto_clear`
 /// 都会「读配置 → 改一个字段 → 原子写回」，并发时后写者会拿旧快照覆盖前写者，
@@ -2251,6 +2257,15 @@ fn main_signal_loaded() {
 #[tauri::command]
 fn main_check_loaded() -> bool {
     MAIN_SCRIPT_LOADED.load(Ordering::SeqCst)
+}
+
+/// Tauri IPC 命令：取出并清空冷启动的文件参数（一次性消费）。
+/// 前端在 file-opened 监听注册完成后调用；取到路径则主动加载，避免事件竞态。
+#[tauri::command]
+fn app_take_startup_file() -> Option<String> {
+    STARTUP_FILE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 /// Tauri IPC 命令：退出应用进程
@@ -3839,14 +3854,11 @@ pub fn app_init_run() {
                 if args.len() > 1 {
                     let file_path = args[1].clone();
                     println!("检测到文件参数: {}", file_path);
-                    
-                    let app_handle = app.handle().clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        println!("发送文件打开事件: {}", file_path);
-                        let _ = app_handle.emit("file-opened", file_path.clone());
-                        println!("已发送文件打开事件: {}", file_path);
-                    });
+                    // 存入全局，等前端监听就绪后主动拉取。不再用定时 emit：
+                    // 500ms 不保证 WebView 已注册 listener，事件会静默丢失。
+                    if let Ok(mut guard) = STARTUP_FILE.lock() {
+                        *guard = Some(file_path);
+                    }
                 }
                 
             }
@@ -3963,6 +3975,7 @@ pub fn app_init_run() {
             oobe_check_active,
             main_signal_loaded,
             main_check_loaded,
+            app_take_startup_file,
             app_submit_exit,
             app_confirm_close,
             app_close_dialog_mode,

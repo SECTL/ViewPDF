@@ -854,8 +854,23 @@ function main_setup_pdf_file_open() {
                 window.i18n?.format_translate('errors.fileParseError') || '无法解析文件路径'
             );
         }
-    }).then(() => {
+    }).then(async () => {
         console.log('file-opened 事件监听注册成功');
+        // 冷启动（文件关联双击 .pdf）时，Rust 在前端监听就绪前就发出了事件，
+        // 那次 emit 会静默丢失。这里在监听注册完成后主动拉取一次启动文件，
+        // 补齐「打开应用后还要再点一次文件」的缺口。命令一次性消费，不会重复加载。
+        if (window.__TAURI__) {
+            try {
+                const { invoke } = window.__TAURI__.core;
+                const startupPath = await invoke('app_take_startup_file');
+                if (typeof startupPath === 'string' && startupPath.length > 0) {
+                    console.log('冷启动文件参数:', startupPath);
+                    main_load_pdf_from_path(startupPath, true);
+                }
+            } catch (err) {
+                console.warn('拉取冷启动文件参数失败:', err);
+            }
+        }
     }).catch(err => {
         console.error('注册 file-opened 事件监听失败:', err);
     });
