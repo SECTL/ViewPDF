@@ -263,7 +263,8 @@
     "prereleaseBadge": "Prerelease",
     "macosTitleBarHint": "On: macOS traffic lights (top left). Off: Windows classic (─ ▢ ✕ at top right)",
     "toolbarTextHint": "On: each tool button shows its name beside the icon, taking more horizontal space",
-    "prereleaseWarning": "This version may be unstable — do not use it in production!!!"
+    "prereleaseWarning": "This version may be unstable — do not use it in production!!!",
+    "sourceAdjust": "Source"
   },
   "oobe": {
     "welcome": "Welcome to ViewPDF",
@@ -346,6 +347,7 @@
     "readFailedDesc": "Unable to read file",
     "convertFailed": "Conversion Failed",
     "wordConvertFailed": "Word document conversion failed",
+    "docxTooLargeDesc": "Word file exceeds 50MB and cannot be converted. Please split it and try again.",
     "officeCallFailed": "Office software call failed\n\nPossible causes:\n• Office software not properly installed\n• File is in use by another program\n• Unsupported file format",
     "loadFailed": "Load Failed",
     "pdfLoadTimeout": "PDF library load timeout\n\nPlease restart the app and try again",

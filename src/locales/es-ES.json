@@ -107,7 +107,7 @@
     "delete": "Eliminar",
     "deleteTheme": "Eliminar tema",
     "deleteFailed": "Error al eliminar",
-    "deleteThemeError": "Error al eliminar el tema \"{name}\"",
+    "deleteThemeError": "Error al eliminar el tema: {error}",
     "deleteThemeConfirm": "¿Eliminar el tema \"{name}\"?",
     "about": "Acerca de",
     "language": "Idioma",
@@ -347,6 +347,7 @@
     "readFailedDesc": "No se puede leer el archivo",
     "convertFailed": "Error al convertir",
     "wordConvertFailed": "Error al convertir el documento de Word",
+    "docxTooLargeDesc": "El archivo de Word supera los 50 MB y no se puede convertir. Divídalo e inténtelo de nuevo.",
     "officeCallFailed": "Error al llamar al software de Office\n\nCausas posibles:\n• Software de Office no instalado correctamente\n• Archivo en uso por otro programa\n• Formato de archivo no compatible",
     "loadFailed": "Error al cargar",
     "pdfLoadTimeout": "Tiempo de espera PDF agotado\n\nReinicie la app e intente de nuevo",
@@ -405,7 +406,10 @@
     "presetDefault": " (predeterminado)",
     "presetDisabled": " (desactivado)",
     "displayDefault": "Mostrar predeterminado",
-    "backToMain": "←"
+    "backToMain": "←",
+    "ellipseStroke": "Renderizado de trazo elíptico",
+    "experimental": "Experimental",
+    "restartRequired": "Reinicio requerido"
   },
   "config": {
     "recoveryTitle": "Ajustes recuperados",

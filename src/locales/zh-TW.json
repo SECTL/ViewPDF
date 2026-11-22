@@ -260,7 +260,11 @@
     "prereleaseBadge": "預發布版",
     "macosTitleBarHint": "開啟為 macOS 紅綠燈（左上角圓形按鈕），關閉為 Windows 經典樣式（右上角 ─ ▢ ✕）",
     "toolbarTextHint": "開啟後每個工具按鈕圖示旁會顯示名稱，佔用更多水平空間",
-    "prereleaseWarning": "此版本可能會不穩定，請不要在正式環境中使用！！！"
+    "prereleaseWarning": "此版本可能會不穩定，請不要在正式環境中使用！！！",
+    "sourceAdjust": "來源",
+    "checkingUpdate": "正在檢查更新...",
+    "newVersionFound": "發現新版本",
+    "updateCheckFailed": "檢查更新失敗，請稍後重試"
   },
   "oobe": {
     "welcome": "歡迎使用 ViewPDF",
@@ -343,6 +347,7 @@
     "readFailedDesc": "無法讀取檔案",
     "convertFailed": "轉換失敗",
     "wordConvertFailed": "Word 文件轉換失敗",
+    "docxTooLargeDesc": "Word 檔案超過 50MB，無法轉換，請拆分後重試",
     "officeCallFailed": "Office 軟體呼叫失敗\n\n可能的原因：\n• Office 軟體未正確安裝\n• 檔案被其他程式佔用\n• 檔案格式不支援",
     "loadFailed": "載入失敗",
     "pdfLoadTimeout": "PDF 函式庫載入逾時\n\n請重新啟動應用程式後重試",
@@ -386,5 +391,34 @@
     "message": "是否儲存本次批註筆跡，下次啟動時恢復？",
     "save": "儲存並關閉",
     "discard": "不儲存關閉"
+  },
+  "memclean": {
+    "title": "記憶體清理",
+    "cleanNow": "立即清理",
+    "setupTask": "設定計劃任務",
+    "uninstallTask": "移除計劃任務",
+    "hint": "設定計劃任務後，後續清理不再需要管理員授權，系統會自動靜默清理。",
+    "regionHeader": "清理範圍",
+    "regionWorkingSet": "工作集",
+    "regionSystemFileCache": "系統檔案快取",
+    "regionStandbyPriority0": "待機清單（優先順序 0）",
+    "regionStandbyList": "待機清單",
+    "regionModifiedList": "已修改頁面清單",
+    "regionCombineMemory": "合併記憶體頁面",
+    "regionRegistryCache": "登錄檔快取",
+    "statusChecking": "檢測中...",
+    "statusReady": "計劃任務已就緒",
+    "statusNotSetup": "未設定計劃任務（首次清理時需要管理員授權）",
+    "statusError": "檢測失敗",
+    "statusIpcUnavailable": "IPC 不可用",
+    "cleaning": "清理中...",
+    "cleanDone": "✓ 清理完成",
+    "cleanFailed": "✗ 清理失敗",
+    "settingUp": "設定中...",
+    "setupDone": "✓ 設定完成",
+    "setupFailed": "✗ 設定失敗",
+    "uninstalling": "移除中...",
+    "uninstallDone": "✓ 已移除",
+    "uninstallFailed": "✗ 移除失敗"
   }
 }

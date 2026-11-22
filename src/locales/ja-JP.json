@@ -107,7 +107,7 @@
     "delete": "削除",
     "deleteTheme": "テーマを削除",
     "deleteFailed": "削除に失敗しました",
-    "deleteThemeError": "テーマ「{name}」の削除に失敗しました",
+    "deleteThemeError": "テーマの削除に失敗しました: {error}",
     "deleteThemeConfirm": "テーマ「{name}」を削除しますか？",
     "about": "バージョン情報",
     "language": "言語",
@@ -347,6 +347,7 @@
     "readFailedDesc": "ファイルを読み取れません",
     "convertFailed": "変換に失敗しました",
     "wordConvertFailed": "Word 文書の変換に失敗しました",
+    "docxTooLargeDesc": "Word ファイルが 50MB を超えており変換できません。分割してから再試行してください。",
     "officeCallFailed": "Office ソフトウェアの呼び出しに失敗しました\n\n考えられる原因：\n• Office ソフトウェアが正しくインストールされていない\n• ファイルが別のプログラムで使用中\n• サポートされていないファイル形式",
     "loadFailed": "読み込みに失敗しました",
     "pdfLoadTimeout": "PDF ライブラリの読み込みがタイムアウトしました\n\nアプリを再起動して再試行してください",
@@ -405,7 +406,10 @@
     "presetDefault": "（デフォルト）",
     "presetDisabled": "（無効）",
     "displayDefault": "デフォルトを表示",
-    "backToMain": "←"
+    "backToMain": "←",
+    "ellipseStroke": "楕円ストロークの描画",
+    "experimental": "実験的",
+    "restartRequired": "再起動が必要"
   },
   "config": {
     "recoveryTitle": "設定が復元されました",

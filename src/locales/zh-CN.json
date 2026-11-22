@@ -263,7 +263,8 @@
     "prereleaseBadge": "预发布版",
     "macosTitleBarHint": "开启为 macOS 红绿灯（左上角圆形按钮），关闭为 Windows 经典样式（右上角 ─ ▢ ✕）",
     "toolbarTextHint": "开启后每个工具按钮图标旁会显示名称，占用更多横向空间",
-    "prereleaseWarning": "此版本可能会不稳定，请不要在正式环境中使用！！！"
+    "prereleaseWarning": "此版本可能会不稳定，请不要在正式环境中使用！！！",
+    "sourceAdjust": "来源"
   },
   "oobe": {
     "welcome": "欢迎使用 ViewPDF",
@@ -346,6 +347,7 @@
     "readFailedDesc": "无法读取文件",
     "convertFailed": "转换失败",
     "wordConvertFailed": "Word 文档转换失败",
+    "docxTooLargeDesc": "Word 文件超过 50MB，无法转换，请拆分后重试",
     "officeCallFailed": "Office 软件调用失败\n\n可能的原因：\n• Office 软件未正确安装\n• 文件被其他程序占用\n• 文件格式不支持",
     "loadFailed": "加载失败",
     "pdfLoadTimeout": "PDF 库加载超时\n\n请重启应用后重试",

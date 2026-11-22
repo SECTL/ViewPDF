@@ -107,7 +107,7 @@
     "delete": "삭제",
     "deleteTheme": "테마 삭제",
     "deleteFailed": "삭제 실패",
-    "deleteThemeError": "테마 \"{name}\" 삭제 실패",
+    "deleteThemeError": "테마 삭제 실패: {error}",
     "deleteThemeConfirm": "테마 \"{name}\"을(를) 삭제하시겠습니까?",
     "about": "정보",
     "language": "언어",
@@ -347,6 +347,7 @@
     "readFailedDesc": "파일을 읽을 수 없습니다",
     "convertFailed": "변환 실패",
     "wordConvertFailed": "Word 문서 변환 실패",
+    "docxTooLargeDesc": "Word 파일이 50MB를 초과하여 변환할 수 없습니다. 파일을 나눈 후 다시 시도하세요.",
     "officeCallFailed": "Office 소프트웨어 호출 실패\n\n가능한 원인:\n• Office 소프트웨어가 제대로 설치되지 않음\n• 파일이 다른 프로그램에서 사용 중\n• 지원되지 않는 파일 형식",
     "loadFailed": "로드 실패",
     "pdfLoadTimeout": "PDF 라이브러리 로드 시간 초과\n\n앱을 다시 시작하고 다시 시도하세요",
@@ -405,7 +406,10 @@
     "presetDefault": " (기본값)",
     "presetDisabled": " (비활성화)",
     "displayDefault": "기본값 표시",
-    "backToMain": "←"
+    "backToMain": "←",
+    "ellipseStroke": "타원 스트로크 렌더링",
+    "experimental": "실험적",
+    "restartRequired": "재시작 필요"
   },
   "config": {
     "recoveryTitle": "설정이 복구되었습니다",

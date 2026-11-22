@@ -107,7 +107,7 @@
     "delete": "Löschen",
     "deleteTheme": "Design löschen",
     "deleteFailed": "Löschen fehlgeschlagen",
-    "deleteThemeError": "Fehler beim Löschen des Designs \"{name}\"",
+    "deleteThemeError": "Fehler beim Löschen des Designs: {error}",
     "deleteThemeConfirm": "Design \"{name}\" löschen?",
     "about": "Über",
     "language": "Sprache",
@@ -347,6 +347,7 @@
     "readFailedDesc": "Datei nicht lesbar",
     "convertFailed": "Konvertierung fehlgeschl.",
     "wordConvertFailed": "Word-Dokumentkonvertierung fehlgeschlagen",
+    "docxTooLargeDesc": "Word-Datei überschreitet 50 MB und kann nicht konvertiert werden. Bitte aufteilen und erneut versuchen.",
     "officeCallFailed": "Office-Softwareaufruf fehlgeschlagen\n\nMögliche Ursachen:\n• Office-Software nicht ordnungsgemäß installiert\n• Datei wird von einem anderen Programm verwendet\n• Nicht unterstütztes Dateiformat",
     "loadFailed": "Laden fehlgeschlagen",
     "pdfLoadTimeout": "PDF-Bibliothek-Zeitüberschreitung\n\nApp neustarten, erneut versuchen",
@@ -405,7 +406,10 @@
     "presetDefault": " (Standard)",
     "presetDisabled": " (deaktiviert)",
     "displayDefault": "Standard anzeigen",
-    "backToMain": "←"
+    "backToMain": "←",
+    "ellipseStroke": "Ellipsen-Stiftrendering",
+    "experimental": "Experimentell",
+    "restartRequired": "Neustart erforderlich"
   },
   "config": {
     "recoveryTitle": "Einstellungen wiederhergestellt",
