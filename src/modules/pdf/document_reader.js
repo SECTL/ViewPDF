@@ -6845,9 +6845,14 @@ class DocumentReaderManager {
      * 文案必须跟着状态走 —— 图标是 16px 的角括号，用户看不出当前点了是进还是退。
      */
     _apply_fullscreen_state(is_fullscreen) {
+        const fs = is_fullscreen === true;
+        // 全屏时隐藏自绘标题栏：系统全屏本就不该留一条标题栏；同时把
+        // --app-titlebar-h 覆盖为 0，阅读器面板/侧栏的 top 引用它，自动顶到屏幕顶端。
+        // 这段必须在按钮早退之前执行——设置里隐藏全屏按钮时标题栏照样要跟着切。
+        document.documentElement?.classList.toggle('is-fullscreen', fs);
         const btn = document.getElementById('drBtnFullscreen');
         if (!btn) return;
-        btn.classList.toggle('is-fullscreen', is_fullscreen === true);
+        btn.classList.toggle('is-fullscreen', fs);
         const label = is_fullscreen === true
             ? (window.i18n?.format_translate('toolbar.exitFullscreen') || '退出全屏')
             : (window.i18n?.format_translate('toolbar.fullscreen') || '全屏');

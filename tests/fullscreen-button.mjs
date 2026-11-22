@@ -118,9 +118,20 @@ const mkBtn = (withSpan = true) => {
 // 一份 env → 一个可用的阅读器替身。方法都绑到这份 env 上，彼此通过 this 互相调用，
 // 与真实 class 里的调用关系一致（setupSync 内部就是 this._apply_fullscreen_state）。
 const mkKit = (btn, win) => {
-  const doc = { getElementById: (id) => (id === 'drBtnFullscreen' ? btn : null) };
+  const rootClasses = new Set();
+  const doc = {
+    getElementById: (id) => (id === 'drBtnFullscreen' ? btn : null),
+    documentElement: {
+      classList: {
+        add: (n) => rootClasses.add(n),
+        remove: (n) => rootClasses.delete(n),
+        toggle: (n, on) => { if (on === undefined) { rootClasses.has(n) ? rootClasses.delete(n) : rootClasses.add(n); } else if (on) rootClasses.add(n); else rootClasses.delete(n); },
+        contains: (n) => rootClasses.has(n),
+      },
+    },
+  };
   const env = [doc, win];
-  const r = { _show_fullscreen_btn: true, _fullscreen_sync_bound: false, _fullscreen_sync_token: 0, _applied: [] };
+  const r = { _show_fullscreen_btn: true, _fullscreen_sync_bound: false, _fullscreen_sync_token: 0, _applied: [], _rootClasses: rootClasses };
   const k = {
     r,
     doc,
@@ -178,11 +189,13 @@ const run = async () => {
     const k = mkKit(btn, { i18n });
     k.applyState.call(k.r, true);
     eq('全屏中：加 is-fullscreen 类', btn.classList.contains('is-fullscreen'), true);
+    eq('  根元素也加 is-fullscreen（隐藏标题栏）', k.r._rootClasses.has('is-fullscreen'), true);
     eq('  title 是「退出」', btn.title, EX);
     eq('  aria-label 同步', btn.attrs['aria-label'], EX);
     eq('  span 文案同步', btn.span.textContent, EX);
     k.applyState.call(k.r, false);
     eq('非全屏：移除 is-fullscreen 类', btn.classList.contains('is-fullscreen'), false);
+    eq('  根元素也移除 is-fullscreen（恢复标题栏）', k.r._rootClasses.has('is-fullscreen'), false);
     eq('  title 回到「进入」', btn.title, EN);
     eq('  span 文案回到「进入」', btn.span.textContent, EN);
   }
@@ -546,6 +559,18 @@ const run = async () => {
     // 少了「默认隐藏退出图标」这条，两枚图标会同时可见 → 按钮上是两个叠着的图标。
     // 同时守住「都挂在 #drBtnFullscreen 上」，避免误伤标题栏那套 .tb-glyph-max。
     eq('#drBtnFullscreen 规则恰好三条', (css.match(/#drBtnFullscreen[^{]*\{/g) || []).length, 3);
+
+    // 全屏时隐藏自绘标题栏：变量归零让面板顶到屏幕顶端，标题栏本身 display:none
+    ok('全屏时标题栏高度变量归零',
+      /html\.is-fullscreen\s*\{[^}]*--app-titlebar-h:\s*0px/.test(css));
+    ok('全屏时隐藏标题栏',
+      /html\.is-fullscreen\s+\.titlebar\s*\{[^}]*display:\s*none/.test(css));
+    // 标题栏切换必须在按钮缺失的早退之前，否则隐藏全屏按钮时标题栏不会跟着切
+    const applyBody = /_apply_fullscreen_state\(is_fullscreen\)\s*\{([\s\S]*?)\n    \}/.exec(READER_SRC)?.[1]
+      || /_apply_fullscreen_state\(is_fullscreen\)\s*\{([\s\S]*?)\n      \}/.exec(READER_SRC)?.[1] || '';
+    ok('标题栏切换在按钮早退之前',
+      applyBody.indexOf('documentElement') >= 0 &&
+      applyBody.indexOf('documentElement') < applyBody.indexOf('if (!btn) return'));
   }
 
   // ===== 11. 接线：设置开关 =====

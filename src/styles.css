@@ -167,6 +167,15 @@ body {
     animation: fadeIn 0.3s ease;
 }
 
+/* 系统全屏：隐藏自绘标题栏，并让所有以 --app-titlebar-h 定位的面板顶到屏幕顶端。
+   工具栏里的全屏按钮仍可见，作为退出全屏的入口。 */
+html.is-fullscreen {
+    --app-titlebar-h: 0px;
+}
+html.is-fullscreen .titlebar {
+    display: none;
+}
+
 /* ===== Titlebar ===== */
 .titlebar {
     height: var(--app-titlebar-h);

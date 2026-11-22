@@ -256,8 +256,15 @@ const MUTATIONS = [
     label: 'is-fullscreen 类永远不加（CSS 永不切到退出图标）',
     expect: '全屏中：加 is-fullscreen 类',
     file: READER, orig: ORIG[READER],
-    from: `        btn.classList.toggle('is-fullscreen', is_fullscreen === true);`,
+    from: `        btn.classList.toggle('is-fullscreen', fs);`,
     to: `        btn.classList.remove('is-fullscreen');`,
+  },
+  {
+    label: '全屏不再隐藏标题栏（根元素 class 不切换）',
+    expect: '根元素也加 is-fullscreen（隐藏标题栏）',
+    file: READER, orig: ORIG[READER],
+    from: `        document.documentElement?.classList.toggle('is-fullscreen', fs);`,
+    to: `        /* 忘了切根元素 class */`,
   },
 
   // ---------- main.js ----------
