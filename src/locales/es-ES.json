@@ -258,6 +258,8 @@
     "showFullscreenButton": "Mostrar botón de pantalla completa",
     "systemFontFallback": "Fuentes del sistema",
     "systemFontFallbackHint": "Usa fuentes del sistema para completar glifos faltantes del PDF (renderizado más lento; se aplica al reabrir el documento)",
+    "highMemoryMode": "Modo de alta memoria",
+    "highMemoryModeHint": "Actívalo en equipos con mucha memoria: amplía las ventanas de precarga y caché para un desplazamiento más fluido, a costa de mayor consumo de memoria",
     "systemFontDetectTitle": "Fuentes especiales detectadas",
     "systemFontDetectBody": "Este documento contiene fuentes no incrustadas. Algunos caracteres (como las notas musicales) pueden mostrarse como cuadrados. ¿Activar las fuentes del sistema? El renderizado será más lento.",
     "systemFontDetectEnable": "Activar",

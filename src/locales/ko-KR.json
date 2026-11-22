@@ -258,6 +258,8 @@
     "showFullscreenButton": "전체 화면 버튼 표시",
     "systemFontFallback": "시스템 글꼴 대체",
     "systemFontFallbackHint": "시스템 글꼴로 PDF의 누락된 문자를 보완합니다(렌더링이 느려지며 문서를 다시 열면 적용)",
+    "highMemoryMode": "고 메모리 모드",
+    "highMemoryModeHint": "메모리가 충분한 컴퓨터에서 켜세요: 프리로드 및 캐시 범위를 넓혀 스크롤이 더 부드러워지지만 메모리 사용량이 늘어납니다",
     "systemFontDetectTitle": "특수 글꼴 감지",
     "systemFontDetectBody": "이 문서에는 포함되지 않은 글꼴이 있어 음표 등의 문자가 네모로 표시될 수 있습니다. 시스템 글꼴 대체를 활성화할까요? 활성화하면 렌더링이 느려집니다.",
     "systemFontDetectEnable": "대체 활성화",

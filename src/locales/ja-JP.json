@@ -258,6 +258,8 @@
     "showFullscreenButton": "全画面ボタンを表示",
     "systemFontFallback": "システムフォント補完",
     "systemFontFallbackHint": "システムフォントで PDF の欠落グリフを補完します（描画が遅くなります。文書を開き直すと反映）",
+    "highMemoryMode": "高メモリモード",
+    "highMemoryModeHint": "メモリに余裕がある場合に有効化：先読みとキャッシュの範囲を広げ、より滑らかなスクロールを実現しますがメモリ使用量が増えます",
     "systemFontDetectTitle": "特殊フォントを検出しました",
     "systemFontDetectBody": "この文書には埋め込まれていないフォントが含まれており、音符などの文字が方框で表示される可能性があります。システムフォント補完を有効にしますか？有効にすると描画が遅くなります。",
     "systemFontDetectEnable": "補完を有効にする",

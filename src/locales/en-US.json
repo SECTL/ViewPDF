@@ -125,6 +125,8 @@
     "showFullscreenButton": "Show Fullscreen Button",
     "systemFontFallback": "System font fallback",
     "systemFontFallbackHint": "Use system fonts to fill in missing PDF glyphs (slower rendering; takes effect after reopening the document)",
+    "highMemoryMode": "High memory mode",
+    "highMemoryModeHint": "Enable on machines with plenty of RAM: enlarges preload and cache windows for smoother scrolling at the cost of more memory",
     "systemFontDetectTitle": "Special fonts detected",
     "systemFontDetectBody": "This document contains fonts that are not embedded. Some characters (such as musical notes) may appear as boxes. Enable system font fallback? Rendering will be slower.",
     "systemFontDetectEnable": "Enable fallback",

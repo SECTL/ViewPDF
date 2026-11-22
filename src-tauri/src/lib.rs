@@ -1569,7 +1569,10 @@ fn config_fetch_default() -> serde_json::Value {
         "renderPerfTier": "balanced",
         // 复杂文字兼容模式：开启后用系统字体补全 PDF 缺失字形。
         // 放进 defaults 才能吃到 config_validate_and_merge 的 bool 类型校验。
-        "systemFontFallback": false
+        "systemFontFallback": false,
+        // 高内存模式：内存充裕的电脑主动开启，拉大预加载/预挂载与缓存窗口。
+        // 放进 defaults 才能吃到 config_validate_and_merge 的 bool 类型校验。
+        "highMemoryMode": false
     })
 }
 

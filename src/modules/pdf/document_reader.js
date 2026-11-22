@@ -138,6 +138,15 @@ const DOM_VIRTUALIZE_MIN_PAGES = 100;
  *  动它会牵连整套渲染管线；而挂载门控只想知道「还在不在连续滑动」。 */
 const MOUNT_IDLE_AFTER_MS = 100;
 
+/**
+ * 近邻预挂载页数：活动页前后各 N 页在首屏与扫描中主动建好 DOM，
+ * 不依赖进入视口才现场 _ensure_page_element（同步建 canvas + 布局是翻页卡顿主源）。
+ * 与 wrapper_keep_distance(±50 空壳窗口) 的区别：这里是**真实 DOM**，窗口更窄。
+ */
+const PREMOUNT_NEAR_PAGES = 5;
+/** 高内存模式：预加载/预挂载窗口的放大倍数（仅内存充裕的电脑主动开启） */
+const HIGH_MEMORY_PRELOAD_MULT = 3;
+
 /** 距文档末尾 ≤ 此页数时，滑动期仍允许挂载（否则滑到最后必然白屏） */
 const MOUNT_TAIL_EXEMPT_PAGES = 4;
 
@@ -156,10 +165,12 @@ const RENDER_PERF_TIERS = {
         // 决定。滑动卡顿的来源是滑到未挂载区才现场建 DOM，所以窗口要一次开到
         // 前后各 50 页；分档只会让低配机在滑动中重新体验同一卡顿。
         wrapper_keep_distance: 50,
-        image_keep_distance: 3,
-        blob_keep_distance: 4,
-        prerender_distance: 2,
-        prerender_urgent_span: 4,
+        // 预加载窗口（页）：拉大以避免「稍微滑一点就开始现场加载」。
+        // 这些是缓存/栅格化成本参数，三档保持 low ≤ balanced ≤ high。
+        image_keep_distance: 8,
+        blob_keep_distance: 10,
+        prerender_distance: 6,
+        prerender_urgent_span: 10,
         render_max: 1,              // 渲染线程并发：1
         canvas_pool_max: 1,
         sidebar_thumbnail_cache_max: 12,
@@ -171,10 +182,10 @@ const RENDER_PERF_TIERS = {
         bitmap_cache_bytes: 96 * 1024 * 1024,
         bitmap_cache_entries: 8,
         wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档
-        image_keep_distance: 4,
-        blob_keep_distance: 6,
-        prerender_distance: 4,
-        prerender_urgent_span: 6,
+        image_keep_distance: 12,
+        blob_keep_distance: 14,
+        prerender_distance: 10,
+        prerender_urgent_span: 16,
         render_max: 2,
         canvas_pool_max: 2,
         sidebar_thumbnail_cache_max: 24,
@@ -186,10 +197,10 @@ const RENDER_PERF_TIERS = {
         bitmap_cache_bytes: 128 * 1024 * 1024,
         bitmap_cache_entries: 10,
         wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档
-        image_keep_distance: 5,
-        blob_keep_distance: 6,
-        prerender_distance: 5,
-        prerender_urgent_span: 8,
+        image_keep_distance: 16,
+        blob_keep_distance: 18,
+        prerender_distance: 14,
+        prerender_urgent_span: 22,
         render_max: 2,
         canvas_pool_max: 3,
         sidebar_thumbnail_cache_max: 30,
@@ -304,6 +315,9 @@ class DocumentReaderManager {
         this._smooth_transform_timeout_id = null; // will-change 延迟移除
         this._gpu_cleanup_delay_ms = 800;
         this._tile_keep_distance = 5;
+        // 高内存模式状态与近邻预挂载页数（由 apply_perf_tier 按模式设置）
+        this._high_memory_mode = false;
+        this._premount_near_pages = PREMOUNT_NEAR_PAGES;
         this._image_keep_distance = 5;
         this._blob_keep_distance = 6;
         this._wrapper_keep_distance = 50;  // 包裹层虚拟化窗口：超出此范围的页面从文档树卸载（仅留缓存坐标）
@@ -2360,8 +2374,12 @@ class DocumentReaderManager {
         if (now - (this._dr_last_scroll_t || 0) < 140 && (this._dr_scroll_vel || 0) > 1.5) {
             moving = true;
         }
-        const ahead_screens = moving ? 4 : (this._prerender_distance || 5);
-        const behind_screens = moving ? 1 : (this._prerender_distance || 5);
+        // 预加载窗口：静止时前后各 prerender_distance 屏；滑动时前倾更多、
+        // 后方仍保留相当范围（旧实现 behind=1，往回滑一屏就触发现场加载）。
+        // 前倾窗口基于档位而非硬编码，低配机不会因过大窗口而栅格化过载。
+        const idle_span = this._prerender_distance || 10;
+        const ahead_screens = moving ? Math.max(idle_span, 12) : idle_span;
+        const behind_screens = moving ? Math.max(4, Math.floor(idle_span / 2)) : idle_span;
         const prerender_top = container_top - behind_screens * viewport_height;
         const prerender_bottom = container_bottom + ahead_screens * viewport_height;
 
@@ -2478,6 +2496,27 @@ class DocumentReaderManager {
             }
         }
         this._dr_prev_visible = cur_visible;
+
+        // 近邻预挂载：活动页前后各 PREMOUNT_NEAR_PAGES 页的真实 DOM 直接建好，
+        // 翻页/小幅滑动时它们已在文档树里，不必等进入视口才现场建 canvas（卡顿源）。
+        // 不走 _mount_allowed_offscreen 门控——那是为「远离视口的大量空壳页」设计的；
+        // 这里只挂 10 页近邻且每帧至多 2 页，成本可控，正是「直接放上去」的诉求。
+        if (this._dom_virtualize() && this._zoom_wrapper && nearest_page >= 0) {
+            let mounted = 0;
+            // 交替向前/向后，保证两侧同时被覆盖（最多 2 帧挂满前后各 5 页）
+            for (const step of [1, -1]) {
+                if (mounted >= 2) break;
+                for (let d = 1; d <= this._premount_near_pages; d++) {
+                    const idx = nearest_page + step * d;
+                    if (idx < 0 || idx >= total_pages) break;
+                    const pd = this.page_manager.pages_list[idx];
+                    if (!pd || pd.page_element) continue;
+                    if (pd.render_mode !== 'pdfjs' && !pd.loaded && !pd.image_url) continue;
+                    this._ensure_page_element(idx);
+                    if (++mounted >= 2) break;
+                }
+            }
+        }
 
         // 主动预加载 keep_distance 范围内的图片（避免滚动到时白屏）
         this._preload_nearby_images(nearest_page);
@@ -6532,23 +6571,31 @@ class DocumentReaderManager {
      * 所以：档位表在文件顶层，apply_perf_tier 逐字段写入，改档位只改这一处。
      *
      * @param {string} tier - 'low' | 'balanced' | 'high'；非法值回退 balanced
+     * @param {boolean} highMemory - 高内存模式：放大预加载/预挂载窗口与位图缓存预算。
+     *   仅内存充裕的电脑主动开启；不改档位表本身（保持 low≤balanced≤high 单调性），
+     *   只在写入实例字段时按倍数放大。
      * @returns {string} 实际生效的档位
      */
-    apply_perf_tier(tier) {
+    apply_perf_tier(tier, highMemory = false) {
         const name = RENDER_PERF_TIER_NAMES.includes(tier) ? tier : 'balanced';
         const p = RENDER_PERF_TIERS[name];
         this.render_perf_tier = name;
+        this._high_memory_mode = highMemory === true;
+        const mul = this._high_memory_mode ? HIGH_MEMORY_PRELOAD_MULT : 1;
 
         this._raster_max_dev_w = p.raster_max_dev_w;
         this._zoom_headroom = p.zoom_headroom;
         this._DR_MOTION_DPR_MAX = p.motion_dpr_max;
-        this._bitmap_cache_max_bytes = p.bitmap_cache_bytes;
-        this._bitmap_cache_max_entries = p.bitmap_cache_entries;
         this._wrapper_keep_distance = p.wrapper_keep_distance;
-        this._image_keep_distance = p.image_keep_distance;
-        this._blob_keep_distance = p.blob_keep_distance;
-        this._prerender_distance = p.prerender_distance;
-        this._prerender_urgent_span = p.prerender_urgent_span;
+        // 预加载类字段在高内存模式放大：滑动前缘更早建好、缓存更多成图，
+        // 代价是显存/内存占用上升——只在内存充裕时主动开启。
+        this._image_keep_distance = p.image_keep_distance * mul;
+        this._blob_keep_distance = p.blob_keep_distance * mul;
+        this._prerender_distance = p.prerender_distance * mul;
+        this._prerender_urgent_span = p.prerender_urgent_span * mul;
+        this._premount_near_pages = PREMOUNT_NEAR_PAGES * mul;
+        this._bitmap_cache_max_bytes = p.bitmap_cache_bytes * mul;
+        this._bitmap_cache_max_entries = p.bitmap_cache_entries * mul;
         this._RENDER_MAX = p.render_max;
         this._canvas_pool_max = p.canvas_pool_max;
         this._sidebar_thumbnail_cache_max = p.sidebar_thumbnail_cache_max;
@@ -6569,8 +6616,9 @@ class DocumentReaderManager {
             this._check_page_visibility();        // 可见页按新档位重渲染
         }
         console.log('[DocumentReader] 渲染档位 → ' + name +
+            (this._high_memory_mode ? ' [高内存模式]' : '') +
             ' (位图上限 ' + p.raster_max_dev_w + 'px, 缓存 ' +
-            Math.round(p.bitmap_cache_bytes / 1048576) + 'MB)');
+            Math.round(this._bitmap_cache_max_bytes / 1048576) + 'MB)');
         return name;
     }
 

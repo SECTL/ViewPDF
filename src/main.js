@@ -1003,8 +1003,17 @@ function main_setup_pdf_file_open() {
         // apply_perf_tier 内部自带「清位图缓存 + 按新 keep 窗口回收 + 可见页重渲染」，
         // 所以这里不需要额外提示重启——降档立即生效（这正是低配机用户需要的：
         // 卡的时候希望马上缓解，而不是重启一次）。
+        // 高内存模式：与档位一起下发。单独切换开关（事件只带该键）时也要立即
+        // 用当前档位重算，因此用全局镜像记住上次档位，任何一键变化都整体重放。
+        if (settings.highMemoryMode !== undefined) {
+            window.__highMemoryMode = settings.highMemoryMode === true;
+        }
         if (settings.renderPerfTier !== undefined) {
-            window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
+            window.__renderPerfTier = settings.renderPerfTier;
+        }
+        if (settings.highMemoryMode !== undefined || settings.renderPerfTier !== undefined) {
+            window.documentReaderManager?.apply_perf_tier?.(
+                window.__renderPerfTier, window.__highMemoryMode === true);
         }
 
         // 复杂文字兼容模式：开关本身只影响「新打开的文档」，因为 pdf.js 的

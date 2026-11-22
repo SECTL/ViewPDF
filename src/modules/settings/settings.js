@@ -537,6 +537,12 @@ async function initSettings() {
                     systemFontFallbackToggle.checked = settings.systemFontFallback === true;
                 }
 
+                // 高内存模式：默认关闭，只有显式开启才回显为开
+                const highMemoryModeToggle = document.getElementById('highMemoryModeToggle');
+                if (highMemoryModeToggle) {
+                    highMemoryModeToggle.checked = settings.highMemoryMode === true;
+                }
+
                 const macosTitleBarToggle = document.getElementById('macosTitleBarToggle');
                 if (macosTitleBarToggle) {
                     macosTitleBarToggle.checked = settings.macosTitleBar !== false;
@@ -2088,6 +2094,14 @@ async function initSettings() {
     if (systemFontFallbackToggle) {
         systemFontFallbackToggle.addEventListener('change', async () => {
             await settings_save_all_local({ systemFontFallback: systemFontFallbackToggle.checked });
+        });
+    }
+
+    // 高内存模式：保存后 settings-changed 会用当前档位重放 apply_perf_tier，立即生效
+    const highMemoryModeToggle = document.getElementById('highMemoryModeToggle');
+    if (highMemoryModeToggle) {
+        highMemoryModeToggle.addEventListener('change', async () => {
+            await settings_save_all_local({ highMemoryMode: highMemoryModeToggle.checked });
         });
     }
 

@@ -141,9 +141,12 @@ async function settings_load_config() {
             // 所以直接把值下发到唯一消费者 documentReaderManager，不经 DRAW_CONFIG
             // 这类中间层（多一份可变镜像就多一处可能不同步的地方）。
             // 用 window. 前缀而非裸标识符：可选链挡不住「标识符未声明」的 ReferenceError。
-            if (['low', 'balanced', 'high'].includes(settings.renderPerfTier)) {
-                window.documentReaderManager?.apply_perf_tier?.(settings.renderPerfTier);
-            }
+            // 总是调用：apply_perf_tier 内部自带非法档位回退到 balanced。
+            // 若这里用 if 过滤，档位缺失时高内存模式也会被一起跳过。
+            window.__renderPerfTier = settings.renderPerfTier;
+            window.__highMemoryMode = settings.highMemoryMode === true;
+            window.documentReaderManager?.apply_perf_tier?.(
+                window.__renderPerfTier, window.__highMemoryMode);
 
             console.log('[init] 配置加载完成 (档位=' +
                 (settings.renderPerfTier || 'balanced(默认，未落盘)') + ')');

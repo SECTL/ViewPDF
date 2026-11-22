@@ -125,6 +125,8 @@
     "showFullscreenButton": "显示全屏按钮",
     "systemFontFallback": "系统字体补全",
     "systemFontFallbackHint": "用系统字体补齐 PDF 缺失字形（渲染较慢，重新打开文档后生效）",
+    "highMemoryMode": "高内存模式",
+    "highMemoryModeHint": "内存充裕时开启：拉大预加载与缓存窗口，滑动更流畅但占用更多内存",
     "systemFontDetectTitle": "检测到特殊字体",
     "systemFontDetectBody": "该文档含有未嵌入的字体，部分字符（如音符）可能显示为方框。是否启用系统字体补全？启用后渲染会变慢。",
     "systemFontDetectEnable": "启用补全",

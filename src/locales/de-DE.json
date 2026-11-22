@@ -258,6 +258,8 @@
     "showFullscreenButton": "Vollbild-Schaltfläche anzeigen",
     "systemFontFallback": "Systemschriftart-Ersatz",
     "systemFontFallbackHint": "Fehlende PDF-Glyphen mit Systemschriftarten ergänzen (langsameres Rendern; wirkt nach erneutem Öffnen des Dokuments)",
+    "highMemoryMode": "Hoher-Speicher-Modus",
+    "highMemoryModeHint": "Auf Rechnern mit viel RAM aktivieren: vergrößert Vorlade- und Cache-Fenster für flüssigeres Scrollen, bei höherem Speicherverbrauch",
     "systemFontDetectTitle": "Spezielle Schriftarten erkannt",
     "systemFontDetectBody": "Dieses Dokument enthält nicht eingebettete Schriftarten. Einige Zeichen (z. B. Noten) werden möglicherweise als Kästchen angezeigt. Systemschriftart-Ersatz aktivieren? Das Rendern wird langsamer.",
     "systemFontDetectEnable": "Ersatz aktivieren",
