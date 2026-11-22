@@ -87,16 +87,16 @@ function run() {
 const MUTATIONS = [
     // ────────── 1. MD5 / 阈值 / 会话备忘 / Word 体积守卫 ──────────
     {
-        label: 'MD5 流式阈值从 MB 常量改成十进制形式',
+        label: 'MD5 流式阈值系数被改（4MB → 8MB，值守卫必须变红）',
         file: 'main.js',
         anchor: 'const _MD5_STREAM_THRESHOLD = 4 * 1024 * 1024;',
-        edits: [{ from: 'const _MD5_STREAM_THRESHOLD = 4 * 1024 * 1024;', to: 'const _MD5_STREAM_THRESHOLD = 4 * 1000 * 1000;' }],
+        edits: [{ from: 'const _MD5_STREAM_THRESHOLD = 4 * 1024 * 1024;', to: 'const _MD5_STREAM_THRESHOLD = 8 * 1024 * 1024;' }],
         expect: /流式 MD5 有明确的体积阈值/,
     },
     {
         label: 'MD5 会话备忘被移除（重复打开重算整份字节）',
         file: 'main.js',
-        anchor: 'const _fileHashMemo = new Map();   // filePath -> { size, md5 }',
+        anchor: 'const _fileHashMemo = new Map();   // filePath -> { size, fp, md5 }（fp=首尾采样指纹）',
         edits: [
             { from: '_fileHashMemo', to: '_memo', count: 6 },
             { from: '_FILE_HASH_MEMO_MAX', to: '_MEMO_MAX', count: 2 },
@@ -154,10 +154,10 @@ const MUTATIONS = [
         expect: /超限时给出可读的错误提示/,
     },
     {
-        label: '_WORD_MAX_BYTES 上限常量形式被破坏',
+        label: '_WORD_MAX_BYTES 上限系数被改（50MB → 5MB，值守卫必须变红）',
         file: 'main.js',
         anchor: 'const _WORD_MAX_BYTES = 50 * 1024 * 1024;',
-        edits: [{ from: 'const _WORD_MAX_BYTES = 50 * 1024 * 1024;', to: 'const _WORD_MAX_BYTES = 50 * 1000 * 1000;' }],
+        edits: [{ from: 'const _WORD_MAX_BYTES = 50 * 1024 * 1024;', to: 'const _WORD_MAX_BYTES = 5 * 1024 * 1024;' }],
         expect: /Word 转换体积上限有具体数值/,
     },
 
@@ -304,10 +304,10 @@ const MUTATIONS = [
         expect: /全文档总高在写进 CSS 前被钳制/,
     },
     {
-        label: '布局高度上限常量形式被破坏（魔数化）',
+        label: '布局高度上限系数被改（30M → 3M，值守卫必须变红）',
         file: 'modules/pdf/document_reader.js',
         anchor: 'const MAX_DOC_LAYOUT_PX = 30 * 1000 * 1000;',
-        edits: [{ from: 'const MAX_DOC_LAYOUT_PX = 30 * 1000 * 1000;', to: 'const MAX_DOC_LAYOUT_PX = 3 * 1000000;' }],
+        edits: [{ from: 'const MAX_DOC_LAYOUT_PX = 30 * 1000 * 1000;', to: 'const MAX_DOC_LAYOUT_PX = 3 * 1000 * 1000;' }],
         expect: /布局高度上限是具体常量/,
     },
     {

@@ -656,11 +656,25 @@ let currentSourceId = null;
 // 同一路径+大小在本次会话内备忘，重复打开不再重算整份字节。
 const _MD5_STREAM_THRESHOLD = 4 * 1024 * 1024;
 const _FILE_HASH_MEMO_MAX = 128;
-const _fileHashMemo = new Map();   // filePath -> { size, md5 }
+const _fileHashMemo = new Map();   // filePath -> { size, fp, md5 }（fp=首尾采样指纹）
+// 会话备忘的 O(1) 内容指纹：采首尾各 32B + 长度。
+// 只按「路径 + size」备忘会在「同路径同大小但内容被覆盖」时复用旧 md5 ——
+// main_check_file_open 会据此误判为「已打开」而吞掉新文件内容。
+function _hash_fingerprint(bytes) {
+    const n = bytes.length;
+    let h = (n * 2654435761) >>> 0;
+    const edge = Math.min(32, n);
+    for (let i = 0; i < edge; i++) {
+        h = Math.imul(h ^ bytes[i], 16777619) >>> 0;
+        h = Math.imul(h ^ bytes[n - 1 - i], 16777619) >>> 0;
+    }
+    return h;
+}
 async function main_file_md5(uint8Array, filePath = null) {
+    const fp = filePath ? _hash_fingerprint(uint8Array) : 0;
     if (filePath) {
         const memo = _fileHashMemo.get(filePath);
-        if (memo && memo.size === uint8Array.length) return memo.md5;
+        if (memo && memo.size === uint8Array.length && memo.fp === fp) return memo.md5;
     }
     const md5 = uint8Array.length >= _MD5_STREAM_THRESHOLD
         ? await main_calculate_md5_streaming(uint8Array)
@@ -669,7 +683,7 @@ async function main_file_md5(uint8Array, filePath = null) {
         if (_fileHashMemo.size >= _FILE_HASH_MEMO_MAX) {
             _fileHashMemo.delete(_fileHashMemo.keys().next().value);
         }
-        _fileHashMemo.set(filePath, { size: uint8Array.length, md5 });
+        _fileHashMemo.set(filePath, { size: uint8Array.length, fp, md5 });
     }
     return md5;
 }
