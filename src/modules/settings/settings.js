@@ -2654,14 +2654,16 @@ async function initSettings() {
     let dev_loaded = false;
 
     function developer_options_activate(navigate) {
-        if (dev_loaded) return;
-        dev_loaded = true;
-
         const devBtn = document.getElementById('btnDevOptions');
         const devPage = document.getElementById('pageDevOptions');
         if (!devBtn || !devPage) return;
-
         devBtn.style.display = '';
+        if (dev_loaded) {
+            // 已加载过：仅确保按钮可见/可再次进入，不重复绑事件、不重复插脚本
+            if (navigate) devBtn.click();
+            return;
+        }
+        dev_loaded = true;
 
         devBtn.addEventListener('click', () => {
             sidebarBtns.forEach(b => b.classList.remove('sp-active'));
@@ -2681,6 +2683,28 @@ async function initSettings() {
         };
         document.body.appendChild(script);
     }
+
+    /**
+     * 开发者模式开/关的唯一 UI 入口，供开发者选项页内的开关调用。
+     * 关闭时：隐藏侧栏按钮、复位 dev_loaded（下次开启能重新绑定）、
+     * 若当前正停在开发者页则跳回关于页——否则关掉后页面还开着、入口又没了，
+     * 表现为「关不掉/再也打不开」。
+     */
+    window.developer_options_set_active = (enabled, navigate = false) => {
+        const devBtn = document.getElementById('btnDevOptions');
+        if (enabled) {
+            developer_options_activate(navigate);
+            return;
+        }
+        if (devBtn) devBtn.style.display = 'none';
+        dev_loaded = false;
+        const activeBtn = document.querySelector('#settingsPanel .sidebar-item.sp-active');
+        if (activeBtn?.id === 'btnDevOptions') {
+            sidebarBtns.forEach(b => b.classList.remove('sp-active'));
+            document.getElementById('btnAbout')?.classList.add('sp-active');
+            settings_show_page('pageAbout');
+        }
+    };
 
     // 点击关于页图标5次打开
     let dev_click_count = 0;

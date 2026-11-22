@@ -249,9 +249,14 @@ function developer_options_show_main(currentWidthRatio, currentMaxScale, devMode
             if (invoke) {
                 invoke('settings_save_all', { settings: { developerMode: enabled } });
             }
-            /* 同步隐藏/显示侧边栏按钮 */
-            const devBtn = document.getElementById('btnDevOptions');
-            if (devBtn) devBtn.style.display = enabled ? '' : 'none';
+            // 交给设置面板的统一入口：关闭时复位 dev_loaded、隐藏按钮并跳回
+            // 关于页，下次点 logo 5 次能重新激活（旧实现只隐藏按钮，关了就再也打不开）
+            if (typeof window.developer_options_set_active === 'function') {
+                window.developer_options_set_active(enabled, false);
+            } else {
+                const devBtn = document.getElementById('btnDevOptions');
+                if (devBtn) devBtn.style.display = enabled ? '' : 'none';
+            }
         });
     })();
 
