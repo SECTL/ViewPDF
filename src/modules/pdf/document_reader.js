@@ -435,6 +435,7 @@ class DocumentReaderManager {
 
         // 惯性（动量）系统
         this._dr_momentum_raf = null;
+        this._dr_momentum_active = false;   // 权威标志：惯性期禁止重启紧急预渲染泵
         this._dr_momentum_last_ts = null;   // 上一惯性帧时间戳（帧率无关衰减用）
         this._dr_momentum_vis_t = 0;        // 上次惯性期刷新可见性的时刻
         this._dr_momentum_final_id = null;  // 延后的惯性收尾（idle 回调），起笔前必须快进
@@ -1652,6 +1653,13 @@ class DocumentReaderManager {
     _dr_diag_sentinel(trigger) {
         this._diag_last_trigger = trigger;
         if (!this._diag_last_lens) return;
+        // 快滑期间可见性扫描是 60Hz（拖拽/wheel）或 30Hz（惯性）。这里原本
+        // 每帧全量遍历所有页的 stroke_history：400 页文档 = 每帧 400 次 Map
+        // 读写、每秒 2.4 万次纯诊断开销，正是滑行帧的隐性固定成本。
+        // 诊断只需抓「异常收缩」这种低频事件，节流到 1s 一次足够。
+        const now = performance.now();
+        if (now - (this._diag_sentinel_t || 0) < 1000) return;
+        this._diag_sentinel_t = now;
         const pages = this.page_manager.pages_list;
         for (let i = 0; i < pages.length; i++) {
             const len = pages[i].stroke_history?.length ?? 0;
@@ -2075,7 +2083,10 @@ class DocumentReaderManager {
         // 带 _dom_virtualize() 守卫），其余页永远停在 page_element=null；
         // 而 _check_page_visibility 在非虚拟化模式下对未挂载页 `continue` 跳过
         // —— 结果是「100 页以下的文档打开后一片空白」。
-        const K = 2;
+        // 首屏预挂载前后各 5 页的真实 DOM：翻页/小幅滑动时这几页已在文档树里，
+        // 不必等进入视口才现场 _ensure_page_element（同步建 canvas + 布局，是卡顿主源）。
+        // 非虚拟化仍建全部（见下方注释，这个分支不能只建 K 页）。
+        const K = this._premount_near_pages;
         const center = Math.max(0, Math.min(len - 1, this.active_page_index || 0));
         const virtualized = this._dom_virtualize();
         const from = virtualized ? Math.max(0, center - K) : 0;
@@ -2545,7 +2556,11 @@ class DocumentReaderManager {
         // 点击之外，却要和「用户正要看的那一页」抢渲染线程槽位与 48ms 提交
         // 节流。连点时真正需要的相邻页已由 _prerender_for_navigation 按全量
         // DPR 覆盖，泵的深前瞻在这里是纯负收益。
-        if (moving && this._dr_moving_frames >= 2 && !this._dr_flipping_rapidly()) {
+        // 惯性期不得重启紧急泵：_dr_start_momentum 已停泵，但本扫描每 33ms 推进
+        // _dr_last_scroll_t 会把 moving 重新判成 true，令泵在滑行中复活，派发 0.5x
+        // 占位图抢占被限流到 1 的 worker 槽位——正是 stop 想避免的情形。
+        if (moving && this._dr_moving_frames >= 2 && !this._dr_flipping_rapidly()
+            && !this._dr_momentum_active) {
             this._dr_start_prerender_pump();
         }
 
@@ -4318,21 +4333,25 @@ class DocumentReaderManager {
         this._dr_mount_block_until = performance.now() + MOUNT_IDLE_AFTER_MS;
         this._render_host?.set_throttled?.(true);
         if (this._render_resume_timer === null) {
+            // 按真实暂停期限定时，而非固定 170ms 轮询：固定轮询与 120ms 期限
+            // 相位无关，实测让恢复延迟 190–290ms（用户读作「滑完还要等一下」）。
+            const wait = Math.max(16, (this._render_pause_until || 0) - performance.now() + 8);
             this._render_resume_timer = setTimeout(() => {
                 this._render_resume_timer = null;
                 this._dr_on_render_resume();
-            }, 170);
+            }, wait);
         }
     }
 
     _dr_on_render_resume() {
         if (!this.is_open) return;
         if (this._dr_renders_paused()) {
-            // 手势仍在继续（期限被后续手势帧续期）：顺延到下一轮静默窗口
+            // 手势仍在继续（期限被后续手势帧续期）：顺延到真实期限，不再固定 170ms
+            const wait = Math.max(16, (this._render_pause_until || 0) - performance.now() + 8);
             this._render_resume_timer = setTimeout(() => {
                 this._render_resume_timer = null;
                 this._dr_on_render_resume();
-            }, 170);
+            }, wait);
             return;
         }
         this._render_host?.set_throttled?.(false);
@@ -5103,11 +5122,14 @@ class DocumentReaderManager {
         const cur_h = Math.round(parseFloat(el.style.height)) || 0;
         const size_changed = cur_w !== safe_w || cur_h !== safe_h;
 
-        el.style.width = safe_w + 'px';
-        el.style.height = safe_h + 'px';
-
-        // 页面尺寸变更影响所有后续页面的 offsetTop，标记缓存脏
-        if (size_changed) this._invalidate_page_positions();
+        // 只有尺寸真变了才写 style：无条件写同值也会给元素打上样式重算标记，
+        // 而本函数在每次可见页进入时都会被调用（见上方注释的早退场景）。
+        if (size_changed) {
+            el.style.width = safe_w + 'px';
+            el.style.height = safe_h + 'px';
+            // 页面尺寸变更影响所有后续页面的 offsetTop，标记缓存脏
+            this._invalidate_page_positions();
+        }
 
         const img = page_data._img_el;
         if (img) {
@@ -7075,11 +7097,7 @@ class DocumentReaderManager {
                     const opr = op.getBoundingClientRect();
                     this._eraser_hint_rect_cache = { left: opr.left, top: opr.top };
                 } else if (this._scroll_container) {
-                    if (!this._cached_container_rect) {
-                        const cr = this._scroll_container.getBoundingClientRect();
-                        const wr = this._zoom_wrapper?.getBoundingClientRect();
-                        this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
-                    }
+                    if (!this._cached_container_rect) this._ensure_container_rect();
                     this._eraser_hint_rect_cache = {
                         left: this._cached_container_rect.left,
                         top: this._cached_container_rect.top
@@ -8004,6 +8022,9 @@ class DocumentReaderManager {
         if (this._dr_last_transform.scale !== this.dr_scale) {
             window.ResolutionController?.mark_interaction();
         } else if (!impulse) {
+            // 纯平移也要冻结瓦片 DPR 重建：平移期间每帧调 update_visible_tile_dpr
+            // 走完整 DPR 决策（含强制布局），而瓦片升级在滑行中本无意义。
+            window.ResolutionController?.mark_interaction();
             // 纯平移手势帧（含惯性滚动）：续期渲染暂停窗口，渲染让路给合成
             this._dr_mark_render_gesture();
         }
@@ -8027,6 +8048,8 @@ class DocumentReaderManager {
                     if (this._dr_last_transform.scale !== pt.scale) {
                         window.ResolutionController?.mark_interaction();
                     } else {
+                        // 纯平移帧同样冻结瓦片 DPR 重建（理由同 _dr_sync_transform）
+                        window.ResolutionController?.mark_interaction();
                         // 纯平移帧（触摸拖拽）：续期渲染暂停窗口
                         this._dr_mark_render_gesture();
                     }
@@ -8039,6 +8062,12 @@ class DocumentReaderManager {
                     // 建瓦片（_on_page_visible 对已初始化页有 is_tiles_initialized 守卫，
                     // 仅新可见页有开销）。缩放进行中跳过，避免与缩放结束批量刷新冲突。
                     if (!this._dr_is_zooming) {
+                        // transform 仍逐帧写（合成层平滑），但几何扫描/瓦片 DPR
+                        // 与惯性路径统一限频到 ~33ms：60Hz 扫描会让快滑每帧都付
+                        // 全量扫描 + 遍历所有带瓦片页的开销。
+                        const vt = performance.now();
+                        if (vt - (this._dr_drag_vis_t || 0) < 33) return;
+                        this._dr_drag_vis_t = vt;
                         this._check_page_visibility();
                         // 平移中新进入视野的瓦片按可见块立即补齐 DPR
                         //（缩放结束路径由 _dr_set_zooming 的批量刷新负责）
@@ -8189,6 +8218,7 @@ class DocumentReaderManager {
     // ====== 惯性系统 ======
 
     _dr_cancel_momentum() {
+        this._dr_momentum_active = false;
         if (this._dr_momentum_raf !== null) {
             cancelAnimationFrame(this._dr_momentum_raf);
             this._dr_momentum_raf = null;
@@ -8239,6 +8269,7 @@ class DocumentReaderManager {
         }
         this._dr_cancel_momentum();
         if (this._dr_momentum_raf !== null) return;
+        this._dr_momentum_active = true;
         // 预渲染泵必须停：它的停机条件是「距上次滚动 > 200ms」，而 _dr_last_scroll_t
         // 只由 _check_page_visibility() 推进——惯性期不再调用它（见 _dr_momentum_tick），
         // 于是时间戳立刻陈旧，泵却仍会再跑最多 200ms。这段时间里它按**早已失效**的
@@ -8308,7 +8339,12 @@ class DocumentReaderManager {
             // 延迟重量操作到浏览器空闲时，避免最后一帧 jank
             const doFinal = () => {
                 this._dr_momentum_final_id = null;
-                this._dr_apply_scale();
+                this._dr_momentum_active = false;
+                // 这是离散的滑行落点（等同程序化翻页的冲量），不是新手势。
+                // 若用默认 impulse=false，_dr_sync_transform 会续期渲染暂停并把
+                // worker 重新限流到 1 并发——rIC 最迟 500ms 才到，恰好把刚在
+                // resume 启动的全速渲染再次推后 ~170ms，用户读作「滑完还糊半秒」。
+                this._dr_apply_scale(true);
                 this._dr_schedule_disable_smooth_transform();
                 // _dr_apply_scale 内部已按新几何重算边界并刷可见性；只有仍在
                 // 缩放态时它会提前 return，才需要这里补一次（否则是重复全量扫描）
@@ -8364,11 +8400,7 @@ class DocumentReaderManager {
                 const old_s = this.dr_scale;
                 const ratio = new_s / old_s;
 
-                if (!this._cached_container_rect) {
-                    const cr = this._scroll_container.getBoundingClientRect();
-                    const wr = this._zoom_wrapper?.getBoundingClientRect();
-                    this._cached_container_rect = { top: cr.top, bottom: cr.bottom, left: cr.left, wrapperTop: wr?.top ?? 0 };
-                }
+                if (!this._cached_container_rect) this._ensure_container_rect();
                 const container_rect = this._cached_container_rect;
                 const mouse_x = e.clientX - container_rect.left;
                 const mouse_y = e.clientY - container_rect.top;

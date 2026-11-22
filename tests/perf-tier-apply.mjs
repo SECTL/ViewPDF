@@ -13,10 +13,13 @@ const NAMES = /const RENDER_PERF_TIER_NAMES\s*=\s*\[([^\]]+)\]/.exec(src);
 const NAMES_ARR = new Function('return [' + NAMES[1] + ']')();
 
 // --- 抠出方法体，转成可调用函数 ---
-const m = /apply_perf_tier\s*\(\s*tier\s*\)\s*\{([\s\S]*?)\n    \}/.exec(src);
+const m = /apply_perf_tier\s*\([^)]*\)\s*\{([\s\S]*?)\n    \}/.exec(src);
 if (!m) { console.error('FAIL  未找到 apply_perf_tier'); process.exit(1); }
+// 方法体现在还引用 highMemory 形参和两个预挂载常量（高内存模式），一并注入
 const apply = new Function('RENDER_PERF_TIERS', 'RENDER_PERF_TIER_NAMES',
-  'return function (tier) {' + m[1] + '\n};')(T, NAMES_ARR);
+  'PREMOUNT_NEAR_PAGES', 'HIGH_MEMORY_PRELOAD_MULT',
+  'return function (tier, highMemory = false) {' + m[1] + '\n};')(
+  T, NAMES_ARR, 5, 3);
 
 let pass = 0, fail = 0;
 const eq = (label, got, want) => {

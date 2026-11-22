@@ -93,8 +93,8 @@ const M = [
   {
     label: '三档 wrapper_keep_distance 恢复分档（3/6/8）',
     expect: '三档 wrapper_keep_distance 统一 50',
-    from: 'wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档\n        image_keep_distance: 5,',
-    to: 'wrapper_keep_distance: 8,    // 同 low：包裹常驻不分档\n        image_keep_distance: 5,',
+    from: 'wrapper_keep_distance: 50,    // 同 low：包裹常驻不分档\n        image_keep_distance: 16,',
+    to: 'wrapper_keep_distance: 8,    // 同 low：包裹常驻不分档\n        image_keep_distance: 16,',
   },
 ];
 

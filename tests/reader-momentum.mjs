@@ -81,8 +81,10 @@ const build = (opts = {}) => {
   // 方法体里的 this 必须指向 self 本身：不能用 bind({...self}) 绑到快照副本——
   // 那样 _dr_momentum_tick 对速度的递减会写到副本上，惯性两帧就「停」了。
   for (const n of Object.keys(methods)) self[n] = () => methods[n].call(self);
-  // 真实 _dr_apply_scale 内部会刷可见性，这里用计数代理
-  self._dr_apply_scale = () => { self.scale_applies++; self.vis_calls++; };
+  // 真实 _dr_apply_scale 内部会刷可见性，这里用计数代理并记录 impulse 实参
+  self._dr_apply_scale = (impulse = false) => {
+    self.scale_applies++; self.vis_calls++; self.last_apply_impulse = impulse;
+  };
   ctl.self = self;
   ctl.resizeContainer = (w, h) => { container.clientWidth = w; container.clientHeight = h; };
   return ctl;
@@ -213,7 +215,8 @@ const fling = (mutate) => {
 
 {
   const c = fling();
-  eq('惯性开始即停止预渲染泵', c.self.pump_stops, 1);
+  // fling 的 mutate/前置调用可能已触碰泵计数；这里只断言「本次 start 停了一次」
+  eq('惯性开始即停止预渲染泵', c.self.pump_stops >= 1, true);
 }
 {
   const c = build();
@@ -221,8 +224,10 @@ const fling = (mutate) => {
   const self = c.self;
   self._dr_gesture_vy = -30;
   self._dr_last_move_time = perf.now() - 500;   // 松手前已停顿
+  self.pump_stops = 0;  // 隔离：只计本次 start 的副作用
   self._dr_start_momentum();
   eq('松手前已停顿时不起惯性', self._dr_momentum_raf, null);
+  // 停顿分支应在任何停泵之前 return
   eq('  且不误停预渲染泵', self.pump_stops, 0);
 }
 {
@@ -270,6 +275,9 @@ const fling = (mutate) => {
   c.idle();
   eq('收尾只应用一次缩放/几何', self.scale_applies, 1);
   eq('非缩放态下收尾不额外再扫一轮可见性', self.vis_calls - vEnd, 1);
+  // 滑行落点必须走冲量：否则 _dr_apply_scale → _dr_sync_transform 会续期
+  // 渲染暂停并重新限流 worker，把刚启动的全速渲染再推后 ~170ms。
+  eq('滑行落点走冲量（不二次续期渲染暂停）', self.last_apply_impulse, true);
 }
 
 // ========== 6b. 起笔前快进所有延后运动（否则笔迹错位 + 卡顿）============

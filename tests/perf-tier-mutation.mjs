@@ -59,9 +59,9 @@ const MUTATIONS = [
   // 已改为三档统一 50、不再分档，锚点随之消失 —— 变异自己失效会报 [SKIP]，
   // 留着等于假装还在守。换成仍然分档的 image_keep_distance，保持同一类断言
   // （low 档成本参数不得比均衡档大）。
-  ['low 档把图片常驻窗口配得比均衡档还大（3 → 20）',
+  ['low 档把图片常驻窗口配得比均衡档还大（8 → 20）',
     F.reader,
-    (t) => t.replace('image_keep_distance: 3,', 'image_keep_distance: 20,'),
+    (t) => t.replace('image_keep_distance: 8,', 'image_keep_distance: 20,'),
     /成本参数保持 low/],
   ['low 档把渲染并发配得比均衡档还高（1 → 4）',
     F.reader,
@@ -81,7 +81,7 @@ const MUTATIONS = [
     /参数集与 low 完全一致|漏掉/],
   ['init.js 不再回放档位（启动丢失配置）',
     F.init,
-    (t) => t.replace(/window\.documentReaderManager\?\.\s*apply_perf_tier\?\.\(settings\.renderPerfTier\);\n\s*\}/, '}'),
+    (t) => t.replace(/window\.documentReaderManager\?\.\s*apply_perf_tier\?\.\([\s\S]{0,120}?\);/, '/* 去掉启动回放 */'),
     /只被 init\.js 与 main\.js 调用/],
   ['设置面板里也直接调 apply_perf_tier（改档会执行两遍）',
     F.settings,
@@ -112,8 +112,8 @@ const MUTATIONS = [
   // ---- 以下针对行为测试（perf-tier-apply.mjs）：守卫看不见「赋值写错字段」 ----
   ['apply_perf_tier 把位图缓存条目数写到了错误的字段',
     F.reader,
-    (t) => rep(t, 'this._bitmap_cache_max_entries = p.bitmap_cache_entries;',
-      'this._bitmap_cache_max_entries = p.blob_keep_distance;'),
+    (t) => rep(t, 'this._bitmap_cache_max_entries = p.bitmap_cache_entries * mul;',
+      'this._bitmap_cache_max_entries = p.blob_keep_distance * mul;'),
     /落到实例字段/],
   ['apply_perf_tier 不清位图缓存（降档后旧纹理仍常驻）',
     F.reader,

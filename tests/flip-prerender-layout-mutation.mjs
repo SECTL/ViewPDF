@@ -30,8 +30,15 @@ const M = [
     {
         label: '幂等页盒写入又无条件置脏',
         expect: '同尺寸写入不置脏',
-        from: '        if (size_changed) this._invalidate_page_positions();',
-        to: '        this._invalidate_page_positions();',
+        from: `        if (size_changed) {
+            el.style.width = safe_w + 'px';
+            el.style.height = safe_h + 'px';
+            // 页面尺寸变更影响所有后续页面的 offsetTop，标记缓存脏
+            this._invalidate_page_positions();
+        }`,
+        to: `        el.style.width = safe_w + 'px';
+        el.style.height = safe_h + 'px';
+        this._invalidate_page_positions();`,
     },
 ];
 

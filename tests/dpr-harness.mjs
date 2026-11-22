@@ -509,7 +509,9 @@ console.log('--- 冲量位移豁免（impulse）不变量 ---');
 
   eq('_dr_sync_transform 有 impulse 形参（默认 false）', /_dr_sync_transform\s*\(\s*impulse\s*=\s*false\s*\)/.test(sync), true);
   eq('_dr_sync_transform 仅在非冲量时续期渲染暂停窗口',
-     /else if \(!impulse\)[\s\S]{0,120}_dr_mark_render_gesture\(\)/.test(sync), true);
+     /else if \(!impulse\)[\s\S]{0,240}_dr_mark_render_gesture\(\)/.test(sync), true);
+  eq('_dr_sync_transform 纯平移也冻结瓦片 DPR 重建（避免逐帧全量决策）',
+     /else if \(!impulse\)[\s\S]{0,260}mark_interaction\(\)/.test(sync), true);
   eq('_dr_sync_transform 仍保留仅缩放冻结分支',
      /if \(this\._dr_last_transform\.scale !== this\.dr_scale\)[\s\S]{0,160}mark_interaction\(\)/.test(sync), true);
   eq('_dr_apply_scale 有 impulse 形参并透传',
@@ -536,12 +538,22 @@ console.log('--- 冲量位移豁免（impulse）不变量 ---');
   eq('Ctrl+0 重置缩放走冲量路径', /_dr_apply_scale\(true\)/.test(ctrl0), true);
   eq('Ctrl+0 重置前先清遗留暂停窗口', /_dr_cancel_zoom_debounce\(\)/.test(ctrl0), true);
 
-  // 真实手势路径（拖拽惯性/滚轮/捏合）必须保持默认非冲量，否则平移流畅性回退
-  const gestureFns = ['_dr_momentum_tick', '_dr_handle_wheel'];
-  for (const fn of gestureFns) {
-    const b = method(fn) || '';
-    eq(`${fn} 存在`, b.length > 0, true);
-    eq(`${fn} 内无冲量豁免（手势续期暂停必须保留）`, /_dr_apply_scale\(true\)/.test(b), false);
+  // 真实手势续期帧必须保持默认非冲量，否则平移流畅性回退。
+  // 惯性的「滑行落点」是离散冲量（等同程序化翻页），单独允许——它不会续期
+  // 渲染暂停，正是修复「滑完后二次糊半秒」的关键。
+  const mt = method('_dr_momentum_tick') || '';
+  eq('_dr_momentum_tick 存在', mt.length > 0, true);
+  const frameIdx = mt.indexOf('if (Math.abs(vx) > 0.5');
+  const elseIdx = frameIdx >= 0 ? mt.indexOf('} else {', frameIdx) : -1;
+  const framePart = (frameIdx >= 0 && elseIdx >= 0) ? mt.slice(frameIdx, elseIdx) : '';
+  eq('逐帧手势路径无冲量豁免（续期暂停必须保留）',
+     framePart.length > 0 && !framePart.includes('_dr_apply_scale(true)'), true);
+  eq('滑行落点走冲量（不二次续期渲染暂停）',
+     /const doFinal[\s\S]{0,600}?_dr_apply_scale\(true\)/.test(mt), true);
+  {
+    const b = method('_dr_handle_wheel') || '';
+    eq('_dr_handle_wheel 存在', b.length > 0, true);
+    eq('_dr_handle_wheel 内无冲量豁免', /_dr_apply_scale\(true\)/.test(b), false);
   }
 
   // 目标计算唯一入口：非占位两条分支都必须过宽度上限夹取
@@ -590,7 +602,10 @@ console.log('--- 翻页预渲染扇出上限（2026-10-02 翻页延迟）---');
   // 泵的启动点在 _check_page_visibility 里，不在 pump 自身方法体内。
   eq('紧急预渲染泵要求连续两帧运动（单帧翻页冲量不启动）',
      /_dr_moving_frames\s*=\s*moving\s*\?\s*\(\(this\._dr_moving_frames \|\| 0\)\s*\+\s*1\)\s*:\s*0/.test(vis) &&
-     /if \(moving && this\._dr_moving_frames >= 2[\s\S]{0,90}_dr_start_prerender_pump\(\);/.test(vis), true);
+     /if \(moving && this\._dr_moving_frames >= 2[\s\S]{0,180}_dr_start_prerender_pump\(\);/.test(vis), true);
+  eq('紧急预渲染泵在惯性期不得复活（占位图不抢 worker 槽位）',
+     /_dr_momentum_active/.test(vis) &&
+     /!this\._dr_momentum_active[\s\S]{0,60}_dr_start_prerender_pump\(\)/.test(vis), true);
   eq('紧急预渲染泵不再扫描未挂载页（避免每帧空转渲染入口）',
      /if \(!pd\.page_element\) continue;/.test(pump), true);
 
@@ -618,7 +633,7 @@ console.log('--- 翻页预渲染扇出上限（2026-10-02 翻页延迟）---');
      /_dr_note_flip\(\);\s*\n\s*this\._prerender_for_navigation\(page_index\);/.test(method('_scroll_to_page') || ''), true);
 
   eq('连点期间屏蔽紧急预渲染泵（远页深前瞻与可见页抢线程槽位）',
-     /if \(moving && this\._dr_moving_frames >= 2 && !this\._dr_flipping_rapidly\(\)\)/.test(vis), true);
+     /if \(moving && this\._dr_moving_frames >= 2 && !this\._dr_flipping_rapidly\(\)[\s\S]{0,80}_dr_start_prerender_pump\(\)/.test(vis), true);
   eq('close 必须清理连点排空定时器（否则关闭后回调建瓦片）',
      /_dr_flip_drain_timer != null\)[\s\S]{0,120}clearTimeout\(this\._dr_flip_drain_timer\)/.test(body), true);
 }
@@ -1015,7 +1030,7 @@ console.log('--- 源码层不变式守卫 ---');
     // 只看右侧而不要求左右同名：实例字段名早于档位机制存在且不再改名
     // （_RENDER_MAX ← render_max、_bitmap_cache_max_bytes ← bitmap_cache_bytes 等），
     // 名字不齐是有意的历史包袱，改名会牵扯几十处读取点。
-    const applyBody = /apply_perf_tier\s*\(\s*tier\s*\)\s*\{([\s\S]*?)\n    \}/.exec(reader || '');
+    const applyBody = /apply_perf_tier\s*\([^)]*\)\s*\{([\s\S]*?)\n    \}/.exec(reader || '');
     ok('apply_perf_tier 存在（档位的唯一运行时落点）', !!applyBody);
     const body = applyBody ? applyBody[1] : '';
     eq('档位表里没有任何参数被 apply_perf_tier 漏掉',
