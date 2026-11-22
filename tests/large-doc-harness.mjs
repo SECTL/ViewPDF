@@ -210,7 +210,7 @@ console.log('\n=== 2. 页数轴（N）：窗口化守卫 ===');
         /this\._page_positions = \{ tops, heights, total, stale: false \}/.test(cpl)
         && /_layout_total_clamped = \(DOM_H < total\)/.test(cpl));
     ok('布局高度上限是具体常量（不是散落的魔数）',
-        /const MAX_DOC_LAYOUT_PX = \d+ \* 1000 \* 1000/.test(dr));
+        (dr.match(/const MAX_DOC_LAYOUT_PX = (\d+) \* 1000 \* 1000/) || [])[1] === '30');
 
     // —— 导入路径必须走「感知体积」的哈希入口 ——
     {
@@ -219,7 +219,7 @@ console.log('\n=== 2. 页数轴（N）：窗口化守卫 ===');
             callSites.length === 2 && callSites.every(n => n === 'main_file_md5'),
             `got=${JSON.stringify(callSites)}`);
         ok('流式 MD5 有明确的体积阈值（不是无条件走流式）',
-            /const _MD5_STREAM_THRESHOLD = \d+ \* 1024 \* 1024/.test(mjs));
+            (mjs.match(/const _MD5_STREAM_THRESHOLD = (\d+) \* 1024 \* 1024/) || [])[1] === '4');
         ok('流式 MD5 会话内备忘存在（重复打开不再重算）',
             /_fileHashMemo/.test(mjs) && /_FILE_HASH_MEMO_MAX/.test(mjs));
         ok('流式 MD5 不分配与输入等量的副本（只用常数级 scratch）',
@@ -243,7 +243,7 @@ console.log('\n=== 2. 页数轴（N）：窗口化守卫 ===');
             /docxTooLarge/.test(mjs) && /main_show_error_dialog/.test(mjs.slice(guardIdx, arrIdx)));
     }
     ok('Word 转换体积上限有具体数值（_WORD_MAX_BYTES）',
-        /const _WORD_MAX_BYTES = \d+ \* 1024 \* 1024/.test(mjs));
+        (mjs.match(/const _WORD_MAX_BYTES = (\d+) \* 1024 \* 1024/) || [])[1] === '50');
 
     // —— pdf.js 取字节：大文件不自动预取全部 ——
     ok('主线程三处 getDocument 全部禁用自动全量预取（大文件省一份内存）',
