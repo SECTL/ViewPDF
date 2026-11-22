@@ -4051,6 +4051,10 @@ class DocumentReaderManager {
                         viewport: render_viewport,
                         annotationMode: 0
                     });
+                    // force 重渲染/页面卸载会在 await 之前 cancel 本任务，其 promise
+                    // 会以 RenderingCancelledException reject。先挂 noop catch 兜住
+                    // 「Uncaught (in promise)」；下方 await 仍能正常收到取消异常。
+                    render_task.promise.catch(() => {});
                     page_data.pdf_render_task = render_task;
                     await render_task.promise;
                     page_data.pdf_render_task = null;
@@ -5567,9 +5571,28 @@ class DocumentReaderManager {
 
     /** 刷新容器矩形缓存（可见性判定与 tile 可见键共用的唯一入口） */
     _ensure_container_rect() {
+        if (this._cached_container_rect) {
+            // 容器自身在面板里静止：top/bottom/left/right 只在几何变化时
+            // （_on_reader_geometry_changed / resize 把缓存置 null）重读。
+            // transform 平移只改变 wrapper 的屏幕位置，用「首次读取时的屏幕位置
+            // + 相对该时刻的 translateY 差值」推导。不假设首次读取时 transform
+            // 已同步（打开流程里 cache 会在 _dr_sync_transform 之前被清空），
+            // 否则基准会错一整个 dr_canvas_y，页面被判到视口外 → 白屏。
+            const base = this._cached_container_rect;
+            base.wrapperTop = base.base_wrapper_top
+                + ((this.dr_canvas_y || 0) - base.base_canvas_y);
+            this._dr_transform_changed = false;
+            return;
+        }
         const cr = this._scroll_container?.getBoundingClientRect();
         const wr = this._zoom_wrapper?.getBoundingClientRect();
-        this._cached_container_rect = cr ? { top: cr.top, bottom: cr.bottom, left: cr.left, right: cr.right, wrapperTop: wr?.top ?? 0 } : null;
+        const canvas_y = this.dr_canvas_y || 0;
+        this._cached_container_rect = cr ? {
+            top: cr.top, bottom: cr.bottom, left: cr.left, right: cr.right,
+            base_wrapper_top: wr?.top ?? cr.top,
+            base_canvas_y: canvas_y,
+            wrapperTop: wr?.top ?? cr.top
+        } : null;
         this._dr_transform_changed = false;
     }
 
@@ -6602,8 +6625,12 @@ class DocumentReaderManager {
         const page_center_y = page_top + page_h / 2;
         const viewport_center_y = container.clientHeight / 2;
 
-        // 设置 canvas_y 使页面中心居中视口（无需动画，_dr_apply_scale 会 clamp 边界）
-        this.dr_canvas_x = 0;
+        // X 方向也居中：页面按基准宽铺满时 (viewport_w - bounded_w)/2 是正留白，
+        // 缩放后页面宽于视口时是负值（中心对齐）。旧实现固定 x=0，页面比视口宽
+        // 时就变成左对齐——这正是「部分 PDF 打开后偏左」的根因。
+        const viewport_w = container.clientWidth;
+        const bounded_w = this._get_page_base_width() * s;
+        this.dr_canvas_x = (viewport_w - bounded_w) / 2;
         this.dr_canvas_y = viewport_center_y - page_center_y * s;
         // impulse：程序化翻页不是手势。传 true 后本次 transform 写入不再续期
         // 120ms 渲染暂停、不限流渲染线程、不武装 170ms 恢复定时器——目标页

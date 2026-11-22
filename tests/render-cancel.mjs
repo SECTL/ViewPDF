@@ -5,6 +5,7 @@
 // RenderingCancelledException"。取消属预期路径，必须由 promise 自己兜住 noop catch；
 // 真正 await 的调用方仍要收到取消异常（否则渲染守卫与 seq 逻辑失效）。
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 let pass = 0, fail = 0;
 const eq = (label, got, want) => {
@@ -12,6 +13,7 @@ const eq = (label, got, want) => {
   good ? pass++ : fail++;
   console.log((good ? 'PASS  ' : 'FAIL  ') + label + '   got=' + String(got) + ' want=' + String(want));
 };
+const ok = (label, got) => eq(label, !!got, true);
 
 // 假 Worker：只为了满足构造与 postMessage，不真的派生线程。
 globalThis.Worker = class FakeWorker {
@@ -75,6 +77,16 @@ process.on('unhandledRejection', onUnhandled);
   h.render(12, 800, 1, true, 0); // 触发超限，丢弃最旧的 10
   await new Promise(r => setTimeout(r, 0));
   eq('队列超限没有未处理的 rejection', unhandled.length, 0);
+}
+
+// ===== 4. 主线程 pdf.js render_task.promise 的取消兜底 =====
+// 日志里曾出现 4× "Uncaught (in promise) RenderingCancelledException: ... page 44"：
+// force 重渲染/页面卸载在 await 之前 cancel 主线程 render task，其 promise 无 awaiter。
+{
+  const dr = fs.readFileSync('src/modules/pdf/document_reader.js', 'utf8');
+  ok('主线程 render_task 创建后立即挂 noop catch',
+    /page_data\.pdf_render_task = render_task;[\s\S]{0,40}?render_task\.promise\.catch\(\(\) => \{\}\)/.test(dr) ||
+    /render_task\.promise\.catch\(\(\) => \{\}\)[\s\S]{0,60}?page_data\.pdf_render_task = render_task;/.test(dr));
 }
 
 process.off('unhandledRejection', onUnhandled);
