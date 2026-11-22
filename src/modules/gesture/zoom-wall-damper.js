@@ -75,11 +75,9 @@ export class ZoomWallDamper {
         }
 
         this._value = Math.max(min, Math.min(max, next));
-
-        // 自由区间内同步累计值：保证脱离边界与再次贴墙时无跳变
-        if (this._value > min + eps && this._value < max - eps) {
-            this._acc = this._value;
-        }
+        // 注：曾有一行「自由区间内 this._acc = this._value」的同步，
+        // 但自由区间内 next === _acc 且 _value = clamp(next) 未越界即等于 next，
+        // 该赋值是自赋值（16.8 万帧暴力验证零差异），属死代码，已移除。
         return this._value;
     }
 }

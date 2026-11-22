@@ -260,7 +260,8 @@ export async function history_handle_undo() {
         command = history_state.undo_list.pop();
         history_state.redo_list.push(command);
         // redo 栈同样设硬上限：它会被序列化进缓存文件，不能无界增长。
-        // 超限时丢弃队首（= 撤销得最深的那条，本就再无可重做的意义）。
+        // 超限时丢弃队首 —— redo 队首是「第一个被 undo、此刻位于 undo 栈顶、
+        // 即最近执行」的那条命令（撤销得最浅、最应优先重做），而非撤销最深的一条。
         const REDO_HARD_LIMIT = MAX_HISTORY_STEPS * 2;
         if (history_state.redo_list.length > REDO_HARD_LIMIT) {
             history_state.redo_list.shift();
