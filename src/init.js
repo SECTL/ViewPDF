@@ -599,15 +599,30 @@ function format_file_size(bytes) {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 }
 
+/**
+ * 两个自然日之间的天数差（按本地日历日，而非 24 小时滚动窗口）。
+ * 例：08:40 看昨天 16:45 —— 只隔 15h55m，但跨了一个自然日，必须是「昨天」。
+ * 旧实现用 now - time < 86400000，把昨天下午的文件算成「今天」，
+ * 于是出现「08:40 显示今天 16:45」这种未来时间。
+ * 未来时间（时钟偏差）视为 0 天，归入「今天」。
+ */
+function _calendar_day_delta(time) {
+    if (!time) return Infinity;
+    const d = new Date(time);
+    const now = new Date();  // 直接读取系统时间
+    // 用本地年月日构造当天零点，避免夏令时/时区下 86400000 不精确
+    const dayOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const delta = Math.round((dayOf(now) - dayOf(d)) / 86400000);
+    return delta < 0 ? 0 : delta; // 未来时间归今天
+}
+
 function time_group_label(time) {
-    if (!time) return '更早';
-    const now = Date.now();
-    const diff = now - time;
-    const oneDay = 86400000;
-    if (diff < oneDay) return '今天';
-    if (diff < 2 * oneDay) return '昨天';
-    if (diff < 7 * oneDay) return '本周';
-    if (diff < 30 * oneDay) return '本月';
+    const days = _calendar_day_delta(time);
+    if (days === Infinity) return '更早';
+    if (days === 0) return '今天';
+    if (days === 1) return '昨天';
+    if (days < 7) return '本周';
+    if (days < 30) return '本月';
     return '更早';
 }
 
@@ -615,14 +630,12 @@ function format_access_time(time) {
     if (!time) return '';
     const d = new Date(time);
     const now = new Date();
-    const diff = now - d;
-    const oneDay = 86400000;
-    if (diff < oneDay) {
-        return '今天 ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    }
-    if (diff < 2 * oneDay) return '昨天 ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const days = _calendar_day_delta(time);
+    const hhmm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    if (days === 0) return '今天 ' + hhmm;
+    if (days === 1) return '昨天 ' + hhmm;
     if (d.getFullYear() === now.getFullYear()) {
-        return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + hhmm;
     }
     return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
 }
