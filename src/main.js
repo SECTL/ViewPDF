@@ -540,83 +540,144 @@ const _MD5_SHIFTS = [
     6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
 ];
 
-function main_calculate_md5(bytes) {
-    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const original_len = data.length;
-    const padded_len = (((original_len + 8) >> 6) + 1) << 6;
-    const buffer = new Uint8Array(padded_len);
-    buffer.set(data);
-    buffer[original_len] = 0x80;
+// MD5 统一实现：同步与流式两条路径共用同一套「常数级 scratch + 压缩函数」，
+// 保证逐位一致。原同步实现会分配一份与文件大小成正比的 padded 副本（O(M) 内存），
+// 大文档（数百 MB）导入时即 OOM；这里改成流式分块， scratch 固定 128/64/64 字节。
+const _md5_add32 = (a, b) => (a + b) >>> 0;
+const _md5_rotl = (x, c) => ((x << c) | (x >>> (32 - c))) >>> 0;
+const _md5_pad = new Uint8Array(128);   // 前 64B：单块补齐；后 64B：used>=56 时的第二块
+const _md5_tail = new Uint8Array(64);   // 不足一块的尾部 + 0x80 + 长度
+const _md5_m = new Uint32Array(16);     // 压缩函数复用的消息字（避免每块分配）
 
-    const bit_len = original_len * 8;
-    for (let i = 0; i < 8; i++) {
-        buffer[padded_len - 8 + i] = Math.floor(bit_len / Math.pow(256, i)) & 0xff;
+function _md5_compress(st, block, off) {
+    const m = _md5_m;
+    for (let i = 0; i < 16; i++) {
+        const j = off + i * 4;
+        m[i] = (block[j] | (block[j + 1] << 8) | (block[j + 2] << 16) | (block[j + 3] << 24)) >>> 0;
     }
-
+    let a = st.a, b = st.b, c = st.c, d = st.d;
     const shifts = _MD5_SHIFTS;
     const table = _MD5_SINE_TABLE;
-
-    let a0 = 0x67452301;
-    let b0 = 0xefcdab89;
-    let c0 = 0x98badcfe;
-    let d0 = 0x10325476;
-
-    const add32 = (a, b) => (a + b) >>> 0;
-    const left_rotate = (x, c) => ((x << c) | (x >>> (32 - c))) >>> 0;
-
-    for (let offset = 0; offset < padded_len; offset += 64) {
-        const m = new Uint32Array(16);
-        for (let i = 0; i < 16; i++) {
-            const j = offset + i * 4;
-            m[i] = (buffer[j] | (buffer[j + 1] << 8) | (buffer[j + 2] << 16) | (buffer[j + 3] << 24)) >>> 0;
-        }
-
-        let a = a0;
-        let b = b0;
-        let c = c0;
-        let d = d0;
-
-        for (let i = 0; i < 64; i++) {
-            let f;
-            let g;
-            if (i < 16) {
-                f = (b & c) | (~b & d);
-                g = i;
-            } else if (i < 32) {
-                f = (d & b) | (~d & c);
-                g = (5 * i + 1) % 16;
-            } else if (i < 48) {
-                f = b ^ c ^ d;
-                g = (3 * i + 5) % 16;
-            } else {
-                f = c ^ (b | ~d);
-                g = (7 * i) % 16;
-            }
-            const tmp = d;
-            d = c;
-            c = b;
-            b = add32(b, left_rotate(add32(add32(a, f >>> 0), add32(table[i], m[g])), shifts[i]));
-            a = tmp;
-        }
-
-        a0 = add32(a0, a);
-        b0 = add32(b0, b);
-        c0 = add32(c0, c);
-        d0 = add32(d0, d);
+    for (let i = 0; i < 64; i++) {
+        let f, g;
+        if (i < 16) { f = (b & c) | (~b & d); g = i; }
+        else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
+        else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
+        else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+        const tmp = d;
+        d = c;
+        c = b;
+        b = _md5_add32(b, _md5_rotl(_md5_add32(_md5_add32(a, f >>> 0),
+            _md5_add32(table[i], m[g])), shifts[i]));
+        a = tmp;
     }
+    st.a = _md5_add32(st.a, a);
+    st.b = _md5_add32(st.b, b);
+    st.c = _md5_add32(st.c, c);
+    st.d = _md5_add32(st.d, d);
+}
 
+function _md5_new_state() {
+    return { a: 0x67452301, b: 0xefcdab89, c: 0x98badcfe, d: 0x10325476,
+        len: 0, buf: new Uint8Array(64), bufLen: 0 };
+}
+
+function _md5_update(st, data) {
+    if (!data || !data.length) return;
+    st.len += data.length;
+    let pos = 0;
+    if (st.bufLen > 0) {
+        const take = Math.min(64 - st.bufLen, data.length);
+        st.buf.set(data.subarray(0, take), st.bufLen);
+        st.bufLen += take;
+        pos = take;
+        if (st.bufLen === 64) { _md5_compress(st, st.buf, 0); st.bufLen = 0; }
+    }
+    while (pos + 64 <= data.length) { _md5_compress(st, data, pos); pos += 64; }
+    if (pos < data.length) { st.buf.set(data.subarray(pos), 0); st.bufLen = data.length - pos; }
+}
+
+function _md5_final_hex(st) {
+    const bitLo = (st.len * 8) >>> 0;                 // 字节数 < 2^29 时的低位
+    const bitHi = Math.floor(st.len / 0x20000000);    // len >> 29（bit 长度高 32 位）
+    _md5_pad.fill(0);
+    _md5_pad[0] = 0x80;
+    for (let i = 0; i < 8; i++) {
+        const byte = i < 4 ? (bitLo >>> (i * 8)) & 0xff : (bitHi >>> ((i - 4) * 8)) & 0xff;
+        _md5_pad[56 + i] = byte;
+        _md5_pad[120 + i] = byte;
+    }
+    const used = st.bufLen;
+    if (used < 56) {
+        _md5_tail.fill(0);
+        if (used > 0) _md5_tail.set(st.buf.subarray(0, used), 0);
+        _md5_tail[used] = 0x80;
+        for (let i = 0; i < 8; i++) _md5_tail[56 + i] = _md5_pad[56 + i];
+        _md5_compress(st, _md5_tail, 0);
+    } else {
+        _md5_tail.fill(0);
+        _md5_tail.set(st.buf.subarray(0, used), 0);
+        _md5_tail[used] = 0x80;
+        _md5_compress(st, _md5_tail, 0);
+        _md5_compress(st, _md5_pad, 64);
+    }
     const word_to_hex = (word) => {
         let out = '';
-        for (let i = 0; i < 4; i++) {
-            out += ((word >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
-        }
+        for (let i = 0; i < 4; i++) out += ((word >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
         return out;
     };
+    return word_to_hex(st.a) + word_to_hex(st.b) + word_to_hex(st.c) + word_to_hex(st.d);
+}
 
-    return word_to_hex(a0) + word_to_hex(b0) + word_to_hex(c0) + word_to_hex(d0);
+function main_calculate_md5(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const st = _md5_new_state();
+    _md5_update(st, data);
+    return _md5_final_hex(st);
+}
+
+async function main_calculate_md5_streaming(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const st = _md5_new_state();
+    const CHUNK = 1024 * 1024;   // 1MB 分块：内存恒定，且不长时间霸占主线程
+    let blocks = 0;
+    for (let off = 0; off < data.length; off += CHUNK) {
+        _md5_update(st, data.subarray(off, Math.min(off + CHUNK, data.length)));
+        // 每 4MB 让出一次事件循环（大文件导入时进度条/交互不被哈希阻塞）
+        if (++blocks % 4 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    return _md5_final_hex(st);
 }
 
 let currentSourceId = null;
+
+// === 文件哈希统一入口：体积阈值 + 流式 + 会话备忘 ===
+// 小文件走同步（无调度开销），大文件走流式（常数内存 + 让出主线程）。
+// 同一路径+大小在本次会话内备忘，重复打开不再重算整份字节。
+const _MD5_STREAM_THRESHOLD = 4 * 1024 * 1024;
+const _FILE_HASH_MEMO_MAX = 128;
+const _fileHashMemo = new Map();   // filePath -> { size, md5 }
+async function main_file_md5(uint8Array, filePath = null) {
+    if (filePath) {
+        const memo = _fileHashMemo.get(filePath);
+        if (memo && memo.size === uint8Array.length) return memo.md5;
+    }
+    const md5 = uint8Array.length >= _MD5_STREAM_THRESHOLD
+        ? await main_calculate_md5_streaming(uint8Array)
+        : main_calculate_md5(uint8Array);
+    if (filePath) {
+        if (_fileHashMemo.size >= _FILE_HASH_MEMO_MAX) {
+            _fileHashMemo.delete(_fileHashMemo.keys().next().value);
+        }
+        _fileHashMemo.set(filePath, { size: uint8Array.length, md5 });
+    }
+    return md5;
+}
+
+// Word 转换要把 Uint8Array 经 Tauri IPC(JSON) 传给 Rust：JSON 会把 TypedArray
+// 序列化成 {"0":..}，因此必须 Array.from 成普通数组。这一步本身改不动（要改
+// 得动 Rust 端），能守的是转换前的体积上限：超限直接给可读提示，不让窗口 OOM/卡死。
+const _WORD_MAX_BYTES = 50 * 1024 * 1024;
 
 let sourceDataStore = {};
 
@@ -1165,7 +1226,15 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         }
         
         console.log('文件大小:', uint8Array.length, '字节');
-        const fileMd5 = main_calculate_md5(uint8Array);
+        if (uint8Array.length > _WORD_MAX_BYTES) {
+            main_hide_loading_overlay();
+            main_show_error_dialog(
+                window.i18n?.format_translate('errors.convertFailed') || '转换失败',
+                window.i18n?.format_translate('errors.docxTooLargeDesc') || 'Word 文件超过 50MB，无法转换，请拆分后重试'
+            );
+            return;
+        }
+        const fileMd5 = await main_file_md5(uint8Array, filePath);
         // 与 PDF 路径一致：加载中去重，避免同一 Word 文件并发打开产生重复标签
         if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
             main_hide_loading_overlay();
@@ -1231,6 +1300,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
             wordPdfDoc = await pdfjsLib.getDocument({
                 data: pdfArrayBuffer,
                 enableXfa: false,
+                // 大文件不自动预取全部字节：按需 Range 读取，省一份内存
+                disableAutoFetch: true,
                 useSystemFonts: false,
                 isEvalSupported: false,
                 standardFontDataUrl: PDFJS_ASSETS_BASE + 'standard_fonts/',
@@ -1354,7 +1425,7 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         
         console.log('PDF数据大小:', uint8Array.length);
 
-        const fileMd5 = main_calculate_md5(uint8Array);
+        const fileMd5 = await main_file_md5(uint8Array, filePath);
         if (main_check_file_open(fileMd5) || state.loadingPdfMd5.has(fileMd5)) {
             fileData = null;
             uint8Array = null;
@@ -1366,6 +1437,8 @@ async function main_load_pdf_from_path(filePath, autoOpen = false) {
         loadedPdfDoc = await pdfjsLib.getDocument({
             data: uint8Array,
             enableXfa: false,
+            // 大文件不自动预取全部字节：按需 Range 读取，省一份内存
+            disableAutoFetch: true,
             // 始终打开这两项：它们让 getTextContent() 的 styles 里出现 fontSubstitution，
             // 用于检测「PDF 未嵌入、需要系统字体兜底」的文档。渲染是否真正走系统字体
             // 由 window.__systemFontFallback 与渲染线程门控决定，不受这两项影响
@@ -3466,6 +3539,8 @@ async function main_ensure_folder_doc(folder) {
         const doc = await pdfjsLib.getDocument({
             data: data,
             enableXfa: false,
+            // 大文件不自动预取全部字节（与首次打开同口径）
+            disableAutoFetch: true,
             // 与首次打开同口径（检测元数据始终可用）。
             useSystemFonts: true,
             fontExtraProperties: true,

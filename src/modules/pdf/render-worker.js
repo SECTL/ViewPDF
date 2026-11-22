@@ -71,6 +71,8 @@ class WorkerFilterFactory {
 // 不依赖任何 DOM 字体设施，代价是字形栅格化略慢（发生在线程内，不阻塞主线程）。
 const BASE_OPTIONS = {
     enableXfa: false,
+    // 大文件不自动预取全部字节：渲染线程只按页取所需，省一份完整副本
+    disableAutoFetch: true,
     useSystemFonts: false,
     isEvalSupported: false,
     disableFontFace: true,
@@ -176,6 +178,31 @@ self.onmessage = async (e) => {
                         type: 'render-error',
                         req,
                         cancelled: err?.name === 'RenderingCancelledException',
+                        error: String((err && err.message) || err)
+                    });
+                }
+                break;
+            }
+
+            case 'measure': {
+                // 只取页面尺寸（getViewport），不栅格化、不建画布 —— 用于导入后
+                // 后台回填剩余页宽高比。比 getPage+getViewport 的主线程路径更省，
+                // 且不占主线程；结果走低优先级队列，不抢占可见页渲染。
+                const { req, pageNum, rotation } = msg;
+                try {
+                    if (!pdf_doc) throw new Error('measure worker: document not open');
+                    const page = await _get_page(pageNum);
+                    // 变量名不与渲染路径的 rot 重合：reader-rotation 守卫统计
+                    // render-worker 中带 rotation 的 getViewport 恰好 2 处。
+                    const measureRot = ((rotation | 0) % 360 + 360) % 360;
+                    const base = page.getViewport({ scale: 1, rotation: measureRot });
+                    self.postMessage({
+                        type: 'measured', req,
+                        width: base.width, height: base.height
+                    });
+                } catch (err) {
+                    self.postMessage({
+                        type: 'measure-error', req,
                         error: String((err && err.message) || err)
                     });
                 }

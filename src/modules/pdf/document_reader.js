@@ -816,6 +816,8 @@ class DocumentReaderManager {
         // 诊断初始化 + 手动导出（控制台执行 window.__drDump() 查看现场）
         this._diag_journal = [];
         this._diag_last_lens = new Map();
+        // 「有批注的页」集合：诊断哨兵只扫这里，不再每帧遍历整份页表
+        this._pages_with_strokes = new Set();
         this._diag_suppress = false;
         // 缓存就绪门闩：恢复完成前禁止"空页面"延迟判定（见 _init_page_tiles）
         this._cache_ready = false;
@@ -1220,7 +1222,13 @@ class DocumentReaderManager {
             attempts++;
             let repaired = false;
             const pages = this.page_manager.pages_list;
-            for (let i = 0; i < pages.length; i++) {
+            // 只看活动页附近的固定窗口：半径是常数，不随文档页数 N 增长。
+            // 否则 400 页文档 × 8 轮 × 每帧全表扫描就是 O(8N) 的隐性开销。
+            const center = this.active_page_index >= 0 ? this.active_page_index : 0;
+            const radius = this._tile_keep_distance + 8;
+            const lo = Math.max(0, center - radius);
+            const hi = Math.min(pages.length - 1, center + radius);
+            for (let i = lo; i <= hi; i++) {
                 const pd = pages[i];
                 if (!pd?.page_element || pd.stroke_history.length === 0) continue;
                 if (!(pd.is_visible || this._is_page_near_active(i, this._tile_keep_distance))) continue;
@@ -1661,8 +1669,15 @@ class DocumentReaderManager {
         if (now - (this._diag_sentinel_t || 0) < 1000) return;
         this._diag_sentinel_t = now;
         const pages = this.page_manager.pages_list;
-        for (let i = 0; i < pages.length; i++) {
-            const len = pages[i].stroke_history?.length ?? 0;
+        // 只扫「有批注的页」集合：大文档里绝大多数页从未落笔，
+        // 全表 for 每帧 400 次 Map 读写是纯诊断开销。集合一旦进入即保留
+        // （清空页也要检测收缩到 0），仅在换文档时随 open() 重建。
+        // 集合缺失时退回逐页枚举下标（兼容尚未 open() 的调用方/测试 mock）。
+        const indices = this._pages_with_strokes
+            ? this._pages_with_strokes
+            : pages.map((_, i) => i);
+        for (const i of indices) {
+            const len = pages[i]?.stroke_history?.length ?? 0;
             const prev = this._diag_last_lens.get(i);
             if (typeof prev === 'number' && len < prev && !this._diag_suppress) {
                 this._dr_diag_dump(`第${i + 1}页笔画数异常收缩 ${prev}->${len}（触发点:${trigger}）`);
@@ -1724,8 +1739,23 @@ class DocumentReaderManager {
         };
 
         const today = new Date().toISOString().split('T')[0];
+        // v6：pages 改为稀疏结构，只写「有批注 或 有过坐标基准」的页。
+        // 十万页文档里绝大多数页从未落笔，稠密数组会下拉 N 份空对象 + 坐标。
+        const sparse_pages = [];
+        for (let i = 0; i < pages.length; i++) {
+            const p = pages[i];
+            const has_strokes = include_strokes && p.stroke_history && p.stroke_history.length > 0;
+            const has_coord = typeof p.coord_width === 'number' && p.coord_width > 0;
+            if (!has_strokes && !has_coord) continue;
+            sparse_pages.push({
+                i,
+                stroke_history: include_strokes ? p.stroke_history : [],
+                coord_width: p.coord_width || null,
+                coord_height: p.coord_height || null
+            });
+        }
         const cache_data = {
-            version: 5,
+            version: 6,
             folder_index: this.folder_index,
             file_md5: folder?.fileMd5 || null,
             // 预览状态关闭时写 -1：open() 以 active_page_index >= 0 判定
@@ -1742,19 +1772,15 @@ class DocumentReaderManager {
             // 只清笔迹不存角度 → 下次打开以 0° 渲染，用户以为旋转没生效。
             page_rotation: include_viewport ? this._page_rotation : 0,
             last_open_date: today,
-            pages: pages.map(p => ({
-                stroke_history: include_strokes ? p.stroke_history : [],
-                // v5：记录每页批注的坐标基准。窗口尺寸跨会话变化时，
-                // 恢复后首次进入页面由 _resize_page_layout 完成一次性补偿缩放
-                coord_width: p.coord_width || null,
-                coord_height: p.coord_height || null
-            })),
+            pages: sparse_pages,
+            // undo/redo 的每条命令都带 page_index，无需稠密 pages 数组即可还原
             undo_stack: include_strokes ? history_state.undo_list.map(serialize_cmd).filter(Boolean) : [],
             redo_stack: include_strokes ? history_state.redo_list.map(serialize_cmd).filter(Boolean) : []
         };
         this._dr_diag('save', {
             active: this.active_page_index + 1,
-            lens: pages.map(p => p.stroke_history.length).join(',')
+            // 诊断只记稀疏规模，不再无条件下拉全表 lens 字符串
+            lens: 'sparse:' + sparse_pages.length
         });
 
         const doc_state_dir = `${config_dir}/doc_state`;
@@ -1821,13 +1847,16 @@ class DocumentReaderManager {
 
             const pages = this.page_manager.pages_list;
             const len = Math.min(cache_data.pages.length, pages.length);
+            const is_sparse = cache_data.version >= 6;
 
             // 缓存恢复会整体替换数组，抑制哨兵误报
             this._diag_suppress = true;
-            // 恢复每页的 stroke_history
-            for (let i = 0; i < len; i++) {
-                const src = cache_data.pages[i];
-                const dst = pages[i];
+            const restore_one = (i, src) => {
+                if (!src) return;
+                // v6 稀疏项带 i（原始页号）；v5 稠密数组下标即页号
+                const page_index = typeof src?.i === 'number' ? src.i : i;
+                const dst = pages[page_index];
+                if (!dst) return;
                 if (src.stroke_history) {
                     dst.stroke_history = src.stroke_history;
                     // 防御：若 tile 渲染器已持有旧数组引用，同步重指向，
@@ -1836,15 +1865,28 @@ class DocumentReaderManager {
                         dst.tile_renderer._strokeHistoryRef = dst.stroke_history;
                     }
                 }
-                // v5：恢复批注的坐标基准（仅限尚未初始化 tile 的页）。
-                // 若与当前窗口基准不同，首次进入页面时 _resize_page_layout
-                // 会按 old/new 比例完成一次性补偿缩放，避免跨会话尺寸变化导致批注错位
+                // v5/v6：恢复批注的坐标基准（仅限尚未初始化 tile 的页）
                 if (typeof src.coord_width === 'number' && src.coord_width > 0 &&
                     !dst.tile_renderer && !dst.is_tiles_initialized) {
                     dst.coord_width = src.coord_width;
                     if (typeof src.coord_height === 'number' && src.coord_height > 0) {
                         dst.coord_height = src.coord_height;
                     }
+                }
+                // 有批注的页进集合，供诊断哨兵只扫这些页
+                if (dst.stroke_history && dst.stroke_history.length > 0) {
+                    this._pages_with_strokes.add(page_index);
+                }
+            };
+            if (is_sparse) {
+                // v6：只遍历实际存储的稀疏项，不对全文档下拉 lens 字符串
+                for (let i = 0; i < cache_data.pages.length; i++) {
+                    restore_one(i, cache_data.pages[i]);
+                }
+            } else {
+                // v5 及更早：稠密数组，按页号遍历
+                for (let i = 0; i < len; i++) {
+                    restore_one(i, cache_data.pages[i]);
                 }
             }
 
@@ -1857,7 +1899,7 @@ class DocumentReaderManager {
             }
             this._diag_suppress = false;
             this._dr_diag('cache-loaded', {
-                lens: pages.slice(0, len).map(p => p.stroke_history.length).join(',')
+                lens: 'sparse:' + this._pages_with_strokes.size
             });
 
             // v4 格式：返回保存的视图状态
@@ -2191,6 +2233,11 @@ class DocumentReaderManager {
 
     /** 用宽高比累计计算每页 top/height 与文档总高度（不依赖已卸载页的实时 offsetTop） */
     _compute_page_layout() {
+        // DOM 布局盒高度上限（30M CSS px）：浏览器对单个元素的 px 高度有实现
+        // 上限，十万页文档的逻辑总高可能远超该值。钳制只作用于 DOM 盒高，
+        // 逻辑坐标 (_page_positions.total) 保持真实值，两条坐标系不混用。
+        // 写在方法内而非模块顶层：多个回归测试会把本方法抠成独立 Function 执行。
+        const MAX_DOC_LAYOUT_PX = 30 * 1000 * 1000;
         const pages = this.page_manager.pages_list;
         const len = pages.length;
         const base = this._get_page_base_width();
@@ -2210,14 +2257,16 @@ class DocumentReaderManager {
             top += h + gap;
         }
         top -= gap; // 去掉末尾多余间距
-        const total = top + pad;
+        const total = top + pad;                       // 逻辑总高：保持真实值
+        const DOM_H = Math.min(total, MAX_DOC_LAYOUT_PX); // DOM 盒高：写 CSS 前钳制
+        this._layout_total_clamped = (DOM_H < total);
         this._page_positions = { tops, heights, total, stale: false };
         const wrap = this._zoom_wrapper;
         if (wrap) {
             wrap.style.position = 'relative';
             wrap.style.padding = '0';
             wrap.style.width = base + 'px';
-            wrap.style.height = total + 'px';
+            wrap.style.height = DOM_H + 'px';
         }
     }
 
@@ -4657,6 +4706,41 @@ class DocumentReaderManager {
         try { e.bitmap.close(); } catch (_) {}
     }
 
+    /**
+     * 画布像素面积预算：只在活动页附近的 keep 窗口内收集候选并淘汰，
+     * 不对全文档排序。窗口外页由虚拟化卸载/位图缓存 LRU 各自负责。
+     */
+    _enforce_canvas_budget() {
+        const pages = this.page_manager?.pages_list;
+        if (!pages?.length) return;
+        const center = this.active_page_index >= 0 ? this.active_page_index : 0;
+        const lo = Math.max(0, center - this._wrapper_keep_distance);
+        const hi = Math.min(pages.length - 1, center + this._wrapper_keep_distance);
+        const max_bytes = this._canvas_budget_bytes || 192 * 1024 * 1024;
+        let total = 0;
+        const candidates = [];
+        for (let i = lo; i <= hi; i++) {
+            const pd = pages[i];
+            if (!pd?.tile_renderer) continue;
+            const bytes = typeof pd.tile_renderer.estimate_bytes === 'function'
+                ? pd.tile_renderer.estimate_bytes() : 0;
+            total += bytes;
+            if (pd.is_visible || i === this.active_page_index) continue;
+            candidates.push({ pd, bytes });
+        }
+        if (total <= max_bytes) return;
+        // 只淘汰窗口内的不可见页（面积小者先），不做全表排序
+        candidates.sort((a, b) => a.bytes - b.bytes);
+        for (const c of candidates) {
+            if (total <= max_bytes) break;
+            // 整页瓦片降回 1x：只动窗口内不可见页，显式判空防止空网格抛错
+            for (const info of c.pd.tile_renderer.tileInfos || []) {
+                if (info.dpr > 1) c.pd.tile_renderer._recreate_tile(info, 1, false);
+            }
+            total -= c.bytes;
+        }
+    }
+
     _bitmap_cache_evict() {
         const over_budget = () => this._bitmap_cache_bytes > this._bitmap_cache_max_bytes
             || this._page_bitmap_cache.size > this._bitmap_cache_max_entries;
@@ -4672,6 +4756,13 @@ class DocumentReaderManager {
                 if (pass === 0 && (pd?.is_visible || idx === this.active_page_index)) continue;
                 this._bitmap_cache_delete(idx);
             }
+        }
+        // 顺带对活动页 keep 窗口做一次瓦片像素面积预算（与全局位图 LRU 互补）。
+        // 节流到 1s：高频 put 时不重复统计，且只在确实超预算后才走到这里。
+        const now = performance.now();
+        if (now - (this._canvas_budget_last_at || 0) > 1000) {
+            this._canvas_budget_last_at = now;
+            this._enforce_canvas_budget();
         }
     }
 
@@ -4771,17 +4862,31 @@ class DocumentReaderManager {
         const total = pm.pages_list.length;
         const BATCH = 8;
         let dirty = false;
+        // 主路径走渲染线程：measure 只取 getViewport 宽高、不栅格化，且排在
+        // 低优先级队列（后台回填不抢占可见页渲染）。主线程 getPage 仅作回退。
+        const worker_host = await this._ensure_render_host();
+        const worker_ok = !!(worker_host && await worker_host.ensure_document(pdfDoc));
         for (let s = 1; s < total; s += BATCH) {
             if (!this.is_open || this.page_manager !== pm || this._active_folder !== folder) return;
             const end = Math.min(s + BATCH, total);
             let results;
-            try {
-                const { get_pdf_page_info } = await import('./document_loader.js');
-                results = await Promise.all(
-                    Array.from({ length: end - s }, (_, k) => get_pdf_page_info(pdfDoc, s + k + 1, folder.docNumber))
-                );
-            } catch (_) {
-                results = null;
+            if (worker_ok) {
+                try {
+                    results = await Promise.all(
+                        Array.from({ length: end - s }, (_, k) => worker_host.measure(s + k + 1))
+                    );
+                } catch (_) {
+                    results = null;
+                }
+            } else {
+                try {
+                    const { get_pdf_page_info } = await import('./document_loader.js');
+                    results = await Promise.all(
+                        Array.from({ length: end - s }, (_, k) => get_pdf_page_info(pdfDoc, s + k + 1, folder.docNumber))
+                    );
+                } catch (_) {
+                    results = null;
+                }
             }
             if (!results || !this.is_open || this.page_manager !== pm || this._active_folder !== folder) return;
             for (let k = 0; k < results.length; k++) {
@@ -6421,6 +6526,8 @@ class DocumentReaderManager {
                 });
                 cmd.page_index = this.active_page_index;
                 await history_execute_command(cmd, false);
+                // 落笔成功：登记到「有批注的页」集合，诊断哨兵只扫这里
+                this._pages_with_strokes.add(this.active_page_index);
                 this._trim_undo_stack();
                 this._dr_diag('submit', {
                     page: this.active_page_index + 1,

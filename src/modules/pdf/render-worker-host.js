@@ -33,6 +33,11 @@ export class PdfRenderWorkerHost {
         this._by_page = new Map();      // pageNum -> reqId（该页最新一次请求，取消按页定位）
         this._max_inflight = 2;         // 在途渲染上限：与主线程路径 _RENDER_MAX 口径一致
         this._prerender_queue_max = 6;  // 预渲染队列上限：滚动长距时过期预渲染及时让位
+        // 页面尺寸回填（measure）走独立低优先级队列：只在渲染队列空闲时派发，
+        // 绝不抢占可见页的栅格化槽位。上限 2，与渲染在途量同阶。
+        this._measure_queue = [];
+        this._measure_pending = new Map();
+        this._measure_max_inflight = 2;
     }
 
     _ensure_worker() {
@@ -81,6 +86,24 @@ export class PdfRenderWorkerHost {
                 this._drain();
                 break;
             }
+            case 'measured': {
+                const p = this._measure_pending.get(msg.req);
+                if (p) {
+                    this._measure_pending.delete(msg.req);
+                    p.resolve({ width: msg.width, height: msg.height });
+                }
+                this._drain();
+                break;
+            }
+            case 'measure-error': {
+                const p = this._measure_pending.get(msg.req);
+                if (p) {
+                    this._measure_pending.delete(msg.req);
+                    p.reject(new Error(msg.error || 'worker measure failed'));
+                }
+                this._drain();
+                break;
+            }
             case 'fatal': {
                 console.warn('[render-worker-host] worker 内部异常:', msg.error);
                 this._on_worker_down('fatal: ' + msg.error);
@@ -108,6 +131,9 @@ export class PdfRenderWorkerHost {
         this._pending.clear();
         for (const p of this._inflight.values()) p.reject(err);
         this._inflight.clear();
+        for (const p of this._measure_pending.values()) p.reject(err);
+        this._measure_pending.clear();
+        this._measure_queue.length = 0;
         this._queue.length = 0;
         this._by_page.clear();
     }
@@ -247,6 +273,24 @@ export class PdfRenderWorkerHost {
         return promise;
     }
 
+    /**
+     * 低优先级页面尺寸测量：只取 getViewport 宽高，不栅格化。
+     * 与 render() 分离成独立队列，确保后台回填不会挤占可见页渲染槽位。
+     * @returns {Promise<{width:number, height:number}>}
+     */
+    measure(pageNum, rotation = 0) {
+        if (!this.available) return Promise.reject(new Error('render worker unavailable'));
+        const promise = new Promise((resolve, reject) => {
+            const reqId = ++this._req_id;
+            this._measure_pending.set(reqId, { resolve, reject, pageNum });
+            this._measure_queue.push({ reqId, pageNum, rotation });
+            this._drain();
+        });
+        promise.catch(() => {});
+        // measure 取消属预期路径（与 render 同口径），避免 Uncaught (in promise)
+        return promise;
+    }
+
     _drain() {
         if (!this._worker) return;
         while (this._inflight.size < this._max_inflight && this._queue.length > 0) {
@@ -267,6 +311,24 @@ export class PdfRenderWorkerHost {
             } catch (e) {
                 this._inflight.delete(item.reqId);
                 p.reject(e);
+            }
+        }
+        // 低优先级：仅当没有在途/排队的渲染任务时，才派发尺寸测量。
+        // 这样滚动/翻页时的栅格化不会被尺寸回填抢占线程。
+        if (this._inflight.size === 0 && this._queue.length === 0) {
+            while (this._measure_pending.size < this._measure_max_inflight && this._measure_queue.length > 0) {
+                const item = this._measure_queue.shift();
+                const p = this._measure_pending.get(item.reqId);
+                if (!p) continue;
+                try {
+                    this._worker.postMessage({
+                        type: 'measure', req: item.reqId,
+                        pageNum: item.pageNum, rotation: item.rotation
+                    });
+                } catch (e) {
+                    this._measure_pending.delete(item.reqId);
+                    p.reject(e);
+                }
             }
         }
     }

@@ -761,6 +761,11 @@ class TileRenderer {
         this.tileInfos = [];
         this._tileMap = new Map();
         const targetDpr = this._calc_target_dpr(this._lastScale || 1);
+        // 全网格不无条件升到目标档：新块先按 1x 分配，只有可见瓦片立即升级，
+        // 其余等滚入视口时由 update_visible_tile_dpr 渐进补齐。
+        // 否则 N 页 × 全网格 × 高 DPR 会直接把显存峰值乘以页数。
+        const visibleKeys = this.get_visible_keys();
+        const allocDpr = 1;
         let added = 0, kept = 0, changed = 0;
 
         for (let r = 0; r < rows; r++) {
@@ -799,12 +804,15 @@ class TileRenderer {
                     changed++;
                     continue;
                 }
-                // 新增块
-                const info = { col: c, row: r, key, dpr: targetDpr, rect };
-                const { canvas, ctx } = this._create_tile_canvas(info, targetDpr);
+                // 新增块：先按 1x 分配；仅可见集升到目标档
+                const info = { col: c, row: r, key, dpr: allocDpr, rect };
+                const { canvas, ctx } = this._create_tile_canvas(info, allocDpr);
                 if (wrapper) wrapper.appendChild(canvas);
                 info.canvas = canvas;
                 info.ctx = ctx;
+                if (targetDpr > allocDpr && visibleKeys.has(key)) {
+                    this._recreate_tile(info, targetDpr, false);
+                }
                 this.dirty.add(key);
                 this.tileInfos.push(info);
                 this._tileMap.set(key, info);
@@ -842,6 +850,23 @@ class TileRenderer {
         for (const info of this.tileInfos) {
             fn(info);
         }
+    }
+
+    /**
+     * 本页瓦片层的常驻像素字节估算（供宿主做像素面积预算）。
+     * 只统计本实例持有的画布，不引用全局页表 —— 与文档页数 N 无关。
+     */
+    estimate_bytes() {
+        let bytes = 0;
+        for (const info of this.tileInfos) {
+            if (info.canvas) bytes += info.canvas.width * info.canvas.height * 4;
+        }
+        for (const entry of this._baseCaches.values()) {
+            if (entry?.canvas) bytes += entry.canvas.width * entry.canvas.height * 4;
+        }
+        for (const c of this._snapshotPool) bytes += c.width * c.height * 4;
+        for (const c of this._offscreen_pool) bytes += c.width * c.height * 4;
+        return bytes;
     }
 
     get_visible_keys() {
